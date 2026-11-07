@@ -1,1 +1,0 @@
-<resources><!-- 道映水墨主题基础样式（全屏、无标题栏） --><style name="TaoLiveTheme" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen"><item name="android:windowBackground">#F7F5EE</item></style></resources>

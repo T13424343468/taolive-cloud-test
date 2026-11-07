@@ -3,3 +3,5 @@ keystore/
 *.apk
 __pycache__/
 node_modules/
+bin/
+obj/

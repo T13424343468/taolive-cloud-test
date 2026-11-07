@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "8pmSRxPRaoQ=",
+  "success": true,
+  "projectFilePath": "/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/TaoLive.BLL.csproj",
+  "expectedPackageFiles": [
+    "/root/workspace/.nuget/packages/microsoft.netcore.app.ref/8.0.33/microsoft.netcore.app.ref.8.0.33.nupkg.sha512",
+    "/root/workspace/.nuget/packages/microsoft.aspnetcore.app.ref/8.0.33/microsoft.aspnetcore.app.ref.8.0.33.nupkg.sha512"
+  ],
+  "logs": []
+}

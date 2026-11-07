@@ -1,0 +1,5 @@
+item;obj/Release/net9.0-android/android-arm/res/values/styles.xml
+resources;/root/workspace/taolive-work/TaoLive/src/TaoLive.UI.Android.Tv/obj/Release/net9.0-android/android-arm/lp/2/jl/res/values/values.xml
+resources;obj/Release/net9.0-android/android-arm/res/values/styles.xml
+string;/root/workspace/taolive-work/TaoLive/src/TaoLive.UI.Android.Tv/obj/Release/net9.0-android/android-arm/lp/2/jl/res/values/values.xml
+style;obj/Release/net9.0-android/android-arm/res/values/styles.xml

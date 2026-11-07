@@ -1,0 +1,33 @@
+LibVLCSharp.Platforms.Android.LayoutChangeListener, LibVLCSharp;crc64fd41ab9b8a8239c2.LayoutChangeListener
+LibVLCSharp.Platforms.Android.LayoutChangeListener;crc64fd41ab9b8a8239c2.LayoutChangeListener
+libvlcsharp.platforms.android.LayoutChangeListener;crc64fd41ab9b8a8239c2.LayoutChangeListener
+Org.Videolan.Libvlc.AWindow+ISurfaceCallback, LibVLCSharp.Android.AWindowModern;org.videolan.libvlc.AWindow$SurfaceCallback
+Org.Videolan.Libvlc.AWindow.ISurfaceCallback;org.videolan.libvlc.AWindow$SurfaceCallback
+org.videolan.libvlc.AWindow$SurfaceCallback;org.videolan.libvlc.AWindow$SurfaceCallback
+Org.Videolan.Libvlc.IVLCVout, LibVLCSharp.Android.AWindowModern;org.videolan.libvlc.IVLCVout
+Org.Videolan.Libvlc.IVLCVout;org.videolan.libvlc.IVLCVout
+org.videolan.libvlc.IVLCVout;org.videolan.libvlc.IVLCVout
+Org.Videolan.Libvlc.IVLCVout+ICallback, LibVLCSharp.Android.AWindowModern;org.videolan.libvlc.IVLCVout$Callback
+Org.Videolan.Libvlc.IVLCVout.ICallback;org.videolan.libvlc.IVLCVout$Callback
+org.videolan.libvlc.IVLCVout$Callback;org.videolan.libvlc.IVLCVout$Callback
+Org.Videolan.Libvlc.IVLCVout+IOnNewVideoLayoutListener, LibVLCSharp.Android.AWindowModern;org.videolan.libvlc.IVLCVout$OnNewVideoLayoutListener
+Org.Videolan.Libvlc.IVLCVout.IOnNewVideoLayoutListener;org.videolan.libvlc.IVLCVout$OnNewVideoLayoutListener
+org.videolan.libvlc.IVLCVout$OnNewVideoLayoutListener;org.videolan.libvlc.IVLCVout$OnNewVideoLayoutListener
+TaoLive.UI.Android.Tv.BootReceiver, TaoLive.UI.Android.Tv;crc6487f41b6f8dfb94e3.BootReceiver
+TaoLive.UI.Android.Tv.BootReceiver;crc6487f41b6f8dfb94e3.BootReceiver
+taolive.ui.android.tv.BootReceiver;crc6487f41b6f8dfb94e3.BootReceiver
+TaoLive.UI.Android.Tv.MainActivity, TaoLive.UI.Android.Tv;crc6487f41b6f8dfb94e3.MainActivity
+TaoLive.UI.Android.Tv.MainActivity;crc6487f41b6f8dfb94e3.MainActivity
+taolive.ui.android.tv.MainActivity;crc6487f41b6f8dfb94e3.MainActivity
+TaoLive.UI.Android.Tv.MainActivity+ChannelAdapter, TaoLive.UI.Android.Tv;crc6487f41b6f8dfb94e3.MainActivity_ChannelAdapter
+TaoLive.UI.Android.Tv.MainActivity.ChannelAdapter;crc6487f41b6f8dfb94e3.MainActivity_ChannelAdapter
+taolive.ui.android.tv.MainActivity_ChannelAdapter;crc6487f41b6f8dfb94e3.MainActivity_ChannelAdapter
+TaoLive.UI.Android.Tv.Shared.UncaughtCrashPeer, TaoLive.UI.Android.Tv;crc64a1b52d66edecd4d3.UncaughtCrashPeer
+TaoLive.UI.Android.Tv.Shared.UncaughtCrashPeer;crc64a1b52d66edecd4d3.UncaughtCrashPeer
+taolive.ui.android.tv.shared.UncaughtCrashPeer;crc64a1b52d66edecd4d3.UncaughtCrashPeer
+TaoLive.UI.Android.Tv.Shared.LiveSurfaceView, TaoLive.UI.Android.Tv;crc64a1b52d66edecd4d3.LiveSurfaceView
+TaoLive.UI.Android.Tv.Shared.LiveSurfaceView;crc64a1b52d66edecd4d3.LiveSurfaceView
+taolive.ui.android.tv.shared.LiveSurfaceView;crc64a1b52d66edecd4d3.LiveSurfaceView
+TaoLive.UI.Android.Tv.Shared.LiveTextureView, TaoLive.UI.Android.Tv;crc64a1b52d66edecd4d3.LiveTextureView
+TaoLive.UI.Android.Tv.Shared.LiveTextureView;crc64a1b52d66edecd4d3.LiveTextureView
+taolive.ui.android.tv.shared.LiveTextureView;crc64a1b52d66edecd4d3.LiveTextureView

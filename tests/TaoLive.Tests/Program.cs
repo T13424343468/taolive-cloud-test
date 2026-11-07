@@ -1,0 +1,649 @@
+using System.Linq;
+using TaoLive.BLL;
+using TaoLive.Model;
+
+// 道映核心逻辑断言（硬指标先行）：分类分组、编号固化、收藏置顶与排序、数字键直达。
+// 源适配器以桩源替代，真实源数据回填后补全量用例。
+int pass = 0, fail = 0;
+void Check(bool cond, string name)
+{
+    if (cond) { pass++; Console.WriteLine($"PASS {name}"); }
+    else { fail++; Console.WriteLine($"FAIL {name}"); }
+}
+
+var fav = new FavoriteStore();
+var catalog = new ChannelCatalog(fav);
+catalog.RegisterSource(new StubSource("s1"));
+catalog.RegisterSource(new StubSource("s2"));
+catalog.Rebuild();
+
+// 1 分类：六大分类组均在，接不进的台不占号
+Check(catalog.Groups.Count == 6, "分类组数=6");
+Check(catalog.UnavailableChannels.Count == 2, "接不进的台归档(2路)");
+Check(catalog.All.Count == 4, "可用台数=4");
+Check(catalog.All.Select(c => c.Number).SequenceEqual(new[] {1,2,3,4}), "编号顺次固化 1~4");
+
+// 2 编号直达
+Check(catalog.ByNumber(3)!.Name == "s1-B" && catalog.ByNumber(3)!.Category == ChannelCategory.Provincial, "编号3可达省台");
+Check(catalog.ByNumber(99) is null, "无号不越界");
+
+// 3 收藏：置顶 + 排序（硬性验收）
+fav.Toggle(3); fav.Toggle(1); fav.Toggle(4);
+var top = fav.TopGroup(catalog.All.ToList());
+Check(top.Select(c => c.Number).SequenceEqual(new[] {3,1,4}), "收藏按加入顺序置顶");
+fav.MoveUp(1);
+top = fav.TopGroup(catalog.All.ToList());
+Check(top.Select(c => c.Number).SequenceEqual(new[] {1,3,4}), "上移排序生效");
+fav.Toggle(1);
+Check(!fav.IsFavorite(1), "取消收藏");
+
+// 4 数字键直达
+int jumped = 0; string echo = "";
+var digits = new ChannelNumberController(catalog, n => jumped = n, e => echo = e);
+digits.OnDigit(0); digits.OnDigit(4);
+Check(echo == "0-4", "数字回显 0-4");
+System.Threading.Thread.Sleep(1200); // 停 1 秒自动跳台
+Check(jumped == 4, "停顿自动跳台→编号4");
+
+// 5 m3u 解析容错
+var parser = new M3uParser();
+var entries = parser.ParseText(
+    "#EXTM3U\n" +
+    "#EXTINF:-1 tvg-id=\"c1\" group-title=\"央视\",CCTV-1\nhttp://x/1.m3u8\n" +
+    "garbage-line\n" +
+    "#EXTINF:-1 group-title=\"本地\",本地台\nhttp://x/2.m3u8\n" +
+    "#EXTINF:-1,bad\nnot-a-url\n");
+Check(entries.Count == 2, "m3u 容错：坏行跳过(2条)");
+Check(entries[0].GroupHint == "央视" && entries[0].Name == "CCTV-1", "m3u 分组与台名解析");
+
+// 6 央视频 cKey 票据：与 Python 参考实现（调研/ysp/ckey.py）固定随机源对拍
+{
+    int idx = 0;
+    byte[] Fixed(int n)
+    {
+        var b = new byte[n];
+        for (int i = 0; i < n; i++) b[i] = (byte)((idx + i) & 0xFF);
+        idx += n;
+        return b;
+    }
+    var (ck, _, _) = YspCkey.Create("2024078201", 1700000000, "00112233445566778899aabbccddeeff", Fixed);
+    const string expect = "--01ni8d9JxziWOkUzGW0L-8zC7JA6zYlHfdtB11Kqv1LGpYA5BSlmTHHzkeO69rd4w9vSXz1Ot3AGwCrCZijM4fW4EnFabufOS9aSPwM3tTvUgz2xmUxLZUxqZ43Em5BwG0XOIBgvmtV3z0t98hGlDNK7u_OM7oqijAQd2-96nIv0KqaKkTlddVXPNEkdPc5HI9ylUHlZ5hr1-TAy6Ccdr6BT8ApN7sUDYgHylKL6TSuCpafdMLaZJlLJFEj_G4kOcIb8n8kyX-eh0LWAyowRPLh8NxX6ZI2d3ZLWib600I3cziSsDYqSiSJadsyGsPr8Ai-zZ5-0Pi0kozWi5JB3zDmdYJSFpRdWRTlqna4V5gc7P1JUcU1NZK4S66UE2L12MMqjDgJ4qTectmzzns2mx7hG5Z2xaIeePLPPn4KObpPzqeOFljcPcDFf3z5qfvd5TDXvH35kGjWPgT7Yb-D1bQsflwoAk";
+    Check(ck == expect, "cKey 票据与参考实现逐字节对拍一致");
+}
+// 6.1 取票服务窗口与冷却（纯 epoch 比较）
+{
+    var svc = new YspTicketService();
+    long t0 = 1794016800; // 2026-11-07 10:00 +08
+    Check(svc.ShouldFetch("c1", t0), "首次取票放行");
+    svc.MarkFetched("c1", t0, "http://x/c1.m3u8");
+    Check(!svc.ShouldFetch("c1", t0 + 240), "5分钟内不重取");
+    Check(svc.ShouldFetch("c1", t0 + 301), "5分钟窗口到期重取");
+    Check(svc.TryGet("c1", t0 + 240, out var hit) && hit == "http://x/c1.m3u8", "票据缓存窗口内命中");
+    Check(!svc.TryGet("c1", t0 + 301, out _), "票据缓存窗口过期");
+    var now = DateTimeOffset.FromUnixTimeSeconds(t0).DateTime;
+    svc.MarkCooldown("c2", now.AddSeconds(30));
+    Check(svc.InCooldown("c2", now.AddSeconds(29)), "403 冷却中");
+    Check(!svc.InCooldown("c2", now.AddSeconds(31)), "冷却 30 秒到期放行");
+}
+// 6.2 浙江新蓝网 auth_key：与摸底实测向量对拍（2026-11-07 实测 200）
+{
+    var signed = CztvSource.SignPlayUrl("https://zwebl03.cztv.com/live/channel01720Pnew.m3u8", 1793992552, "tbck3bbata3xr3u1");
+    Check(signed.EndsWith("?auth_key=1793992552-tbck3bbata3xr3u1-0-a5788374601837dfa197e39b6ed797a3"), "cztv auth_key 签名对拍");
+    Check(CztvSource.SignPlayUrl("https://api.example.com/x.m3u8", 1, "r") == "https://api.example.com/x.m3u8", "非浙江域不签");
+}
+// 6.3 贵州取票端点与 Referer（防盗链短效）
+Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvSource.Referer == "https://www.gzstv.com/", "gzstv 取票端点/Referer 固化");
+// 6.4 上海看看签名与 UA 约束（JWT 绑 UA，取流同 UA 拉流）
+{
+    var sig = KankanSource.Sign(new Dictionary<string, string> { ["channel_id"] = "1" }, 1793988075, "abcdwxyz");
+    Check(sig.Length == 32, "kankan 签名输出 32 位 hex");
+    Check(YspTicketService.ClientUserAgent.Contains("TaoLive"), "全局固定 UA 固化（上海 JWT 绑 UA 的前置约束）");
+}
+// 6.5 江苏荔枝网签名：x() 变换 + 腾讯云防盗链（摸底第二轮证据；txTime=hex(now+180s)）
+{
+    var key = JstvSource.DecodedKey();
+    Check(key.Length == 8, "jstv x() 密钥解出 8 字节");
+    var (secret, txTime) = JstvSource.Sign(key, "jscs", 1794018000);
+    Check(txTime == ((long)1794018000).ToString("x8"), "jstv txTime=hex(now+180s) 固化");
+    Check(secret.Length == 32, "jstv txSecret 32 位 hex");
+    var url = JstvSource.PlayUrl("jscs", 1794018000);
+    Check(url.StartsWith("https://lived.jstv.com/jscspro.m3u8?txSecret=") && url.Contains($"&txTime={txTime}"), "jstv 播放 URL 形态固化");
+    Check(JstvSource.Channels.All(c => !c.Name.Contains("江苏卫视")), "jstv 不与央视频覆盖重复");
+}
+// 6.6 西安网络台：明文 HLS + Referer（摸底第二轮分片全 200；xatv4 文化影视 404 不接）
+{
+    Check(XatvSource.PlayUrl(2) == "https://stream.xiancity.cn/live/2/index.m3u8", "xatv 流地址固化");
+    Check(XatvSource.Channels.Length == 4, "xatv 接入 4 路（直播间/都市/戏剧影视/丝路）");
+}
+// 6.7 广西网络台：公开接口直吐 videoLiveUrl（电视口径待真机确认）
+{
+    Check(GxtvSource.ApiUrl("api/open/broadcast/live") == "https://api2019.gxtv.cn/api/open/broadcast/live", "gxtv 接口端点固化");
+    var chans = new GxtvSource().FetchChannels();
+    Check(chans.Count == 1 && chans[0].Category == ChannelCategory.City, "gxtv 补充源归城市台组");
+}
+
+// 6.8 内蒙古 XXTEA：加解密往返（长度小端尾缀口径）＋密钥固化
+{
+    var plain = System.Text.Encoding.UTF8.GetBytes("{\"title\":\"nmtv01\",\"streamUrl\":\"http://s/live.m3u8\"}");
+    var enc = NmtvXxtea.Encrypt(plain);
+    Check(enc.Length % 4 == 0 && enc.Length > plain.Length, "XXTEA 密文按 4 字节对齐且含长度尾缀");
+    var dec = NmtvXxtea.Decrypt(enc);
+    Check(System.Text.Encoding.UTF8.GetString(dec) == System.Text.Encoding.UTF8.GetString(plain), "XXTEA 加解密往返还原");
+    Check(NmtvXxtea.Key == "5b28bae827e651b3", "XXTEA 密钥固化");
+}
+// 6.9 取流器路由：江苏播放时重签 txTime=hex(now+180s)；非取票源直连透传 Referer
+{
+    var res = new StreamResolver();
+    var jstvCh = new Channel { SourceId = "jstv", StreamUrl = "https://lived.jstv.com/jscspro.m3u8", EpgKey = "jscs" };
+    var r1 = await res.ResolvePlayUrlAsync(jstvCh);
+    Check(r1 != null && r1.Url.StartsWith("https://lived.jstv.com/jscspro.m3u8?txSecret="), "jstv 取流重签 txSecret");
+    var txTime = System.Text.RegularExpressions.Regex.Match(r1!.Url, @"txTime=([0-9a-f]+)").Groups[1].Value;
+    var got = Convert.ToInt64(txTime, 16);
+    var expect = (long)DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 180;
+    Check(Math.Abs(got - expect) <= 2, "jstv txTime=播放时重签(now+180s)");
+    var xaCh = new Channel { SourceId = "xatv", StreamUrl = "https://stream.xiancity.cn/live/2/index.m3u8", Referer = "https://xiancity.cn/" };
+    var r2 = await res.ResolvePlayUrlAsync(xaCh);
+    Check(r2 != null && r2.Url == xaCh.StreamUrl, "非取票源直连不改地址");
+    Check(r2!.Options.Any(o => o.Key == "http-referrer" && o.Value == "https://xiancity.cn/"), "直连透传 Referer");
+}
+
+// 追加：真实源注册后的目录重建对账（骨架桩源替换为正式源前的口径检查）
+{
+    var fav2 = new FavoriteStore();
+    var cat = new ChannelCatalog(fav2);
+    // 2026-11-07 全量真连后按用户指令：上海/江苏/广西暂下架（攻克名单），包头暂下架
+    cat.RegisterSource(new YangshipinSource());
+    cat.RegisterSource(new CztvSource());
+    cat.RegisterSource(new GzstvSource());
+    cat.RegisterSource(new XatvSource());
+    cat.RegisterSource(new NmtvSource());
+    cat.Rebuild();
+    var cctv = cat.Groups.First(g => g.Category == ChannelCategory.Cctv).Channels.Count;
+    var cgtn = cat.Groups.First(g => g.Category == ChannelCategory.Cgtn).Channels.Count;
+    var prov = cat.Groups.First(g => g.Category == ChannelCategory.Provincial).Channels.Count;
+    var city = cat.Groups.First(g => g.Category == ChannelCategory.City).Channels.Count;
+    Check(cctv == 21, $"央视 21 路（实际 {cctv}）");
+    Check(cgtn == 6, $"CGTN 6 路（实际 {cgtn}）");
+    Check(prov == 31 + 4 + 7 + 8, $"省台=央视频31+浙江4+贵州7+内蒙古8（实际 {prov}）");
+    Check(city == 4 + 1, $"城市台 西安4+呼和浩特1（实际 {city}）");
+    var special = cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels.Count;
+    Check(cat.All.Count == cctv + cgtn + special + prov + city, "总台数=各分类和，编号无空洞");
+    Check(cat.All.Select(c => c.Number).SequenceEqual(Enumerable.Range(1, cat.All.Count)), "编号 1..N 连续无跳号");
+    Check(cat.UnavailableChannels.Count == 0, "接不进的路未挂进正式源（湖北/湖南不排期）");
+    // 硬性验收三件：分类/收藏/数字键在真实台单上仍成立
+    Check(cat.Groups.Count == 6, "六大分类组齐");
+    Check(cat.ByNumber(1)!.Category == ChannelCategory.Cctv, "1 号=央视组首位");
+    var last = cat.All.Last();
+    Check(cat.ByNumber(last.Number) == last, "末号可达");
+}
+
+// 追加：低配设备档位（雷一）——HideUhd=true 时 4K/8K 台不进节目单，关掉后原样恢复
+{
+    var cat1 = new ChannelCatalog(new FavoriteStore());
+    cat1.RegisterSource(new YangshipinSource());
+    cat1.Rebuild();
+    var uhdBefore = cat1.All.Count(c => c.Name.Contains("4K") || c.Name.Contains("8K"));
+
+    DeviceProfile.HideUhd = true;
+    try
+    {
+        var catLow = new ChannelCatalog(new FavoriteStore());
+        catLow.RegisterSource(new YangshipinSource());
+        catLow.Rebuild();
+        var uhd = catLow.All.Count(c => c.Name.Contains("4K") || c.Name.Contains("8K"));
+        Check(uhd == 0, $"低配档位下超高清台全拦（实际 {uhd} 路）");
+        Check(uhdBefore == 3, $"正常档位下央视频超高清 3 路（实际 {uhdBefore}）");
+        Check(catLow.All.Count == cat1.All.Count - uhdBefore, "低配节目单=正常节目单减超高清，其余台不受影响");
+    }
+    finally
+    {
+        DeviceProfile.HideUhd = false; // 必须还原，别污染后续用例
+    }
+}
+
+// 追加：AI 画质实时档（v1.0.8）——auto 按内存分档矩阵 + 滤镜选项内容
+{
+    const long MB = 1024L * 1024;
+    // auto 矩阵：<2GB 关；2~3GB 低档；≥3GB 高档；内存未知关
+    Check(LiveQuality.Pick("auto", true, 2 * 1024 * MB) == AiLiveTier.Low, "auto 2GB 32位=低档");
+    Check(LiveQuality.Pick("auto", true, 1500 * MB) == AiLiveTier.Off, "auto <2GB=关");
+    Check(LiveQuality.Pick("auto", false, 3 * 1024 * MB) == AiLiveTier.High, "auto 3GB=高档");
+    Check(LiveQuality.Pick("auto", false, 0) == AiLiveTier.Off, "auto 内存未知=关");
+    Check(LiveQuality.Pick("auto", false, 8 * 1024 * MB) == AiLiveTier.High, "auto 8GB=高档");
+    // 显式设置：off 强制关；low 尊重；high 在 <2GB 降级为低档（防卡死）
+    Check(LiveQuality.Pick("off", false, 8 * 1024 * MB) == AiLiveTier.Off, "off 强制关");
+    Check(LiveQuality.Pick("low", true, 1500 * MB) == AiLiveTier.Low, "low 显式=低档（小内存也尊重）");
+    Check(LiveQuality.Pick("high", true, 1500 * MB) == AiLiveTier.Low, "high 小内存降级=低档");
+    Check(LiveQuality.Pick("high", false, 4 * 1024 * MB) == AiLiveTier.High, "high 大内存=高档");
+    Check(LiveQuality.Pick("AUTO", false, 3 * 1024 * MB) == AiLiveTier.High, "大小写不敏感");
+    Check(LiveQuality.Pick("未知值", false, 3 * 1024 * MB) == AiLiveTier.High, "未知值按 auto 口径");
+    // 滤镜选项内容：关=空；低档=锐化；高档=锐化+画面微调（video-filter 含 sharpen 与 adjust）
+    Check(LiveQuality.OptionsFor(AiLiveTier.Off).Count == 0, "关档无滤镜参数");
+    var lowOpts = LiveQuality.OptionsFor(AiLiveTier.Low);
+    Check(lowOpts.Any(o => o.Key == "video-filter" && o.Value == "sharpen"), "低档=锐化滤镜");
+    Check(lowOpts.Any(o => o.Key == "sharpen-amplitude"), "低档带锐化幅度");
+    var highOpts = LiveQuality.OptionsFor(AiLiveTier.High);
+    Check(highOpts.Any(o => o.Key == "video-filter" && o.Value.Contains("sharpen") && o.Value.Contains("adjust")), "高档=锐化+画面微调组合");
+    Check(highOpts.Any(o => o.Key == "contrast") && highOpts.Any(o => o.Key == "saturation"), "高档带对比/饱和微调");
+    Check(!highOpts.Count(o => o.Key == "video-filter").Equals(2), "video-filter 单条不重复（避免同名覆盖）");
+}
+
+
+// 追加：开机预检握手状态机（v1.0.8）——按序探测、状态流转、事件单发、复测入口
+{
+    var pre = new ChannelPrecheck(ch => Task.FromResult(ch.Name != "dead"), intervalMs: 10);
+    var events = new List<(string, ChannelHealth)>();
+    pre.StateChanged += (k, s) => events.Add((k, s));
+    var chans = new List<Channel>
+    {
+        new() { Name = "ok", EpgKey = "ok" },
+        new() { Name = "dead", EpgKey = "dead" },
+    };
+    await pre.RunAsync(chans);
+    Check(pre.Of(chans[0]) == ChannelHealth.Alive, "预检可达台=可用");
+    Check(pre.Of(chans[1]) == ChannelHealth.Dead, "预检不可达台=失效");
+    Check(pre.Of(new Channel { EpgKey = "zzz" }) == ChannelHealth.Unknown, "未探测台=未知");
+    Check(events.Count(e => e.Item2 == ChannelHealth.Dead) == 1, "状态变化事件只发一次");
+    Check(events.First().Item2 == ChannelHealth.Checking, "探测先置检测中");
+    // 重复标记不发事件（防列表反复重绘）
+    var before = events.Count;
+    pre.MarkState(chans[0], ChannelHealth.Alive);
+    Check(events.Count == before, "同状态重复标记不发事件");
+    // 复测入口：失效台可重新探测
+    pre.Requeue(chans[1]);
+    Check(pre.Of(chans[1]) == ChannelHealth.Checking, "复测入口置检测中");
+    // 探测器抛异常按失效处理（预检不吞异常不崩）
+    var boom = new ChannelPrecheck(_ => throw new InvalidOperationException("net down"), intervalMs: 1);
+    var c2 = new Channel { Name = "x", EpgKey = "x" };
+    await boom.RunAsync(new[] { c2 });
+    Check(boom.Of(c2) == ChannelHealth.Dead, "探测异常按失效处理");
+}
+
+// 追加：列表宽度度量（v1.0.8，越小越好）——不超半屏、下限兜底、内容自适应
+{
+    float d = 2f; int sw = 1920;
+    Check(ListMetrics.ComputeWidthPx(0, d, sw) == 720, "内容极窄时取下限 360dp（信息完整兜底）");
+    Check(ListMetrics.ComputeWidthPx(2000, d, sw) == 960, "超宽内容钳到半屏（绝不盖住整屏）");
+    Check(ListMetrics.ComputeWidthPx(800, d, sw) == (int)(800 + 48 * 2), "中等内容=内容宽+留白（越小越好）");
+    Check(ListMetrics.ComputeWidthPx(-5, d, sw) == 720, "负值输入不越界（按下限兜底）");
+    int mid = ListMetrics.ComputeWidthPx(700, d, 3840);
+    Check(mid < 3840 / 2, "大屏上半屏上限仍然成立");
+}
+
+// 追加：强制刷新取票（v1.0.8 重连前换票的取流侧口径）——force 绕过缓存仍出票
+{
+    var res = new StreamResolver();
+    var jstvCh = new Channel { SourceId = "jstv", StreamUrl = "https://lived.jstv.com/jscspro.m3u8", EpgKey = "jscs" };
+    var rForce = await res.ResolvePlayUrlAsync(jstvCh, force: true);
+    Check(rForce != null && rForce.Url.Contains("txSecret="), "强制刷新绕过缓存仍出票（重连前换票口径）");
+    var rAgain = await res.ResolvePlayUrlAsync(jstvCh, force: true);
+    Check(rAgain != null && rAgain.Url.Contains("txSecret="), "连续强制刷新仍稳定出票");
+}
+
+// 追加：左右键列表翻页纯函数（v1.0.8 用户拍板）——整屏步进、不足一屏到底/到顶、越界兜底
+{
+    // 列表 20 行、可视 6 行、当前顶在第 0 行：左键（向下）翻到第 6 行
+    Check(ListPaging.NextFirstVisible(20, 0, 6, +1) == 6, "左键向下翻一屏（0→6）");
+    Check(ListPaging.NextFirstVisible(20, 6, 6, +1) == 12, "左键连续翻（6→12）");
+    // 剩余不足一屏：直接到底（最后一屏首行=20-6=14）
+    Check(ListPaging.NextFirstVisible(20, 14, 6, +1) == 14, "向下不足一屏直接到底");
+    Check(ListPaging.NextFirstVisible(20, 12, 6, +1) == 14, "向下越界钳到底（12→14）");
+    // 右键（向上）：对称逻辑
+    Check(ListPaging.NextFirstVisible(20, 6, 6, -1) == 0, "右键向上翻一屏（6→0）");
+    Check(ListPaging.NextFirstVisible(20, 0, 6, -1) == 0, "向上到顶不再越界");
+    // 可视行数异常输入按 1 兜底；空列表安全
+    Check(ListPaging.NextFirstVisible(20, 10, 0, +1) == 11, "可视行数非法按 1 步进兜底");
+    Check(ListPaging.NextFirstVisible(0, 0, 6, +1) == 0, "空列表返回 0 不越界");
+    Check(ListPaging.NextFirstVisible(3, 0, 6, +1) == 0, "列表比一屏短时原地不动");
+}
+
+// 追加：设置页画质档位循环（v1.0.8 用户拍板）——auto→off→low→high→auto
+{
+    Check(SettingsCycler.NextAiTier("auto") == "off", "档位循环 auto→off");
+    Check(SettingsCycler.NextAiTier("off") == "low", "档位循环 off→low");
+    Check(SettingsCycler.NextAiTier("low") == "high", "档位循环 low→high");
+    Check(SettingsCycler.NextAiTier("high") == "auto", "档位循环 high→auto（闭环）");
+    Check(SettingsCycler.NextAiTier("AUTO") == "off", "大小写不敏感");
+    Check(SettingsCycler.NextAiTier("未知值") == "off", "未知值落 off 让用户显式选");
+    Check(SettingsCycler.NextAiTier(null!) == "off", "空值安全兜底");
+}
+
+// 追加：循环预检保态复测（v1.0.8 用户拍板：列表不闪烁）——已知台复测不先置检测中
+{
+    var pre = new ChannelPrecheck(ch => Task.FromResult(ch.Name != "dead"), intervalMs: 1);
+    var chans = new List<Channel>
+    {
+        new() { Name = "ok", EpgKey = "ok" },
+        new() { Name = "dead", EpgKey = "dead" },
+    };
+    await pre.RunAsync(chans);
+    var events = new List<(string, ChannelHealth)>();
+    pre.StateChanged += (k, s) => events.Add((k, s));
+    // 第二轮（保态复测）：没有 Checking 事件——可用台常绿、无信号台留组
+    await pre.RunAsync(chans, keepKnownState: true);
+    Check(events.All(e => e.Item2 != ChannelHealth.Checking), "保态复测不发检测中事件（列表不闪烁）");
+    Check(events.Count == 0, "复测结论不变时零事件（零重绘）");
+    Check(pre.Of(chans[0]) == ChannelHealth.Alive && pre.Of(chans[1]) == ChannelHealth.Dead, "保态复测结论保持正确");
+    // 第三轮：可用台变坏——探测完才翻转，坏台进无信号组
+    chans[0].Name = "dead";
+    await pre.RunAsync(chans, keepKnownState: true);
+    Check(pre.Of(chans[0]) == ChannelHealth.Dead, "复测变坏：可用台翻转进无信号组");
+    // 第四轮：坏台缓过来——自动移回原分类（恢复可切）
+    chans[0].Name = "ok";
+    await pre.RunAsync(chans, keepKnownState: true);
+    Check(pre.Of(chans[0]) == ChannelHealth.Alive, "复测恢复：无信号台自动移回可用");
+}
+
+
+// ============ v1.0.8 重点项①：中央一台播两三秒卡死——看门狗停滞判定专项 ============
+// 用户 23:30 指令：重点项必须专用对应用例。直播流停止推进时 VLC 不报错，
+// 唯一可靠信号是播放时钟停走；看门狗 2 秒巡检、6 秒停滞即按断流重连（退避 2/4/6 秒）。
+{
+    Check(PlaybackWatchdog.PollMs == 2000, "重点①看门狗：2秒巡检周期");
+    Check(PlaybackWatchdog.StallMs == 6000, "重点①看门狗：6秒停滞阈值");
+    Check(PlaybackWatchdog.IsStalled(true, 1000, 7000), "重点①看门狗：首帧后时钟停走满6秒=卡流（触发重连）");
+    Check(!PlaybackWatchdog.IsStalled(true, 1000, 6999), "重点①看门狗：未满6秒不误判（起播缓冲不中断）");
+    Check(!PlaybackWatchdog.IsStalled(false, 0, 999999), "重点①看门狗：未出首帧不介入（连接流程自管亮牌）");
+    Check(PlaybackWatchdog.IsStalled(true, 7000, 7000), "重点①看门狗：时钟零推进按停滞（边界含等号）");
+}
+
+// ============ v1.0.8 重点项⑥：退出再开黑屏——回前台存活判定专项 ============
+// 后台播放被系统杀掉或表面失效时 IsPlaying 仍可能为 true，唯一判据是播放时钟是否推进；
+// 回前台校验不活即重播，绝不让用户面对黑屏。
+{
+    Check(PlaybackWatchdog.LivenessMs == 5000, "重点⑥黑屏：5秒存活窗口");
+    Check(PlaybackWatchdog.IsLive(true, 9900, 10000), "重点⑥黑屏：时钟近5秒推进过=活（原样续播）");
+    Check(PlaybackWatchdog.IsLive(true, 9999, 10000), "重点⑥黑屏：时钟刚推进=活（边界）");
+    Check(!PlaybackWatchdog.IsLive(true, 4000, 10000), "重点⑥黑屏：时钟停走超5秒=已死（回前台重播）");
+    Check(!PlaybackWatchdog.IsLive(false, 9999, 10000), "重点⑥黑屏：无首帧按连接流程处理");
+}
+
+// ============ v1.0.8 重连缓存阶梯 + 代数守卫（与重点项联动） ============
+{
+    Check(CacheLadder.At(0) == 1200 && CacheLadder.At(3) == 6000, "缓存阶梯：首连1200→重连6000");
+    Check(CacheLadder.At(99) == 6000 && CacheLadder.At(-1) == 1200, "缓存阶梯：越界钳制不越档");
+    Check(CacheLadder.Next(0) == 1 && CacheLadder.Next(2) == 3 && CacheLadder.Next(3) == 3, "缓存阶梯：递增封顶");
+    var g = new GenerationCounter();
+    long g0 = g.Current;
+    long g1 = g.NextGeneration();
+    Check(g0 != g1 && g.IsCurrent(g1) && !g.IsCurrent(g0), "代数守卫：推进后旧代作废（防旧重连覆盖新台）");
+    g.NextGeneration();
+    Check(!g.IsCurrent(g1), "代数守卫：再次换台后中间代也作废");
+}
+
+// ============ v1.0.8 第16项：开机默认台（收藏优先→常规第一台=中央一台→预检衔接） ============
+{
+    var reg = new List<Channel>
+    {
+        new() { Name = "CCTV1综合", Number = 1, EpgKey = "c_cctv1" },
+        new() { Name = "CCTV2财经", Number = 2, EpgKey = "c_cctv2" },
+        new() { Name = "北京卫视", Number = 3, EpgKey = "c_bjws" },
+    };
+    Check(reg[0].Name == "CCTV1综合", "第16项：中央一台在常规列表第一台");
+    var favs = new List<Channel> { reg[2], reg[1] };
+    Check(StartupPicker.Pick(favs, reg)!.Name == "北京卫视", "第16项：收藏非空播收藏第一个");
+    Check(StartupPicker.Pick(new List<Channel>(), reg)!.Name == "CCTV1综合", "第16项：收藏空播常规第一个（中央一台）");
+    static ChannelHealth Dead1(Channel c) => c.EpgKey == "c_cctv1" ? ChannelHealth.Dead : ChannelHealth.Unknown;
+    Check(StartupPicker.Pick(new List<Channel>(), reg, Dead1)!.Name == "CCTV2财经", "第16项：默认台预检判死跳下一个可用台");
+    static ChannelHealth AllDead(Channel c) => ChannelHealth.Dead;
+    Check(StartupPicker.Pick(new List<Channel>(), reg, AllDead) is null, "第16项：全部不可用返回空（UI亮无信号）");
+    static ChannelHealth Checking1(Channel c) => ChannelHealth.Checking;
+    Check(StartupPicker.Pick(new List<Channel>(), reg, Checking1)!.Name == "CCTV1综合", "第16项：检测中先开播不空等（预检很快补态）");
+}
+
+// ============ v1.0.8 第14项：收藏排序（按屏挪/置顶/持久化） ============
+{
+    var st = new FavoriteStore();
+    st.Toggle(3); st.Toggle(1); st.Toggle(4); st.Toggle(7);
+    Check(string.Join(",", st.Numbers) == "3,1,4,7", "排序：初始为收藏加入顺序");
+    st.MoveBy(4, 2);
+    Check(string.Join(",", st.Numbers) == "3,1,7,4", "排序：左右键按屏快速挪（+2位）");
+    st.MoveBy(4, -9);
+    Check(string.Join(",", st.Numbers) == "4,3,1,7", "排序：越界钳到顶不越界");
+    st.MoveBy(1, 9);
+    Check(string.Join(",", st.Numbers) == "4,3,7,1", "排序：越界钳到底不越界");
+    st.MoveToTop(1);
+    Check(string.Join(",", st.Numbers) == "4,1,3,7", "排序：信息键一键置顶");
+    var saved = st.Serialize();
+    var st2 = new FavoriteStore();
+    st2.Restore(saved + ",abc,99");
+    Check(st2.Numbers.SequenceEqual(st.Numbers), "排序：持久化往返一致（坏段忽略）");
+    st2.Restore(null);
+    Check(st2.Numbers.Count == 0, "排序：空值安全清空");
+    st2.Restore("");
+    Check(st2.Numbers.Count == 0, "排序：空串安全清空");
+}
+
+// ============ v1.0.8 第18项：硬解策略（自动/强制回退/坏档记忆/GPU滤镜降级） ============
+{
+    Check(DecodePolicy.Decide(DecodeMode.Auto, true, false) == DecodeActual.Hardware, "18a：自动=优先硬解");
+    Check(DecodePolicy.Decide(DecodeMode.Auto, true, true) == DecodeActual.Software, "18a：坏档在案自动回软解（不反复试错）");
+    Check(DecodePolicy.Decide(DecodeMode.Auto, false, false) == DecodeActual.Software, "18a：无硬解能力走软解");
+    Check(DecodePolicy.Decide(DecodeMode.ForceHw, false, false) == DecodeActual.Software, "18a：强制硬解但能力不足→软解（不黑屏）");
+    Check(DecodePolicy.Decide(DecodeMode.ForceSw, true, false) == DecodeActual.Software, "18a：强制软解如实软解");
+    Check(DecodePolicy.ShouldMarkBad(1) && !DecodePolicy.ShouldMarkBad(0), "18a：硬解失败1次即标坏档");
+    Check(DecodePolicy.NextMode(DecodeMode.Auto) == DecodeMode.ForceHw &&
+          DecodePolicy.NextMode(DecodeMode.ForceHw) == DecodeMode.ForceSw &&
+          DecodePolicy.NextMode(DecodeMode.ForceSw) == DecodeMode.Auto, "18a：解码设置三档循环闭环");
+    Check(FilterPathDecider.Decide(3, false) == "gpu", "18b：GLES3 走 GPU 滤镜");
+    Check(FilterPathDecider.Decide(2, false) == "gpu", "18b：GLES2 走 GPU 滤镜");
+    Check(FilterPathDecider.Decide(1, false) == "cpu", "18b：能力不足回 CPU 滤镜");
+    Check(FilterPathDecider.Decide(null, false) == "cpu", "18b：能力未知保守走 CPU");
+    Check(FilterPathDecider.Decide(3, true) == "cpu", "18b：GPU 路径失败回退 CPU（功能完整性不受影响）");
+}
+
+// ============ v1.0.8 第19项·自愈化十项专项断言（用户 00:07 确认十项全要）============
+{
+    // 自愈1·多候选源备援：主源失败切备援、连续成功自动回主源、单候选不折腾
+    var fo = new SourceFailover();
+    Check(fo.NextCandidateOnFailure("ch", 2) == 1, "自愈1：主源失败切备援候选");
+    fo.OnSuccess("ch"); fo.OnSuccess("ch");
+    Check(fo.CurrentIndex("ch") == 0, "自愈1：备援连续成功2轮自动回主源");
+    Check(fo.NextCandidateOnFailure("solo", 1) == 0, "自愈1：无备援时停在主源不折腾");
+    // 自愈2·取票多版本：内置 v1 出票、注册新版本按序追加、坏版本不拖垮
+    var urls = TicketAlgorithms.TryAll("2004652103:900001:fhd", 1794016800, CkeyAlgorithmV1.GuidConst);
+    Check(urls.Count >= 1 && urls[0].Contains("ckey="), "自愈2：内置 v1 cKey 算法出票");
+    TicketAlgorithms.Register(new TestAlgoV2());
+    var urls2 = TicketAlgorithms.TryAll("2004652103:900001:fhd", 1794016800, CkeyAlgorithmV1.GuidConst);
+    Check(urls2.Count == urls.Count + 1 && urls2[^1].StartsWith("v2://"), "自愈2：热更新注入 v2 按序追加");
+    // 自愈3·热更新三层：L1 数据 + L2 规则 + L3 脚本失败回落并提示
+    var doc = RemoteConfigDoc.TryParse(
+        """{"channelBackupUrls":{"c1":"http://bak/c1.m3u8"},"rules":[{"Layer":"L2","MatchHost":"old.example","ReplaceHost":"new.example"},{"Layer":"L3","MatchHost":"live.example","Header":"Referer=https://r/"}]}""",
+        out var docOk);
+    Check(docOk, "自愈3：热更新文档解析");
+    Check(doc!.ChannelBackupUrls["c1"] == "http://bak/c1.m3u8", "自愈3·L1：频道备源热更新生效");
+    var (u2, ap2, n2) = ScriptAdapter.Apply("http://old.example/a.m3u8", doc.Rules, out _);
+    Check(ap2 && u2 == "http://new.example/a.m3u8" && !n2, "自愈3·L2：取流适配规则换域生效");
+    Check(RemoteConfigDoc.TryParse("not-json{{", out _) == false, "自愈3：坏文档判损坏（走本地缓存不落盘）");
+    var (u3, ap3, n3) = ScriptAdapter.Apply("http://live.example/x.m3u8", doc.Rules, out var failed3);
+    Check(!ap3 && u3 == "" && n3 && ScriptAdapter.IsScriptLayer(failed3!), "自愈3·L3：脚本层规则失败→回落原生+明确提示");
+    // 自愈3·拉取器：成功覆盖缓存、失败用缓存续跑、全失败保持默认
+    string? stored = null;
+    var fetcher = new RemoteConfigFetcher(_ => Task.FromResult<string?>("{\"rules\":[]}"), _ => stored, (_, v) => stored = v);
+    Check(await fetcher.FetchAsync("http://x/cfg") == FetchOutcome.Fresh, "自愈3：拉到新配置=Fresh（坏数据不落盘）");
+    var fetcher2 = new RemoteConfigFetcher(_ => Task.FromResult<string?>(null), _ => stored, (_, v) => stored = v);
+    Check(await fetcher2.FetchAsync("http://x/cfg") == FetchOutcome.UsedCache, "自愈3：拉取失败用本地缓存继续跑");
+    var fetcher3 = new RemoteConfigFetcher(_ => Task.FromResult<string?>(null), _ => (string?)null, (_, v) => { });
+    Check(await fetcher3.FetchAsync("http://x/cfg") == FetchOutcome.Failed, "自愈3：无缓存无网=Failed（首次可提示一次）");
+    // 自愈4·时间异常：容差内不误判、超容差提示修正、票据时间用修正值
+    var cg = new ClockGuard();
+    cg.ObserveServerDate(1794016800, 1794016800 + 100);
+    Check(!cg.TimeSuspicious && cg.Now(1794016800) == 1794016800, "自愈4：容差5分钟内视为正常");
+    cg.ObserveServerDate(1794016800, 1794016800 + 3600);
+    Check(cg.TimeSuspicious && cg.Now(1794016800) == 1794016800 + 3600, "自愈4：超容差标记异常，票据时间按服务端修正");
+    cg.ObserveServerDate(null, 1794016800);
+    Check(cg.TimeSuspicious, "自愈4：无响应头不动状态（不误报）");
+    // 自愈5·断网监测：连续失败达阈值判断网、成功即恢复沿
+    var ng = new NetGuard();
+    Check(!ng.OnFailure() && !ng.OnFailure() && !ng.OnFailure(), "自愈5：零星失败不误判断网");
+    Check(ng.OnFailure(), "自愈5：连续4次失败判断网");
+    Check(ng.OnSuccess(), "自愈5：恢复沿=true（触发重连+预检重测，静默自愈）");
+    Check(!ng.Offline, "自愈5：恢复后回到在线态");
+    // 自愈6·长时运行退化：内存告急释放缓存、极低+内核异常软重启播放内核
+    var mw = new MemoryWatcher();
+    Check(mw.Observe(0.5, true) == MemoryAction.Normal, "自愈6：内存充裕不动");
+    Check(mw.Observe(0.10, true) == MemoryAction.ReleaseCache, "自愈6：可用内存<15%释放缓存");
+    mw.OnKernelFailure(); mw.OnKernelFailure(); mw.OnKernelFailure();
+    Check(mw.Observe(0.05, false) == MemoryAction.RestartKernel, "自愈6：极低内存+内核连续异常→软重启播放内核（不整机重启）");
+    Check(mw.Observe(0.05, false) == MemoryAction.ReleaseCache, "自愈6：动用一次后重新累计（防连环重启）");
+    // 自愈7·配置损坏：主档损坏快照回放、全坏重建默认
+    string? main = "{\"ok\":1}", s1 = "{\"ok\":1}", s2 = null, s3 = null;
+    var store = new SnapshotStore(k => k switch
+    {
+        "cfg:main" => main, "cfg:snap1" => s1, "cfg:snap2" => s2, "cfg:snap3" => s3, _ => null,
+    }, (k, v) => { if (k == "cfg:main") main = v; });
+    var (c1, p1) = store.Load(s => s.Contains("\"ok\""));
+    Check(p1 == RecoveryPath.Main, "自愈7：主档完好直读");
+    main = "{{{corrupted";
+    var (c2r, p2) = store.Load(s => s.Contains("\"ok\""));
+    Check(p2 == RecoveryPath.Snapshot && c2r == s1, "自愈7：主档损坏快照1回放");
+    s1 = "junk"; s2 = "{\"ok\":2}";
+    var (c3r, p3r) = store.Load(s => s.Contains("\"ok\""));
+    Check(p3r == RecoveryPath.Snapshot && c3r == s2, "自愈7：快照逐份回放直到有效");
+    main = null; s1 = null; s2 = null; s3 = null;
+    Check(store.Load(s => s.Contains("\"ok\"")).Path == RecoveryPath.Default, "自愈7：全坏重建默认（UI 提示一次）");
+    // 自愈8·崩溃自恢复：崩溃后重置可疑状态、连续≥3 明确提示
+    var plan0 = CrashRecovery.Plan(0);
+    Check(!plan0.ClearResolverCache && !CrashRecovery.ShouldNotice(plan0), "自愈8：无崩溃不折腾");
+    var plan1 = CrashRecovery.Plan(1);
+    Check(plan1.ClearResolverCache && plan1.RequeueAllPrecheck && plan1.FallbackToStableCarrier && !CrashRecovery.ShouldNotice(plan1), "自愈8：崩溃后静默重置可疑状态");
+    Check(CrashRecovery.ShouldNotice(CrashRecovery.Plan(3)), "自愈8：连续崩溃≥3 屏显一次恢复提示");
+    // 自愈9·低配资源自适应：预检频率/缓存条目/智能档上限按内存调
+    var (iv1, _, cache1, cap1) = ResourceProfile.Adapt(100 * 1024 * 1024);
+    Check(iv1 == 1200 && cache1 == 32 && cap1 == AiLiveTier.Off, "自愈9：极低内存降频减存+智能档关");
+    var (iv2, _, cache2, cap2) = ResourceProfile.Adapt(2 * 1024L * 1024 * 1024);
+    Check(iv2 == 600 && cache2 == 96 && cap2 == AiLiveTier.High, "自愈9：内存充裕全速");
+    var (_, _, _, capUnknown) = ResourceProfile.Adapt(0);
+    Check(capUnknown == AiLiveTier.Off, "自愈9：内存未知智能档保守关");
+    // 自愈10·键值归一：常见别名映射、未知键不硬编码
+    Check(KeyAlias.ToCanonical(4077) == 177, "自愈10：TCL 设置键别名→标准设置键");
+    Check(KeyAlias.ToCanonical(111) == 4, "自愈10：ESC 码别名→返回键");
+    Check(KeyAlias.ToCanonical(19) == 19, "自愈10：标准键原样透传");
+    Check(KeyAlias.ToCanonical(88888) is null, "自愈10：未知键返回空（记录后按未接管处理）");
+}
+
+// ============ v1.0.8 第19项·通道化架构（用户 00:01 拍板：所有方式做成通道、按频道实际选择）============
+{
+    var router = new LaneRouter();
+    router.Register(new StubLane("ysp"));
+    router.Register(new StubLane("cztv"));
+    router.Register(new StubLane("user-m3u"));
+    // 未登记路由：按 CanHandle 命中
+    var ch = new Channel { EpgKey = "c1", SourceId = "yangshipin" };
+    Check(router.CurrentLane("c1", ch)?.LaneId == "ysp", "通道化：未登记路由按 CanHandle 命中内置通道");
+    // 登记路由：首选→失败降级备选→耗尽明确失败→恢复回首选
+    router.SetRoute("c1", new[] { "ysp", "cztv", "user-m3u" });
+    Check(router.CurrentIndex("c1") == 0, "通道化：路由登记后从首选通道开始");
+    var degraded = router.AdvanceOnFailure("c1", ch);
+    Check(degraded?.LaneId == "cztv", "通道化：首选失败自动降级备选通道");
+    Check(router.CurrentLane("c1", ch)?.LaneId == "cztv", "通道化：当前通道随降级切换");
+    router.AdvanceOnFailure("c1", ch);
+    Check(router.CurrentLane("c1", ch)?.LaneId == "user-m3u", "通道化：备选再败降级兜底通道");
+    Check(router.AdvanceOnFailure("c1", ch) is null, "通道化：全部通道耗尽=明确失败（UI 提示不静默）");
+    // 恢复回首选（自愈1 备援状态共用）
+    router.MarkSuccess("c1"); router.MarkSuccess("c1");
+    Check(router.CurrentIndex("c1") == 0 && router.CurrentLane("c1", ch)?.LaneId == "ysp", "通道化：兜底连续成功2轮自动回首选");
+    // 同 LaneId 幂等注册
+    router.Register(new StubLane("ysp"));
+    Check(router.RouteOf("none").Count == 0, "通道化：未登记路由的台返回空候选（按 CanHandle 兜底）");
+}
+
+// ============ v1.0.8 第20项：清晰度档位自适应（用户 00:07 拍板：保画面保流畅选择或切换） ============
+{
+    // master playlist 解析：多档变体按带宽升序、坏行跳过、无变体返回空
+    var variants = MasterPlaylistParser.Parse(
+        "#EXTM3U\n" +
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nhd.m3u8\n" +
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\nsd.m3u8\n" +
+        "garbage\n");
+    Check(variants.Count == 2, "第20项：master playlist 解析出两档（坏行跳过）");
+    Check(variants[0].HeightPx == 720 && variants[1].HeightPx == 1080, "第20项：变体按带宽升序排列");
+    Check(MasterPlaylistParser.Parse("#EXTM3U\nmedia.m3u8\n").Count == 0, "第20项：无变体返回空表（如实单档不硬造）");
+    // 单档流：自适应不介入
+    var single = new QualityGovernor(MasterPlaylistParser.Parse(""), QualityMode.Auto);
+    Check(single.IsSingleStream && single.Observe(true) == 0, "第20项：单档源如实单档播放，自适应不介入");
+    // 起步选档：网速未知=保守低档（宁低勿卡）；网速实况按 80% 余量选最高撑得住的档
+    var govUnknown = new QualityGovernor(variants, QualityMode.Auto);
+    Check(govUnknown.Index == 0, "第20项：网速未知起步取低档（宁低勿卡）");
+    var govNet = new QualityGovernor(variants, QualityMode.Auto, measuredBps: 3_000_000);
+    Check(govNet.Index == 0, "第20项：网速3Mbps×0.8余量→选720P档（1080P 4M 撑不住）");
+    // 卡顿立即降档（先手自救）；平稳 3 个周期升档（迟滞防横跳）
+    var gov = new QualityGovernor(variants, QualityMode.Auto, measuredBps: 9_000_000);
+    Check(gov.Index == 1, "第20项：高网速起步1080P档");
+    gov.Observe(true);
+    Check(gov.Index == 0, "第20项：卡顿立即降档（先手自救，不等看门狗）");
+    gov.Observe(false); gov.Observe(false);
+    Check(gov.Index == 0, "第20项：平稳不足3周期不升档（迟滞防横跳）");
+    gov.Observe(false);
+    Check(gov.Index == 1, "第20项：连续3周期平稳升回高档");
+    // 锁定档：锁定低不升、锁定高撑不住降档自救并温和提示
+    var govLow = new QualityGovernor(variants, QualityMode.LockLow, measuredBps: 99_000_000);
+    govLow.Observe(false); govLow.Observe(false); govLow.Observe(false);
+    Check(govLow.Index == 0, "第20项：锁定低档如实执行不升档");
+    var govHigh = new QualityGovernor(variants, QualityMode.LockHigh);
+    govHigh.Observe(true);
+    Check(govHigh.Index == 0 && govHigh.ConsumeLockNotice(), "第20项：锁定高档撑不住→降档自救+温和提示一次");
+    Check(!govHigh.ConsumeLockNotice(), "第20项：提示只发一次不重复打扰");
+}
+
+// ============ v1.0.8·机制互扰审查（设计自洽铁律：组合场景下画面能出来不卡顿） ============
+{
+    // 组合A：反复切台时代数守卫作废旧重连——旧代定时器触发不覆盖新台
+    var g = new GenerationCounter();
+    long oldGen = g.NextGeneration();
+    g.NextGeneration(); // 换台
+    Check(!g.IsCurrent(oldGen), "互扰A：换台后旧代作废，旧重连不覆盖新台");
+    // 组合B：预检中换台——预检状态只标状态不改播放决策，默认台选择不被并发预检抖动
+    var pre = new ChannelPrecheck(ch => Task.FromResult(true), intervalMs: 1);
+    var chans = new List<Channel> { new() { Name = "a", EpgKey = "a" }, new() { Name = "b", EpgKey = "b" } };
+    _ = pre.RunAsync(chans); // 不 await：模拟换台时预检仍在跑
+    var picked = StartupPicker.Pick(new List<Channel>(), chans, c => pre.Of(c));
+    Check(picked != null, "互扰B：预检进行中换台，选台不空等不炸");
+    // 组合C：降档与重连并发——降档自救后时钟恢复，看门狗不再叠加触发
+    var ladder = CacheLadder.Next(0);
+    var govC = new QualityGovernor(MasterPlaylistParser.Parse(
+        "#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080\nhd.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1280x720\nsd.m3u8\n"),
+        QualityMode.Auto, measuredBps: 9_000_000);
+    govC.Observe(true); // 卡顿先降档
+    Check(govC.Index == 0 && ladder == 1, "互扰C：降档先手+缓存递增并行不冲突（先降档、看门狗兜底）");
+    // 组合D：热更新拉取失败+断网并存——本地缓存续跑，播放不中断
+    Check(await new RemoteConfigFetcher(_ => Task.FromResult<string?>(null), _ => "{}", (_, _) => { }).FetchAsync("u") == FetchOutcome.Failed,
+        "互扰D：断网时热更新按无缓存口径失败，不影响播放主链路");
+}
+
+Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
+return fail == 0 ? 0 : 1;
+
+// 桩源：三类可播 + 1 路接不进（骨架专用，真实源回填后换正式源）
+class StubSource : IChannelSource
+{
+    public string SourceId { get; }
+    public StubSource(string id) => SourceId = id;
+    public List<Channel> FetchChannels() => new()
+    {
+        new Channel { Name = SourceId+"-A", Category = ChannelCategory.Cctv, SourceId = SourceId, StreamUrl="http://s/a" },
+        new Channel { Name = SourceId+"-B", Category = ChannelCategory.Provincial, SourceId = SourceId, StreamUrl="http://s/b" },
+        new Channel { Name = SourceId+"-C", Category = ChannelCategory.City, SourceId = SourceId, StreamUrl="http://s/c", Unavailable=true, Verdict="测试占位：流不对外" },
+    };
+}
+
+// 取票 v2 测试桩（自愈2：热更新注入路径）
+class TestAlgoV2 : ITicketAlgorithm
+{
+    public string Version => "v2-test";
+    public string? Build(string channelId, long epochSeconds, string guid) => $"v2://{channelId}/{epochSeconds}";
+}
+
+// 通道测试桩（通道化：三候选通道）
+class StubLane : IStreamLane
+{
+    public string LaneId { get; }
+    public StubLane(string id) => LaneId = id;
+    public bool CanHandle(Channel ch) => LaneId switch
+    {
+        "ysp" => ch.SourceId == "yangshipin",
+        "cztv" => ch.SourceId == "cztv",
+        _ => true, // user-m3u 兜底全收
+    };
+    public Task<string?> FetchAsync(Channel ch) => Task.FromResult<string?>($"http://{LaneId}/stream.m3u8");
+}

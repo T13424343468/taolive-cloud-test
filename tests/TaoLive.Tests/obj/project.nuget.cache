@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "vm/uSX/sMVc=",
+  "success": true,
+  "projectFilePath": "/root/workspace/taolive-work/TaoLive/tests/TaoLive.Tests/TaoLive.Tests.csproj",
+  "expectedPackageFiles": [
+    "/root/workspace/.nuget/packages/microsoft.netcore.app.ref/9.0.22/microsoft.netcore.app.ref.9.0.22.nupkg.sha512",
+    "/root/workspace/.nuget/packages/microsoft.aspnetcore.app.ref/9.0.22/microsoft.aspnetcore.app.ref.9.0.22.nupkg.sha512",
+    "/root/workspace/.nuget/packages/microsoft.netcore.app.host.linux-x64/9.0.22/microsoft.netcore.app.host.linux-x64.9.0.22.nupkg.sha512"
+  ],
+  "logs": []
+}

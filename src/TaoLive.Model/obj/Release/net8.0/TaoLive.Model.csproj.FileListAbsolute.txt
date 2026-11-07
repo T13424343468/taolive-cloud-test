@@ -1,0 +1,11 @@
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/bin/Release/net8.0/TaoLive.Model.deps.json
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/bin/Release/net8.0/TaoLive.Model.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/bin/Release/net8.0/TaoLive.Model.pdb
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/TaoLive.Model.GeneratedMSBuildEditorConfig.editorconfig
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/TaoLive.Model.AssemblyInfoInputs.cache
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/TaoLive.Model.AssemblyInfo.cs
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/TaoLive.Model.csproj.CoreCompileInputs.cache
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/TaoLive.Model.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/refint/TaoLive.Model.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/TaoLive.Model.pdb
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Release/net8.0/ref/TaoLive.Model.dll

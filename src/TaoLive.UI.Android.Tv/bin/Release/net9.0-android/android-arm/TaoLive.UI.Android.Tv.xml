@@ -1,0 +1,136 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>TaoLive.UI.Android.Tv</name>
+    </assembly>
+    <members>
+        <member name="T:TaoLive.UI.Android.Tv.BootReceiver">
+            <summary>
+            开机自启（设置页开关，默认关）：BOOT_COMPLETED 后直接拉起主界面。
+            已知限制（真机实测定）：Android 3.1+ 停止状态拦截——首次开机自启生效前需手动启动过一次；
+            部分国产 ROM 默认拦第三方自启，TCL 雷鸟 ROM 行为待 50V8G 实测。
+            道映不声明 HOME/桌面身份：TCL 安装校验链会拒装声明 MAIN+HOME 的第三方包。
+            </summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.SettingsStore">
+            <summary>设置持久化（骨架）。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.MainActivity">
+            <summary>
+            道映主界面（电视端）：开机即看 → 默认上次频道；
+            上下键切台；菜单键呼出频道列表（焦点式，分类分组+收藏置顶）；
+            确认键收藏当前台；无数字键（用户真机遥控无数字区）。
+            设计基线：单实例 singleTask + onNewIntent（B 档秒开回上次频道）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.WireHostEvents">
+            <summary>播放宿主事件接线（载体重建时随宿主重挂）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.PrefetchNeighbors(TaoLive.Model.Channel)">
+            <summary>预连接：把相邻两路的可播地址提前换好放进缓存，换台零等待。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.StartLoadingDots(TaoLive.Model.Channel)">
+            <summary>亮牌期间的呼吸点动画：正在连接 → 正在连接· → ·· → ···，让「还没死机」一眼可见。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.Step(System.Int32)">
+            <summary>上下键：全台单循环切台（传统电视体验）。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.CarrierPolicy">
+            <summary>
+            画面载体策略（v1.0.7 启动自检）：
+            纹理视图在部分低配 32 位机型上有崩溃风险，用「启动—首帧」存活判定自愈：
+            - 每次以纹理载体启动前打 attempt 标记；
+            - 首帧落地或用户正常退后台即清标记（载体兼容）；
+            - 若上一次启动的标记未清（进程死在起播过程中），永久回退到已验证的表面视图，
+              用户不再经历第二次闪退。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.CarrierPolicy.ResolveStartupCarrier(Android.Content.Context)">
+            <summary>启动时决定载体：纹理可用返回 true；上一次纹理启动没活到首帧则回退表面视图。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.CarrierPolicy.MarkOk(Android.Content.Context)">
+            <summary>首帧落地（或正常退后台）= 载体兼容，清标记。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.CarrierPolicy.DisableTexture(Android.Content.Context,System.String)">
+            <summary>纹理接线当场报错：永久回退，并把原因写进日志。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.CrashNet">
+            <summary>
+            崩溃拦截网（v1.0.7）：任何未捕获异常先落日志再放行，让崩溃原因可查可报，
+            不再「打开就没」。日志写在应用私有目录，电视文件管理器能看到的公共目录也写一份。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.CrashNet.Record(System.Exception)">
+            <summary>记录一条异常（异常对象版）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.CrashNet.Record(System.String)">
+            <summary>记录一条异常（文本版）。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.UncaughtCrashPeer">
+            <summary>
+            未捕获异常挂接：Java 侧任何线程（含内核渲染线程）抛出的异常，
+            先记日志，再交给系统默认处理器照常弹错，不吞异常。
+            </summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.LiveSurfaceView">
+            <summary>
+            表面视图播放载体（v1.0.7 稳定档）：v1.0.5 起真机验证过可正常打开；
+            纹理载体在部分机型上有崩溃风险，本类作为回退路径保留。
+            接线方式与官方 VideoView 逐行同构，仅载体为 SurfaceView。
+            </summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveSurfaceView.MediaPlayer">
+            <summary>The MediaPlayer object attached to this view.</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveSurfaceView.OnSurfacesCreated(Org.Videolan.Libvlc.IVLCVout)">
+            <summary>IVLCVout 回调：无附加动作。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveSurfaceView.OnSurfacesDestroyed(Org.Videolan.Libvlc.IVLCVout)">
+            <summary>IVLCVout 回调：无附加动作。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.LiveTextureView">
+            <summary>
+            纹理视图播放载体（雷三根治）：
+            SurfaceView 退后台会被系统整层回收，回来必然对不上（贴底横条/闪黑）；
+            TextureView 是普通视图层，退后台不销毁，回前台画面原样保留。
+            接线方式与官方 VideoView（SurfaceView 版）逐行同构，仅载体换成 TextureView。
+            </summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveTextureView.MediaPlayer">
+            <summary>The MediaPlayer object attached to this view.</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveTextureView.OnSurfacesCreated(Org.Videolan.Libvlc.IVLCVout)">
+            <summary>IVLCVout 回调：无附加动作。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveTextureView.OnSurfacesDestroyed(Org.Videolan.Libvlc.IVLCVout)">
+            <summary>IVLCVout 回调：无附加动作。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.IVideoCarrierView">
+            <summary>
+            道映直播播放宿主（不复用 TaoPlay 全量播放壳，直播专用裁剪版）：
+            - 低延迟直播参数（network-caching 1200ms 起）；
+            - 断流重连 3 次，间隔 2/4/6 秒；
+            - 无进度条/无录制/无磁力——直播用不到的一律不带；
+            - v1.0.7 起支持双载体：表面视图（稳定档）/纹理视图（v1.0.6 引入，带自检回退）。
+            </summary>
+        </member>
+        <member name="E:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.FrameShown">
+            <summary>首帧事件：第一次收到播放时钟即认为已有画面输出（用于撤掉「正在连接」遮罩）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.Play(System.String,System.String,System.String)">
+            <summary>起播一路直播流（URL 已由 StreamResolver 签好；Referer/UA 透传给 VLC）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.MuteForBackground">
+            <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.UnmuteAfterBackground">
+            <summary>回前台：声音原样恢复，画面无需重建。</summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Resource">
+            <summary>
+            Android Resource Designer class.
+            Exposes the Android Resource designer assembly into the project Namespace.
+            </summary>
+        </member>
+    </members>
+</doc>

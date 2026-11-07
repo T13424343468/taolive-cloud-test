@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>TaoLive.Tests</RootNamespace>
+    <AssemblyName>TaoLive.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TaoLive.Model\TaoLive.Model.csproj" />
+    <ProjectReference Include="..\..\src\TaoLive.BLL\TaoLive.BLL.csproj" />
+  </ItemGroup>
+
+</Project>

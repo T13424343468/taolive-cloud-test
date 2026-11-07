@@ -1,0 +1,15 @@
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/bin/Release/net8.0/TaoLive.BLL.deps.json
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/bin/Release/net8.0/TaoLive.BLL.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/bin/Release/net8.0/TaoLive.BLL.pdb
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/bin/Release/net8.0/TaoLive.Model.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/bin/Release/net8.0/TaoLive.Model.pdb
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.csproj.AssemblyReference.cache
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.GeneratedMSBuildEditorConfig.editorconfig
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.AssemblyInfoInputs.cache
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.AssemblyInfo.cs
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.csproj.CoreCompileInputs.cache
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive..E80D820B.Up2Date
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/refint/TaoLive.BLL.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/TaoLive.BLL.pdb
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Release/net8.0/ref/TaoLive.BLL.dll

@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "dgSpecHash": "mysaHVW7RNs=",
+  "success": true,
+  "projectFilePath": "/root/workspace/taolive-work/TaoLive/src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj",
+  "expectedPackageFiles": [
+    "/root/workspace/.nuget/packages/libvlcsharp/3.10.1/libvlcsharp.3.10.1.nupkg.sha512",
+    "/root/workspace/.nuget/packages/libvlcsharp.android.awindowmodern/3.10.1/libvlcsharp.android.awindowmodern.3.10.1.nupkg.sha512",
+    "/root/workspace/.nuget/packages/microsoft.net.illink.tasks/9.0.22/microsoft.net.illink.tasks.9.0.22.nupkg.sha512",
+    "/root/workspace/.nuget/packages/microsoft.netcore.app.ref/9.0.22/microsoft.netcore.app.ref.9.0.22.nupkg.sha512",
+    "/root/workspace/.nuget/packages/microsoft.aspnetcore.app.ref/9.0.22/microsoft.aspnetcore.app.ref.9.0.22.nupkg.sha512"
+  ],
+  "logs": []
+}

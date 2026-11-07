@@ -1,0 +1,517 @@
+// 【道映适配说明 2026-11-07】
+// 本文件自 TaoPlay（AllPlayer）同源复制，作为播放壳改造起点：
+// 1) 命名空间 AllPlayer.* → TaoLive.*（Model/BLL 对应替换）；
+// 2) 裁剪直播用不到的能力（磁力边下边播、字幕定位、密码箱、本地流服务器）；
+// 3) 直播参数：network-caching 低延迟档、断流重连 3 次、自动降清晰度档；
+// 4) AI 画质层（TaoAI）后续按 TaoPlay 同源接入。
+// 在完成 1)~2) 前不参与编译（csproj 以注释状态管理，见 README）。
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using AllPlayer.BLL;
+using AllPlayer.DAL;
+using AllPlayer.Model;
+using LibVLCSharp.Shared;
+using LibVLCSharp.Platforms.Android;
+using VideoView = LibVLCSharp.Platforms.Android.VideoView;
+
+namespace AllPlayer.UI.Android.Shared
+{
+    /// <summary>
+    /// 电视版与手机版共用的播放宿主: 负责播放内核初始化、播放列表、
+    /// 断点续播、磁力边下边播、网络流录制、字幕/音轨切换。
+    /// 两个 UI 项目各自只负责界面与交互, 全部播放逻辑在这里。
+    /// </summary>
+    public class VideoHost : IDisposable
+    {
+        private LibVLC? _libVLC;
+        private MediaPlayer? _player;
+        private VideoView? _videoView;
+        // 安卓上 libVLC 的事件走主线程, 内核调用若也在主线程会互相卡死: 全部经串行队列在后台顺序执行
+        private readonly System.Collections.Concurrent.BlockingCollection<Action> _playerQueue = new();
+
+        public VideoHost()
+        {
+            _ = Task.Run(() =>
+            {
+                foreach (var act in _playerQueue.GetConsumingEnumerable())
+                {
+                    try { act(); }
+                    catch (Exception ex) { LogLine("队列异常: " + ex); }
+                }
+            });
+        }
+
+        private void Enqueue(Action act) => _playerQueue.Add(act);
+
+        private void LogLine(string msg)
+        {
+            try
+            {
+                if (_logPath == null) return;
+                global::System.IO.File.AppendAllText(_logPath, DateTime.Now.ToString("HH:mm:ss") + " " + msg + "\n");
+            }
+            catch { }
+        }
+        private readonly List<VideoItem> _playlist = new List<VideoItem>();
+        private int _index = -1;
+        private MagnetStreamService? _magnet;
+        private CancellationTokenSource? _magnetCts;
+        private string? _currentPath;       // 正在播的地址 (文件路径或本地流 URL)
+        private volatile bool _decodeErrSeen;   // 捕获到硬解失败迹象
+        private volatile bool _swFallbackTried; // 软解兜底每会话只试一次
+        private string? _recordTsPath;      // 录制中的 TS 落盘位置
+        private bool _recording;
+        private bool _noHistoryOnce;   // v3.13.1: 外部点播 (content:// 临时拷贝) 单次豁免——不进最近播放、不留续播记录
+        private double? _pendingResumeMs;
+        private string? _logPath;
+
+        /// <summary>状态文字 (给界面显示)</summary>
+        public event Action<string>? StatusChanged;
+        /// <summary>播放结束 (自动切下一曲)</summary>
+        public event Action? PlaybackEnded;
+        /// <summary>进度变化 (当前位置毫秒, 总时长毫秒)</summary>
+        public event Action<long, long>? TimeUpdated;
+        /// <summary>当前播放的视频变了 (新路径, 用于刷新界面标题)</summary>
+        public event Action<string?>? CurrentPathChanged;
+
+        public MediaPlayer? Player => _player;
+        public string? CurrentPath => _currentPath;
+
+        /// <summary>
+        /// 画面出口重挂 (v3.11 修「有声音没画面」): 播放页显示或回到前台时把播放器重新接到当前画面出口。
+        /// 面板先隐藏后显示时 Surface 可能还没挂稳就开始出流, 表现就是声音正常画面黑着;
+        /// 重设一次 MediaPlayer 出口, 官方 VideoView 会把现成的 Surface 重新交给播放器。
+        /// </summary>
+        public void ReattachVideoView()
+        {
+            if (_videoView == null || _player == null) return;
+            try { _videoView.MediaPlayer = _player; } catch { }
+        }
+
+        /// <summary>主题重绘等场景复用已有播放内核, 只把画面出口换成新视图, 不重建 LibVLC/MediaPlayer。</summary>
+        public void AttachView(VideoView videoView)
+        {
+            _videoView = videoView;
+            ReattachVideoView();
+        }
+
+        /// <summary>密码箱会话: 开启后播放不留任何痕迹 (不进最近播放/续播/时长记录)。
+        /// 由界面层在进入密码箱播放前置位、退出后复位; 默认 false, 普通播放不受影响。</summary>
+        public bool SecretSession { get; set; }
+        public bool IsPlaying => _player?.IsPlaying ?? false;
+
+        /// <summary>初始化播放内核 (在 Activity.OnCreate 调用一次)</summary>
+        public void Init(VideoView videoView)
+        {
+            _videoView = videoView;
+            try
+            {
+                Core.Initialize();
+                _libVLC = new LibVLC(enableDebugLogs: true, "--no-video-title-show", "--verbose=2");
+                _player = new MediaPlayer(_libVLC) { EnableHardwareDecoding = true };
+                _videoView!.MediaPlayer = _player;   // 关键: 把画面出口接到播放器 (官方 VideoView 内部经 Java 层 AWindow 挂屏)
+                try
+                {
+                    var logsDir = new global::Java.IO.File(_videoView.Context!.GetExternalFilesDir(null), "logs");
+                    logsDir.Mkdirs();
+                    _logPath = global::System.IO.Path.Combine(logsDir.AbsolutePath!, "vlc.log");
+                    if (global::System.IO.File.Exists(_logPath) && new global::System.IO.FileInfo(_logPath).Length > 300000)
+                        global::System.IO.File.Delete(_logPath);
+                    global::System.IO.File.AppendAllText(_logPath, "\n=== 启动 " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " ===\n");
+                    _libVLC.Log += (s2, e2) =>
+                    {
+                        try
+                        {
+                            var lvl = e2.Level.ToString();
+                            if (!lvl.Contains("Warning") && !lvl.Contains("Error")) return;
+                            var _m = e2.FormattedLog ?? "";
+                            if (_m.Contains("Could not open decoder") || _m.Contains("no suitable decoder") || _m.Contains("Failed to create video decoder") || (_m.Contains("decoder") && _m.Contains("Error")))
+                                _decodeErrSeen = true;
+                            global::System.IO.File.AppendAllText(_logPath!, DateTime.Now.ToString("HH:mm:ss") + " [" + e2.Level + "] " + e2.FormattedLog + "\n");
+                        }
+                        catch { }
+                    };
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                _videoView.Post(() => Toast.MakeText(_videoView.Context!, "播放内核初始化失败: " + ex.Message, ToastLength.Long)!.Show());
+                StatusChanged?.Invoke("播放内核初始化失败");
+                return;
+            }
+            _player.EndReached += (s, e) =>
+            {
+                SaveResume();
+                if (LoopEnabled && _currentPath != null)
+                {
+                    var p = _currentPath;
+                    _ = Task.Run(() => { try { PlayPath(p); } catch { } });
+                }
+                else
+                    PlaybackEnded?.Invoke();
+            };
+            _player.TimeChanged += (s, e) => TimeUpdated?.Invoke(e.Time, _player.Length);
+            _player.EncounteredError += (s, e) => { LogLine("内核报错: 无法解码或无法访问"); StatusChanged?.Invoke("播放失败: 文件无法解码或无法访问"); };
+            _player.Playing += (s, e) => { LogLine("内核开始播放"); StatusChanged?.Invoke(""); StartHwFallbackWatch(); };
+        }
+
+        /// <summary>起播后监看硬解失败：15 秒内捕获到解码错误则自动切软解重播一次</summary>
+        private async void StartHwFallbackWatch()
+        {
+            if (_decodeErrSeen || _swFallbackTried || _currentPath == null) return;
+            await Task.Delay(15000);
+            if (!_decodeErrSeen || _swFallbackTried || _currentPath == null) return;
+            _swFallbackTried = true;
+            try
+            {
+                _player.EnableHardwareDecoding = false;
+                LogLine("检测到硬件解码失败，自动切换软解码重试");
+                StatusChanged?.Invoke("硬件解码异常，已自动切换软解码重试…");
+                var p = _currentPath;
+                _ = Task.Run(() => { try { PlayPath(p); } catch { } });
+            }
+            catch { }
+        }
+
+        // ---------- 播放控制 ----------
+
+        /// <summary>设置播放列表并从 index 开始播</summary>
+        public void PlayList(IEnumerable<VideoItem> items, int index)
+        {
+            _playlist.Clear();
+            _playlist.AddRange(items);
+            _index = index;
+            if (index >= 0 && index < _playlist.Count)
+                PlayItem(_playlist[index]);
+        }
+
+        /// <summary>播放单个文件/URL (不进列表)</summary>
+        public async Task PlayStandaloneAsync(string uri, string? saveDirForMagnet = null)
+        {
+            if (uri.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+            {
+                await PlayMagnetAsync(uri, saveDirForMagnet);
+                return;
+            }
+            _playlist.Clear();
+            _playlist.Add(new VideoItem { Path = uri });
+            _index = 0;
+            PlayPath(uri);
+        }
+
+        private void PlayItem(VideoItem item) => PlayPath(item.Path);
+
+        private void PlayPath(string path)
+        {
+            if (_player == null || _libVLC == null) return;
+
+            bool externalOnce = _noHistoryOnce;   // v3.13.1: 外部点播只播一次, 不进历史
+            _noHistoryOnce = false;
+            if (!SecretSession && !externalOnce) SaveResume(); // 记住上一部 (密码箱会话不留痕迹, 不记)
+
+            _currentPath = path;
+            CurrentPathChanged?.Invoke(path);
+            if (!SecretSession && !externalOnce)
+            {
+                _pendingResumeMs = AppSettings.Current.Resume.TryGetValue(path, out var ms) && ms > 30000 ? ms : null;
+                PlaybackHistory.RecordRecent(AppSettings.Current, path, DateTimeOffset.Now);
+            }
+            else
+            {
+                _pendingResumeMs = null; // 密码箱会话/外部点播临时拷贝: 不读续播、不进最近播放
+            }
+
+            var media = new Media(_libVLC, path);
+            PrepareMediaOptions(media, path);
+
+            var p0 = _player;
+            LogLine("起播: " + path);
+            Enqueue(() =>
+            {
+                p0.Media = media;
+                p0.Play();
+            });
+
+            // 记住的倍速跟着每一次起播走 (切集/重播不丢)
+            var saved = AppSettings.Current.PlaybackRate;
+            if (saved > 0 && Math.Abs(saved - 1.0) > 0.01)
+                Enqueue(() => { try { p0.SetRate((float)saved); } catch { } });
+
+            TryLoadSameNameSubtitle(path);
+
+            // 断点续播: 起播后跳到上次位置
+            if (_pendingResumeMs != null)
+            {
+                var target = _pendingResumeMs.Value;
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1200);
+                    var p2 = _player; if (p2 != null) Enqueue(() => { try { p2.Time = (long)target; } catch { } });
+                });
+            }
+        }
+
+        /// <summary>播放 content:// 等系统地址 (文件选择器返回的地址): 拷到缓存目录后播放。
+        /// v3.13.1 自愈: 每次进新片先清掉上一批临时拷贝, 缓存目录绝不无限堆积; 外部请求不留进最近播放。</summary>
+        public void PlayContentUri(global::Android.Net.Uri uri)
+        {
+            if (_player == null || _libVLC == null || _videoView == null) return;
+            var ctx = _videoView.Context!;
+            // 缓存自愈 (全系缓存自愈标准): 临时拷贝只留最新一份, 上限=1 封顶, 旧拷贝当场清
+            try
+            {
+                var olds = ctx.CacheDir.ListFiles();
+                if (olds != null)
+                    foreach (var f in olds)
+                        if (f.Name.StartsWith("选中视频_", StringComparison.Ordinal)) f.Delete();
+            }
+            catch { }
+            var seg = uri.LastPathSegment ?? "video";
+            var ext = System.IO.Path.GetExtension(seg);
+            if (string.IsNullOrEmpty(ext)) ext = ".mp4";
+            var tmp = new Java.IO.File(ctx.CacheDir, "选中视频_" + DateTime.Now.Ticks + ext);
+            using (var src = ctx.ContentResolver!.OpenInputStream(uri))
+            using (var dst = new FileStream(tmp.AbsolutePath, FileMode.Create))
+                src.CopyTo(dst);
+            _noHistoryOnce = true;   // 外部点播是临时拷贝, 绝不写进最近播放与续播记录
+            PlayPath(tmp.AbsolutePath);
+        }
+
+        /// <summary>录制开关: 开 = 边播边存为 TS; 关 = 停止录制并把 TS 交给转换队列</summary>
+        public bool Recording
+        {
+            get => _recording;
+            set
+            {
+                if (value == _recording) return;
+                _recording = value;
+                if (value)
+                {
+                    // 重新发起带 sout 的播放
+                    var dir = AppSettings.Current.SaveFolder;
+                    Directory.CreateDirectory(dir);
+                    _recordTsPath = Path.Combine(dir,
+                        $"录制_{DateTime.Now:yyyyMMdd_HHmmss}.ts");
+                    StatusChanged?.Invoke("边播边存: 开 (保存到 " + dir + ")");
+                    ReplayCurrentWithRecord();
+                }
+                else
+                {
+                    StatusChanged?.Invoke("边播边存: 关");
+                    var ts = _recordTsPath;
+                    _recordTsPath = null;
+                    ReplayCurrentWithRecord();
+                    if (ts != null)
+                    {
+                        // 通知各端"缓存文件已生成" (手机端拿它做 TS→MP4 无损转封装)
+                        RecordedFileCompleted?.Invoke(ts);
+                        if (AppSettings.Current.AutoConvertRecorded)
+                            RecordConverter.Enqueue(ts);
+                    }
+                }
+            }
+        }
+
+        /// <summary>录制结束、TS 文件已落盘 (参数=文件路径)</summary>
+        public event Action<string>? RecordedFileCompleted;
+
+        /// <summary>重放当前媒体 (开/关录制需要重建 media 的 sout 选项)</summary>
+        private void ReplayCurrentWithRecord()
+        {
+            if (_currentPath == null) return;
+            var pos = _player?.Time ?? 0;
+            var path = _currentPath;
+            _currentPath = null;
+            if (path.StartsWith("http://127.0.0.1") || File.Exists(path))
+            {
+                if (!_playlist.IsEmpty() && _index >= 0 && _index < _playlist.Count &&
+                    _playlist[_index].Path == path)
+                    PlayItem(_playlist[_index]);
+                else
+                    PlayPath(path);
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1500);
+                    var p = _player; if (p != null) Enqueue(() => { try { p.Time = pos; } catch { } });
+                });
+            }
+        }
+
+        /// <summary>给 media 附加录制选项 (sout 落盘 TS) 与续播参数</summary>
+        private void PrepareMediaOptions(Media media, string? originalPath)
+        {
+            if (_recording && _recordTsPath != null)
+            {
+                media.AddOption($":sout=#standard{{access=file,mux=ts,dst={_recordTsPath}}}");
+                media.AddOption(":sout-keep");
+            }
+        }
+
+        private void TryLoadSameNameSubtitle(string videoPath)
+        {
+            try
+            {
+                if (!videoPath.StartsWith("/")) return; // 仅本地文件
+                var dir = Path.GetDirectoryName(videoPath) ?? "";
+                var sub = SubtitleLocator.Pick(videoPath,
+                    Directory.EnumerateFiles(dir).Take(200));
+                if (sub != null)
+                {
+                    LogLine("外挂字幕: " + sub);
+                    _player?.AddSlave(MediaSlaveType.Subtitle, sub, true);
+                }
+            }
+            catch { }
+        }
+
+        // ---------- 磁力 ----------
+
+        private async Task PlayMagnetAsync(string magnetUri, string? saveDir)
+        {
+            // v3.10: 起新引擎前先停旧的, 反复播磁力不再泄漏后台引擎
+            _magnetCts?.Cancel();
+            if (_magnet != null) await _magnet.StopAsync();
+            _magnetCts = new CancellationTokenSource();
+            _magnet = new MagnetStreamService();
+            _magnet.StatusChanged += s => StatusChanged?.Invoke(s);
+            var url = await _magnet.StartAsync(magnetUri, saveDir, _magnetCts.Token);
+            PlayPath(url);
+        }
+
+        /// <summary>
+        /// 磁力可用性检测 (v3.10): 只验元数据并选片, 不进播放器。
+        /// 成功返回 (文件名, 字节数); 失败 (超时/解析不了) 抛异常。检测完即停引擎,
+        /// 不在后台偷跑流量 —— 真正点开播放时再起一遍, 元数据多半秒回。
+        /// </summary>
+        public async Task<(string Name, long Size)> PrepareMagnetAsync(string magnetUri, string? saveDir)
+        {
+            _magnetCts?.Cancel();
+            if (_magnet != null) await _magnet.StopAsync();
+            _magnetCts = new CancellationTokenSource();
+            _magnet = new MagnetStreamService();
+            _magnet.StatusChanged += s => StatusChanged?.Invoke(s);
+            try
+            {
+                await _magnet.StartAsync(magnetUri, saveDir, _magnetCts.Token);
+                return (_magnet.FoundFileName ?? "磁力视频", _magnet.FoundFileSize);
+            }
+            finally
+            {
+                await _magnet.StopAsync();
+                _magnet = null;
+                _magnetCts = null;
+            }
+        }
+
+        public async Task StopMagnetAsync()
+        {
+            if (_magnetCts != null) try { _magnetCts.Cancel(); } catch { }
+            if (_magnet != null) await _magnet.StopAsync();
+            _magnet = null;
+            _magnetCts = null;
+        }
+
+        /// <summary>磁力播放的局域网流地址 (给电视投屏用); 不是磁力播放时为 null</summary>
+        public string? MagnetLanStreamUrl => _magnet?.LanStreamUrl;
+
+        // ---------- 列表导航 ----------
+
+        public void PlayNext()
+        {
+            if (_index + 1 < _playlist.Count)
+            {
+                _index++;
+                PlayItem(_playlist[_index]);
+            }
+            else StatusChanged?.Invoke("已经是最后一个了");
+        }
+
+        public void PlayPrevious()
+        {
+            if (_index > 0)
+            {
+                _index--;
+                PlayItem(_playlist[_index]);
+            }
+            else StatusChanged?.Invoke("已经是第一个了");
+        }
+
+        public void Pause() => Enqueue(() => _player?.Pause());
+        public void Play() => Enqueue(() => _player?.Play());
+        /// <summary>把当前播放位置写进续播记录 (退出/切后台时调用)</summary>
+        public void SaveProgress() => SaveResume();
+        public void Stop()
+        {
+            SaveResume();
+            Enqueue(() => _player?.Stop());
+        }
+        public void SeekTo(long ms) { var p = _player; if (p != null) Enqueue(() => { try { p.Time = ms; } catch { } }); }
+        public void SetRate(float rate) { var p = _player; if (p != null) Enqueue(() => { try { p.SetRate(rate); } catch { } }); }
+
+        /// <summary>画面比例: null=跟随片源, 否则 "16:9" / "4:3" 等</summary>
+        public void SetAspectRatio(string? aspect) { var p = _player; if (p != null) Enqueue(() => { try { p.AspectRatio = aspect; } catch { } }); }
+        public void SetMute(bool mute) { var p = _player; if (p != null) Enqueue(() => { try { p.Volume = mute ? 0 : 100; } catch { } }); }
+
+        /// <summary>循环播放当前视频 (3.x 无原生 Loop, 结束后自动重播)</summary>
+        public bool LoopEnabled { get; set; }
+
+        // ---------- 字幕 / 音轨 ----------
+
+        public void SubtitleDelay(float seconds) { var p = _player; if (p != null) Enqueue(() => { try { p.SetSpuDelay(-((long)(seconds * 1000000))); } catch { } }); }
+
+        public int AudioTrackCount => _player?.AudioTrackCount ?? 0;
+        public int AudioTrack
+        {
+            get => _player?.AudioTrack ?? -1;
+            set { var p = _player; if (p != null) Enqueue(() => { try { p.SetAudioTrack(value); } catch { } }); }
+        }
+        public int SpuTrackCount => _player?.SpuCount ?? 0;
+        public int SpuTrack
+        {
+            get => _player?.Spu ?? -1;
+            set { var p = _player; if (p != null) Enqueue(() => { try { p.SetSpu(value); } catch { } }); }
+        }
+
+        // ---------- 续播记录 ----------
+
+        private void SaveResume()
+        {
+            try
+            {
+                if (SecretSession) return; // 密码箱会话: 续播位置一律不落盘
+                if (_player == null || _currentPath == null) return;
+                var pos = _player.Time;
+                var len = _player.Length;
+                if (pos > 30000 && len > 0 && pos < len - 10000)
+                    AppSettings.Current.Resume[_currentPath] = pos;
+                else
+                    AppSettings.Current.Resume.Remove(_currentPath);
+                PlaybackHistory.TrimResume(AppSettings.Current);
+                SettingsFile.Save(AppSettings.Current);
+            }
+            catch { }
+        }
+
+        public void Dispose()
+        {
+            SaveResume();
+            try
+            {
+                _magnetCts?.Cancel();
+                _magnet?.StopAsync().Wait(2000);
+                _player?.Dispose();
+                _libVLC?.Dispose();
+            }
+            catch { }
+        }
+    }
+
+    internal static class ListExt
+    {
+        public static bool IsEmpty<T>(this List<T> list) => list.Count == 0;
+    }
+}

@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationId>com.taolive.tv</ApplicationId>
+    <ApplicationVersion>9</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.8</ApplicationDisplayVersion>
+    <ApplicationTitle>道映</ApplicationTitle>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体 -->
+    <RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers>
+    <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>
+    <AssemblyName>TaoLive.UI.Android.Tv</AssemblyName>
+    <AndroidResgenFile>Resources\Resource.designer.cs</AndroidResgenFile>
+    <!-- 签名链纪律：道系安卓实包统一 C1 证书链（2026-11-07 总监抽查回灌，勿改回树内旧钥/默认随机钥） -->
+    <AndroidKeyStore>True</AndroidKeyStore>
+    <AndroidSigningKeyStore>..\..\keystore\debug.keystore</AndroidSigningKeyStore>
+    <AndroidSigningKeyStorePass>android</AndroidSigningKeyStorePass>
+    <AndroidSigningStorePass>android</AndroidSigningStorePass>
+    <AndroidSigningKeyAlias>androiddebugkey</AndroidSigningKeyAlias>
+    <AndroidSigningKeyPass>android</AndroidSigningKeyPass>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TaoLive.Model\TaoLive.Model.csproj" />
+    <ProjectReference Include="..\TaoLive.BLL\TaoLive.BLL.csproj" />
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" />
+    <!-- libvlc 本机库以 lib/arm64-v8a 物理文件参与打包（TaoPlay 同源 vlc365 arm64） -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libvlc.so" />
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libc++_shared.so" />
+    <AndroidNativeLibrary Include="lib\armeabi-v7a\libvlc.so" />
+    <AndroidNativeLibrary Include="lib\armeabi-v7a\libc++_shared.so" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AndroidResource Include="Resources\values\styles.xml" />
+  </ItemGroup>
+
+</Project>

@@ -9,3 +9,4 @@
 /root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Debug/net8.0/refint/TaoLive.Model.dll
 /root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Debug/net8.0/TaoLive.Model.pdb
 /root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Debug/net8.0/ref/TaoLive.Model.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.Model/obj/Debug/net8.0/TaoLive.Model.sourcelink.json

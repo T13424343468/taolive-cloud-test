@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("TaoLive.Tests")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+94b607a7d0d6379facb185941e26668f9a43831d")]
 [assembly: System.Reflection.AssemblyProductAttribute("TaoLive.Tests")]
 [assembly: System.Reflection.AssemblyTitleAttribute("TaoLive.Tests")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

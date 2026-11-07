@@ -80,8 +80,11 @@ public class LaneRouter
         var candidates = RouteOf(channelKey);
         if (candidates.Count == 0)
             lock (_lock) candidates = _lanes.Where(l => l.CanHandle(ch)).Select(l => l.LaneId).ToList();
-        var next = _failover.NextCandidateOnFailure(channelKey, Math.Max(candidates.Count, 1));
-        if (next >= candidates.Count) return null; // 全部候选失效 → 明确失败
+        if (candidates.Count == 0) return null; // 无候选=耗尽
+        var prev = _failover.CurrentIndex(channelKey);
+        var next = _failover.NextCandidateOnFailure(channelKey, candidates.Count);
+        // 已在最后一个候选上再失败 → 全部通道耗尽，明确失败（UI 提示不静默）
+        if (next >= candidates.Count || (prev == next && next == candidates.Count - 1)) return null;
         lock (_lock) return _lanes.FirstOrDefault(l => l.LaneId == candidates[next]);
     }
 

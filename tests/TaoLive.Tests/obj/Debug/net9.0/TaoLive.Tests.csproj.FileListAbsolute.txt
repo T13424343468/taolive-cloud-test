@@ -18,3 +18,4 @@
 /root/workspace/taolive-work/TaoLive/tests/TaoLive.Tests/obj/Debug/net9.0/TaoLive.Tests.pdb
 /root/workspace/taolive-work/TaoLive/tests/TaoLive.Tests/obj/Debug/net9.0/TaoLive.Tests.genruntimeconfig.cache
 /root/workspace/taolive-work/TaoLive/tests/TaoLive.Tests/obj/Debug/net9.0/ref/TaoLive.Tests.dll
+/root/workspace/taolive-work/TaoLive/tests/TaoLive.Tests/obj/Debug/net9.0/TaoLive.Tests.sourcelink.json

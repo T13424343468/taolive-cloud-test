@@ -1,0 +1,10 @@
+drawable/ic_launcher_bg;drawable/ic_launcher_bg
+drawable/ic_launcher_fg;drawable/ic_launcher_fg
+drawable/tv_banner;drawable/tv_banner
+mipmap/ic_launcher;mipmap/ic_launcher
+mipmap/ic_launcher_hdpi;mipmap/ic_launcher_hdpi
+mipmap/ic_launcher_mdpi;mipmap/ic_launcher_mdpi
+mipmap/ic_launcher_xhdpi;mipmap/ic_launcher_xhdpi
+mipmap/ic_launcher_xxhdpi;mipmap/ic_launcher_xxhdpi
+mipmap/ic_launcher_xxxhdpi;mipmap/ic_launcher_xxxhdpi
+values/styles;values/styles

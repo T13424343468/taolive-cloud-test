@@ -147,7 +147,7 @@
       }
     },
     "/root/workspace/taolive-work/TaoLive/src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj": {
-      "version": "1.0.7",
+      "version": "1.0.8",
       "restore": {
         "projectUniqueName": "/root/workspace/taolive-work/TaoLive/src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj",
         "projectName": "TaoLive.UI.Android.Tv",
@@ -238,6 +238,9 @@
       },
       "runtimes": {
         "android-arm": {
+          "#import": []
+        },
+        "android-arm64": {
           "#import": []
         }
       }

@@ -47,6 +47,12 @@ public static class ScriptAdapter
             {
                 if (!string.IsNullOrEmpty(rule.MatchHost) && !current.Contains(rule.MatchHost, StringComparison.OrdinalIgnoreCase))
                     continue;
+                // L3=脚本层规则，原生适配器不执行脚本：命中即按规则失败处理（回落原生路径 + UI 明确提示），不静默改写
+                if (IsScriptLayer(rule))
+                {
+                    failed = rule;
+                    return FallbackNotice(rule);
+                }
                 if (!string.IsNullOrEmpty(rule.ReplaceHost))
                 {
                     var idx = current.IndexOf("://", StringComparison.Ordinal);

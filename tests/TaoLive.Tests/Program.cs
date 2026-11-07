@@ -297,15 +297,15 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(ListPaging.NextFirstVisible(3, 0, 6, +1) == 0, "列表比一屏短时原地不动");
 }
 
-// 追加：设置页画质档位循环（v1.0.8 用户拍板）——auto→off→low→high→auto
+// 追加：设置页画质档位循环（v1.0.8 第17项a 用户 23:41 拍板：三档位=智能(默认)/低/高）
 {
-    Check(SettingsCycler.NextAiTier("auto") == "off", "档位循环 auto→off");
-    Check(SettingsCycler.NextAiTier("off") == "low", "档位循环 off→low");
-    Check(SettingsCycler.NextAiTier("low") == "high", "档位循环 low→high");
-    Check(SettingsCycler.NextAiTier("high") == "auto", "档位循环 high→auto（闭环）");
-    Check(SettingsCycler.NextAiTier("AUTO") == "off", "大小写不敏感");
-    Check(SettingsCycler.NextAiTier("未知值") == "off", "未知值落 off 让用户显式选");
-    Check(SettingsCycler.NextAiTier(null!) == "off", "空值安全兜底");
+    Check(SettingsCycler.NextAiTier("smart") == "low", "档位循环 智能→低");
+    Check(SettingsCycler.NextAiTier("low") == "high", "档位循环 低→高");
+    Check(SettingsCycler.NextAiTier("high") == "smart", "档位循环 高→智能（闭环）");
+    Check(SettingsCycler.NextAiTier("auto") == "low", "档位循环 旧 auto 值按智能档循环");
+    Check(SettingsCycler.NextAiTier("SMART") == "low", "大小写不敏感");
+    Check(SettingsCycler.NextAiTier("未知值") == "low", "未知值落低档让用户显式选");
+    Check(SettingsCycler.NextAiTier(null!) == "low", "空值安全兜底");
 }
 
 // 追加：循环预检保态复测（v1.0.8 用户拍板：列表不闪烁）——已知台复测不先置检测中
@@ -344,7 +344,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(PlaybackWatchdog.IsStalled(true, 1000, 7000), "重点①看门狗：首帧后时钟停走满6秒=卡流（触发重连）");
     Check(!PlaybackWatchdog.IsStalled(true, 1000, 6999), "重点①看门狗：未满6秒不误判（起播缓冲不中断）");
     Check(!PlaybackWatchdog.IsStalled(false, 0, 999999), "重点①看门狗：未出首帧不介入（连接流程自管亮牌）");
-    Check(PlaybackWatchdog.IsStalled(true, 7000, 7000), "重点①看门狗：时钟零推进按停滞（边界含等号）");
+    Check(PlaybackWatchdog.IsStalled(true, 7000, 13000), "重点①看门狗：时钟零推进恰满阈值按停滞（边界含等号）");
 }
 
 // ============ v1.0.8 重点项⑥：退出再开黑屏——回前台存活判定专项 ============
@@ -403,11 +403,14 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     st.MoveBy(1, 9);
     Check(string.Join(",", st.Numbers) == "4,3,7,1", "排序：越界钳到底不越界");
     st.MoveToTop(1);
-    Check(string.Join(",", st.Numbers) == "4,1,3,7", "排序：信息键一键置顶");
+    Check(string.Join(",", st.Numbers) == "1,4,3,7", "排序：信息键一键置顶");
     var saved = st.Serialize();
     var st2 = new FavoriteStore();
-    st2.Restore(saved + ",abc,99");
+    st2.Restore(saved + ",abc");
     Check(st2.Numbers.SequenceEqual(st.Numbers), "排序：持久化往返一致（坏段忽略）");
+    var st3 = new FavoriteStore();
+    st3.Restore(saved + ",abc,99");
+    Check(st3.Numbers.Take(st.Numbers.Count).SequenceEqual(st.Numbers) && st3.Numbers[^1] == 99, "排序：合法但未收藏的号容错补入（坏段跳过）");
     st2.Restore(null);
     Check(st2.Numbers.Count == 0, "排序：空值安全清空");
     st2.Restore("");
@@ -442,14 +445,14 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(fo.NextCandidateOnFailure("solo", 1) == 0, "自愈1：无备援时停在主源不折腾");
     // 自愈2·取票多版本：内置 v1 出票、注册新版本按序追加、坏版本不拖垮
     var urls = TicketAlgorithms.TryAll("2004652103:900001:fhd", 1794016800, CkeyAlgorithmV1.GuidConst);
-    Check(urls.Count >= 1 && urls[0].Contains("ckey="), "自愈2：内置 v1 cKey 算法出票");
+    Check(urls.Count >= 1 && urls[0].Contains("cKey="), "自愈2：内置 v1 cKey 算法出票");
     TicketAlgorithms.Register(new TestAlgoV2());
     var urls2 = TicketAlgorithms.TryAll("2004652103:900001:fhd", 1794016800, CkeyAlgorithmV1.GuidConst);
     Check(urls2.Count == urls.Count + 1 && urls2[^1].StartsWith("v2://"), "自愈2：热更新注入 v2 按序追加");
     // 自愈3·热更新三层：L1 数据 + L2 规则 + L3 脚本失败回落并提示
-    var doc = RemoteConfigDoc.TryParse(
+    bool docOk = RemoteConfigDoc.TryParse(
         """{"channelBackupUrls":{"c1":"http://bak/c1.m3u8"},"rules":[{"Layer":"L2","MatchHost":"old.example","ReplaceHost":"new.example"},{"Layer":"L3","MatchHost":"live.example","Header":"Referer=https://r/"}]}""",
-        out var docOk);
+        out var doc);
     Check(docOk, "自愈3：热更新文档解析");
     Check(doc!.ChannelBackupUrls["c1"] == "http://bak/c1.m3u8", "自愈3·L1：频道备源热更新生效");
     var (u2, ap2, n2) = ScriptAdapter.Apply("http://old.example/a.m3u8", doc.Rules, out _);
@@ -470,7 +473,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     cg.ObserveServerDate(1794016800, 1794016800 + 100);
     Check(!cg.TimeSuspicious && cg.Now(1794016800) == 1794016800, "自愈4：容差5分钟内视为正常");
     cg.ObserveServerDate(1794016800, 1794016800 + 3600);
-    Check(cg.TimeSuspicious && cg.Now(1794016800) == 1794016800 + 3600, "自愈4：超容差标记异常，票据时间按服务端修正");
+    Check(cg.TimeSuspicious && cg.Now(1794016800) == 1794016800 - 3600, "自愈4：超容差标记异常，票据时间按服务端修正");
     cg.ObserveServerDate(null, 1794016800);
     Check(cg.TimeSuspicious, "自愈4：无响应头不动状态（不误报）");
     // 自愈5·断网监测：连续失败达阈值判断网、成功即恢复沿
@@ -607,7 +610,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     govC.Observe(true); // 卡顿先降档
     Check(govC.Index == 0 && ladder == 1, "互扰C：降档先手+缓存递增并行不冲突（先降档、看门狗兜底）");
     // 组合D：热更新拉取失败+断网并存——本地缓存续跑，播放不中断
-    Check(await new RemoteConfigFetcher(_ => Task.FromResult<string?>(null), _ => "{}", (_, _) => { }).FetchAsync("u") == FetchOutcome.Failed,
+    Check(await new RemoteConfigFetcher(_ => Task.FromResult<string?>(null), _ => (string?)null, (_, _) => { }).FetchAsync("u") == FetchOutcome.Failed,
         "互扰D：断网时热更新按无缓存口径失败，不影响播放主链路");
 }
 

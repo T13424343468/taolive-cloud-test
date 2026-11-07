@@ -76,7 +76,7 @@ public class MainActivity : Activity
     private bool _precheckEnabled = true;   // 循环预检开关（设置面板可切，持久化）
     private bool _abi32;                     // 启动时设备档位（画质档重算用）
     private long _totalMem;
-    private Android.Content.ISharedPreferences? _prefs;
+    private global::Android.Content.ISharedPreferences? _prefs;
     private System.Threading.CancellationTokenSource? _precheckCts;
 
     // 频道列表折叠状态（v1.0.8）：组标题 → 展开？；未初始化时收藏组+当前台所在组自动展开
@@ -418,7 +418,7 @@ public class MainActivity : Activity
                 if (_precheckEnabled) await _precheck.RunAsync(_catalog.All, ct, keepKnownState: true);
                 await Task.Delay(_precheckEnabled ? 20_000 : 5_000, ct);
             }
-            catch (OperationCanceledException) { return; }
+            catch (global::System.OperationCanceledException) { return; }
             catch { /* 单轮失败下一轮再来，不影响播放 */ }
         }
     }
@@ -430,7 +430,7 @@ public class MainActivity : Activity
     {
         try
         {
-            StartActivity(new Intent(Android.Provider.Settings.ActionSettings));
+            StartActivity(new Intent(global::Android.Provider.Settings.ActionSettings));
         }
         catch
         {
@@ -450,7 +450,7 @@ public class MainActivity : Activity
         RefreshSettingsRows();
         _settingsPanel.Visibility = ViewStates.Visible;
         // 从底部滑入（透明底，尽量少遮挡画面）
-        var slide = new Android.Views.Animations.TranslateAnimation(0f, 0f, 420f, 0f)
+        var slide = new global::Android.Views.Animations.TranslateAnimation(0f, 0f, 420f, 0f)
             { Duration = 220 };
         _settingsPanel.StartAnimation(slide);
         _settingsPanel.RequestFocus();
@@ -878,7 +878,7 @@ public class MainActivity : Activity
             return;
         }
         // 播放态防错：第一次按只屏显提示，2 秒内再按才退后台，超时重新计数
-        long now = Environment.TickCount64;
+        long now = System.Environment.TickCount64;
         if (_lastBackMs > 0 && now - _lastBackMs <= 2000)
         {
             _lastBackMs = 0;

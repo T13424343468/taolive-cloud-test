@@ -13,3 +13,4 @@
 /root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Debug/net8.0/refint/TaoLive.BLL.dll
 /root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Debug/net8.0/TaoLive.BLL.pdb
 /root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Debug/net8.0/ref/TaoLive.BLL.dll
+/root/workspace/taolive-work/TaoLive/src/TaoLive.BLL/obj/Debug/net8.0/TaoLive.BLL.sourcelink.json

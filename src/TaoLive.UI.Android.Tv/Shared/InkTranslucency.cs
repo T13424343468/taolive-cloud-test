@@ -1,4 +1,5 @@
 using Android.Graphics;
+using Android.Graphics.Drawables;
 
 namespace TaoLive.UI.Android.Tv.Shared;
 
@@ -32,7 +33,7 @@ public static class InkTranslucency
     /// <summary>焦点/确认效果层：极淡底 + 细边框（统一一套，全局复用）。</summary>
     public static GradientDrawable FocusDrawable()
     {
-        var d = new GradientDrawable(GradientDrawable.Orientation.LeftTop, new int[] { 0, 0 });
+        var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
         d.SetColor(Color.Argb(FocusFillAlpha, PaperR, PaperG, PaperB));
         d.SetStroke(1, Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
         d.SetCornerRadius(4f * 0); // 直角细边框，水墨风

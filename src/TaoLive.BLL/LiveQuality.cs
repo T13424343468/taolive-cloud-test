@@ -15,11 +15,12 @@ public enum AiLiveTier
 /// AI 画质实时档（直播专用， TaoPlay 同源同设置项，播放链路实时生效）：
 /// - 直播流无法走 TaoPlay 离线超分（文件增强写回），实时档用播放器内建滤镜：
 ///   低档=细节锐化（sharpen），高档=细节锐化+对比/饱和微调（sharpen,adjust）；
-/// - 智能档（smart，默认）：基准按 auto 口径静态分档，运行中由 SmartGovernor 按掉帧/卡顿实时升降
-///   （v1.0.8 第17项，用户拍板：流畅优先，有余量再升，封顶基准档）；
+/// - 自动档（auto，默认，v1.0.10 统一口径）：基准按内存静态分档，运行中由 SmartGovernor
+///   按掉帧/卡顿实时升降（原「智能」档能力并入自动档，用户拍板：流畅优先，有余量再升，封顶基准档）；
 /// - auto 口径（保守优先，绝不带不动硬开）：<2GB 内存直接关；
 ///   2~3GB 低配开低档；≥3GB 开高档；
-/// - 用户显式 off=强制关；显式 low 尊重选择；显式 high 在 <2GB 仍降为低档（防卡死）。
+/// - 用户显式 off=强制关；显式 low 尊重选择；显式 high 在 <2GB 仍降为低档（防卡死）；
+/// - 旧版 smart 值按 auto 口径解析（v1.0.10 统一命名，界面只显「自动/低/高」）。
 /// 档位只在本文件变化，纯函数可测。
 /// </summary>
 public static class LiveQuality
@@ -36,7 +37,7 @@ public static class LiveQuality
                 return AiLiveTier.Low;
             case "high":
                 return memAtLeast(2000) ? AiLiveTier.High : AiLiveTier.Low; // <2GB 带不动高档，降级不硬开
-            case "smart": // 智能档基准=auto 口径（运行中由 SmartGovernor 动态升降）
+            case "smart": // 旧版智能档值 → 自动档口径（v1.0.10 统一命名）
             default: // auto 及未知值
                 if (totalMemBytes <= 0) return AiLiveTier.Off;
                 if (memAtLeast(3000)) return AiLiveTier.High;
@@ -63,4 +64,16 @@ public static class LiveQuality
         },
         _ => new List<(string Key, string Value)>(),
     };
+
+    /// <summary>
+    /// 档位设置值 → 界面显示名（v1.0.10 用户拍板：统一三档全中文「自动/低/高」，绝不出「智能」）。
+    /// 旧版 smart 值按自动档口径显示（能力已并入自动档）；未知值按自动兜底。
+    /// </summary>
+    public static string DisplayName(string setting) =>
+        (setting ?? "auto").Trim().ToLowerInvariant() switch
+        {
+            "low" => "低",
+            "high" => "高",
+            _ => "自动", // auto / 旧版 smart / 未知值
+        };
 }

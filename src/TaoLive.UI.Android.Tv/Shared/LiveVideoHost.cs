@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using TaoLive.BLL;
 using System.Collections.Generic;
 using System.Linq;
@@ -50,28 +50,42 @@ public class LiveVideoHost : IDisposable
     private int _cachingIndex;               // 重连网络缓存档位（重连递增，软解跟不上自适应）
     private int _stallCount;                 // 本台会话内卡死次数（⑫分级自救的行进依据）
     private bool _kernelRebuilding;          // 软重启互斥（⑫③级）
+    private System.Threading.Timer? _statsRetryTimer; // ⑤首帧后轨道解析重试（每500ms至多10次）
+    private int _statsRetries;                              // ⑤已重试次数
+    public bool StatsExhausted => _statsRetries >= StatsLinePolicy.MaxRetries; // ⑤到限仍无数据显「--」
+    private bool _earlyRescueUsed;           // ⑨B本轮卡顿已提前介入（水位低先动，不等6秒）
+    private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
+    private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
+    private long _lastDeescalateMs;           // ⑩水位追回：降档节流（30 秒最多降一档）
+    /// <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
+    public long TotalMemBytes { get; set; }
 
     // ⑫画面信息行（第④项）：原/现帧率与分辨率快照。分辨率在起播解析媒体轨道取得（原=现，无缩放）；
     // 现帧率按展示帧差实测，测不出如实给「检测中」。
     private double? _origFps; private int _origW, _origH;
     private long _fpsLastMs; private uint _fpsLastDisplayed; private double? _measuredFps;
+    private Media? _currentMedia; // ④帧统计来源（Media.Statistics；换台/重连时换新释放旧）
 
     public event Action<string>? StatusChanged;
 
     /// <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
     public (double? OrigFps, double? CurFps, int OrigW, int OrigH, int CurW, int CurH) SnapshotStats()
     {
-        var st = _player?.Statistics;
-        if (st != null && st.DisplayedPictures > 0)
+        var media = _currentMedia;
+        if (media != null)
         {
-            long now = Environment.TickCount64;
-            if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
+            var st = media.Statistics; // MediaStats 结构体：DisplayedPictures 字段
+            if (st.DisplayedPictures > 0)
             {
-                double fps = (st.DisplayedPictures - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
-                if (fps > 0 && fps < 240) _measuredFps = fps;
+                long now = Environment.TickCount64;
+                if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
+                {
+                    double fps = (st.DisplayedPictures - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
+                    if (fps > 0 && fps < 240) _measuredFps = fps;
+                }
+                _fpsLastDisplayed = (uint)st.DisplayedPictures;
+                _fpsLastMs = now;
             }
-            _fpsLastDisplayed = st.DisplayedPictures;
-            _fpsLastMs = now;
         }
         return (_origFps, _measuredFps, _origW, _origH, _origW, _origH);
     }
@@ -129,12 +143,15 @@ public class LiveVideoHost : IDisposable
         _player = new MediaPlayer(_libVlc) { EnableHardwareDecoding = false };
         _videoCarrier!.MediaPlayer = _player;
         _player.EncounteredError += (_, _) => OnStreamError();
+        _player.Buffering += (_, e) => Volatile.Write(ref _bufferPct, e.Cache); // ⑩水位实测来源（0–100）
         _player.Stopped += (_, _) => { /* 换台/重连的 Stop 有代数守卫，此处无需动作 */ };
         _player.TimeChanged += (_, _) =>
         {
             Volatile.Write(ref _lastTickMs, Environment.TickCount64);
+            _earlyRescueUsed = false; // ⑨B时钟在走：本轮提前介入额度恢复
             if (_frameShown) return;
             _frameShown = true;
+            StartStatsRetry(); // ⑤首帧后再解析轨道：起播后每500ms重试至多10次，后台不阻塞
             FrameShown?.Invoke();
         };
         if (_watchdog is null)
@@ -149,6 +166,8 @@ public class LiveVideoHost : IDisposable
         try
         {
             try { _player?.Stop(); } catch { /* 已停不碍重建 */ }
+            try { _currentMedia?.Dispose(); } catch { }
+            _currentMedia = null;
             try { _player?.Dispose(); } catch { }
             try { _libVlc?.Dispose(); } catch { }
             _player = null; _libVlc = null;
@@ -164,9 +183,40 @@ public class LiveVideoHost : IDisposable
         if (_userStopped || _currentUrl is null) return;
         if (!_frameShown) return;                 // 还没出首帧：连接流程自己管理，不看门狗
         long last = Volatile.Read(ref _lastTickMs);
-        if (!PlaybackWatchdog.IsStalled(_frameShown, last, Environment.TickCount64)) return;
+        long age = Environment.TickCount64 - last;
+        if (!PlaybackWatchdog.IsStalled(_frameShown, last, Environment.TickCount64))
+        {
+            // ⑨B缓冲水位低提前介入：时钟 2.5 秒没走就先静默重取流（先出画面口径），不等 6 秒卡死；
+            // 每轮卡顿只提前介入一次，重置额度靠 TimeChanged 恢复
+            if (age >= 2500 && !_earlyRescueUsed && !_kernelRebuilding)
+            {
+                _earlyRescueUsed = true;
+                try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入：时钟 {age}ms 未走，静默重取流"); } catch { }
+                _ = SilentRefreshAsync();
+            }
+            ObserveBufferWatermark(age); // ⑩水位实接：默认贴边、抖动攒水位、平稳追回，动作变化落日志
+            return;
+        }
         Volatile.Write(ref _lastTickMs, Environment.TickCount64); // 防连发：触发一次后重新计时
         HandleStall();                            // ⑫分级快速自救：快过断流重连阶梯
+    }
+
+    /// <summary>⑤首帧后轨道解析重试：每 500ms 一次至多 10 次（StatsLinePolicy 口径），成功即停。</summary>
+    private void StartStatsRetry()
+    {
+        _statsRetryTimer?.Dispose();
+        _statsRetries = 0;
+        _statsRetryTimer = new System.Threading.Timer(_ =>
+        {
+            if (_userStopped || _currentMedia is null) { _statsRetryTimer?.Dispose(); return; }
+            _statsRetries++;
+            if (_origW > 0 || _statsRetries >= StatsLinePolicy.MaxRetries)
+            {
+                _statsRetryTimer?.Dispose(); // 成功或到限：停止重试（到限显「--」）
+                return;
+            }
+            ParseMediaStats(_currentMedia); // 后台线程解析，不阻塞播放
+        }, null, StatsLinePolicy.IntervalMs, StatsLinePolicy.IntervalMs);
     }
 
     /// <summary>
@@ -191,6 +241,43 @@ public class LiveVideoHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// ⑩播放器侧水位实接（BufferPolicy 口径）：以当前 network-caching 窗口 × 播放器缓冲百分比
+    /// 估算秒级水位（内存环形，不落磁盘）；网络平稳且贴边=零延迟感，水位低/抖动=攒水位
+    /// （重连缓存阶梯递增），平稳未满=平滑追回、缓降阶梯回贴边。动作只影响下一次重连的
+    /// 缓冲池大小，不打断当前画面；变化才落日志（CrashNet 通道），界面不显示延迟。
+    /// </summary>
+    private void ObserveBufferWatermark(long tickAgeMs)
+    {
+        if (_userStopped || _currentUrl is null) return;
+        var action = BufferPolicy.Observe(
+            CacheLadder.At(_cachingIndex) / 1000.0 * (Volatile.Read(ref _bufferPct) / 100.0),
+            networkSteady: tickAgeMs < 1500, // 近 1.5 秒内时钟走过=网络平稳
+            TotalMemBytes);
+        if (_lastBufferAction == action) { return; }
+        _lastBufferAction = action;
+        switch (action)
+        {
+            case BufferAction.BuildUp: // 水位低/抖动：下一次重连缓冲池加大（阶梯封顶）
+                var next = CacheLadder.Next(_cachingIndex);
+                if (next != _cachingIndex)
+                {
+                    _cachingIndex = next;
+                    CrashNet.Record($"[BufferPolicy] 水位低攒缓冲：重连缓存目标 → {CacheLadder.At(_cachingIndex)}ms");
+                }
+                break;
+            case BufferAction.HoldEdge: // 平稳贴边：阶梯缓降回零延迟（30 秒最多一档，不闪不卡）
+                long now = Environment.TickCount64;
+                if (_cachingIndex > 0 && now - _lastDeescalateMs > 30_000)
+                {
+                    _lastDeescalateMs = now;
+                    _cachingIndex--;
+                    CrashNet.Record($"[BufferPolicy] 水位平稳贴边：重连缓存目标 → {CacheLadder.At(_cachingIndex)}ms（平滑追回直播边缘）");
+                }
+                break;
+        }
+    }
+
     /// <summary>静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。</summary>
     private async Task SilentRefreshAsync()
     {
@@ -208,7 +295,7 @@ public class LiveVideoHost : IDisposable
                         _currentOptions = fresh.Options.Select(o => $":{o.Key}={o.Value}").ToList();
                 }
             }
-            catch { /* 换源失败：沿用原地址快速重接 */ }
+            catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 静默重取流换源失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址快速重接）"); }
         }
         if (_userStopped || !_genCounter.IsCurrent(gen)) return;
         StartInternal(silent: true);
@@ -253,7 +340,9 @@ public class LiveVideoHost : IDisposable
         Volatile.Write(ref _lastTickMs, Environment.TickCount64);
         if (!silent) StatusChanged?.Invoke("连接中…");
         _player.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
-        using var media = new Media(_libVlc!, new Uri(_currentUrl));
+        _currentMedia?.Dispose(); // ④旧媒体统计源释放
+        var media = new Media(_libVlc!, new Uri(_currentUrl));
+        _currentMedia = media; // ④保留引用：Media.Statistics 提供帧统计
         // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）
         var caching = CacheLadder.At(_cachingIndex);
         media.AddOption($":network-caching={caching}");
@@ -272,15 +361,16 @@ public class LiveVideoHost : IDisposable
             foreach (var t in media.Tracks)
             {
                 if (t.TrackType != TrackType.Video) continue;
-                if (t.Data is VideoTrack vt)
+                var vt = t.Data.Video; // MediaTrackData.Video（VideoTrack 结构体：Width/Height/FrameRateNum/Den 为 uint）
+                if (vt.Width > 0)
                 {
-                    _origW = vt.Width; _origH = vt.Height;
+                    _origW = (int)vt.Width; _origH = (int)vt.Height;
                     if (vt.FrameRateDen > 0) _origFps = vt.FrameRateNum / (double)vt.FrameRateDen;
                 }
                 break;
             }
         }
-        catch { /* 轨道信息取不到：画面信息行显示检测中，绝不影响播放 */ }
+        catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 媒体轨道解析失败（url={MaskUrl(_currentUrl)}）：{ex.Message}"); }
     }
 
     private void OnStreamError()
@@ -318,7 +408,7 @@ public class LiveVideoHost : IDisposable
                             _currentOptions = fresh.Options.Select(o => $":{o.Key}={o.Value}").ToList();
                     }
                 }
-                catch { /* 换票失败：沿用原地址重试，重试次数照旧计 */ }
+                catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 重连换票失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址重试）"); }
             }
             StartInternal();
         };
@@ -355,9 +445,25 @@ public class LiveVideoHost : IDisposable
     {
         _watchdog?.Dispose();
         _watchdog = null;
+        _statsRetryTimer?.Dispose(); // ⑤重试定时器随宿主释放
+        _statsRetryTimer = null;
+
         _userStopped = true;
+        _currentMedia?.Dispose();
+        _currentMedia = null;
         _player?.Dispose();
         _libVlc?.Dispose();
         _videoCarrier = null;
+    }
+
+    /// <summary>【十二】失败归因（ConnectFailure 分类口径）：逐类落日志，不笼统「连接失败」。</summary>
+    internal static string FailureKind(Exception ex) => ConnectFailure.Classify(ex.ToString()).ToString();
+
+    /// <summary>【八】脱敏源地址：只留协议+主机，路径与查询串不落日志。</summary>
+    private static string MaskUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return "-";
+        try { var u = new Uri(url); return $"{u.Scheme}://{u.Host}"; }
+        catch { return url.Length > 24 ? url[..24] + "…" : url; }
     }
 }

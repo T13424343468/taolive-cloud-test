@@ -3,8 +3,8 @@ using System;
 namespace TaoLive.BLL;
 
 /// <summary>
-/// AI 画质「智能」档实时调节器（v1.0.8 第17项，用户 23:41 拍板）：
-/// - 基准档 = 设备静态分档（LiveQuality.Pick 的 auto 口径），智能档效果不越过基准档；
+/// AI 画质自动档实时调节器（v1.0.8 第17项落地、v1.0.10 统一口径：原「智能」能力并入自动档）：
+/// - 基准档 = 设备静态分档（LiveQuality.Pick 的 auto 口径），自动档效果不越过基准档；
 /// - 掉帧率超阈值或播放停滞 → 立即降一档（High→Low→Off），保证流畅优先；
 /// - 连续 CleanTicksToUpgrade 个巡检周期无掉帧 → 回升一档（封顶基准档）；
 /// 纯逻辑可测；调用方（UI 巡检定时器）每 5 秒喂一次实测统计，档位变化时重起当前台应用滤镜。
@@ -75,9 +75,9 @@ public static class AiEffectHeader
 
     private static string TierName(string tier) => tier switch
     {
-        "smart" => "智能",
-        "low" => "低档",
-        "high" => "高档",
+        "smart" => "自动", // v1.0.10 统一口径：智能档并入自动档，界面只显「自动/低/高」
+        "low" => "低",
+        "high" => "高",
         _ => tier,
     };
 }

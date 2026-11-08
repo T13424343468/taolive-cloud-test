@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>com.taolive.tv</ApplicationId>
-    <ApplicationVersion>10</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.9</ApplicationDisplayVersion>
+    <ApplicationVersion>11</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.10</ApplicationDisplayVersion>
     <ApplicationTitle>道映</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体 -->

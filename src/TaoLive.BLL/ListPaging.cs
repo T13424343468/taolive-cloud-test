@@ -29,15 +29,18 @@ public static class ListPaging
 /// </summary>
 public static class SettingsCycler
 {
+    /// <summary>
+    /// 画质档循环（v1.0.10 用户拍板：统一三档「自动/低/高」全中文）：auto→low→high→auto 闭环；
+    /// 旧版「smart（智能）」值按自动档口径循环（smart→low），界面不再出现「智能」。
+    /// </summary>
     public static string NextAiTier(string current)
     {
-        var cur = (current ?? "smart").Trim().ToLowerInvariant();
+        var cur = (current ?? "auto").Trim().ToLowerInvariant();
         return cur switch
         {
-            "auto" or "smart" => "low", // 旧版 auto / 智能档 → 低（循环下一档）
             "low" => "high",
-            "high" => "smart",
-            _ => "low", // 未知值先落低档让用户显式选
+            "high" => "auto",
+            _ => "low", // auto / 旧版 smart / 未知值 → 低（循环下一档）
         };
     }
 }

@@ -26,4 +26,9 @@
 - NU1101 兜底：restore -p:RuntimeIdentifiers="" 或 -p:RunAOTCompilation=false -p:AndroidUseInterpreter=true
 
 ## 当前步
-- 交付：publish 签名包 → apksigner 验签 → 交付说明.md 增补 v1.0.9 十三项与哈希 → publish_file + attach(project 1101892) + progress
+- ✔ 交付完成（2026-11-08 11:50）：
+  - 最终 APK：dist/道映-v1.0.9-tv-32位专用.apk（79.2MB 未裁剪签名版）+ 道映-v1.0.9-32位电视专用APK.zip
+  - SHA-256：b6bbad200a486da13d55a66f19381ba7824897b6d3225890f09f6cfd4929a06f
+  - apksigner verify：v1/v2/v3 全通过；badging versionCode=10 / versionName=1.0.9 核对一致
+  - 交付说明.md 已增补 v1.0.9 十三项清单+哈希；产物已 publish 并 attach 至事项 1101892；progress 已记录
+  - 已向父会话汇报。真机复测按 12-01 跑道恢复后统一补验

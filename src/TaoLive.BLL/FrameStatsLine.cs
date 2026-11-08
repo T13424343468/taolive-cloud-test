@@ -28,6 +28,34 @@ public static class FrameStatsLine
                 : $"原分辨率 {origW}×{origH} · 现分辨率 {curW}×{curH}");
         return string.Join("  ", parts);
     }
+
+    /// <summary>
+    /// v1.0.10 修复⑤：带重试口径与 AI 档位的画面信息行。
+    /// - 两项全缺且重试已到限 → 显「--」不留「检测中」；未到限（还在重试）→ 维持「检测中」；
+    /// - tierName 非 null 时并显 AI 画质档位（口径同【二】三档全中文），随档位变化刷新。
+    /// </summary>
+    public static string FormatEx(double? origFps, double? curFps, int origW, int origH, int curW, int curH,
+        string? tierName, bool statsExhausted)
+    {
+        bool noFps = origFps is null || origFps <= 0;
+        bool noRes = origW <= 0 || origH <= 0;
+        string core;
+        if (noFps && noRes)
+        {
+            core = statsExhausted
+                ? $"画面信息 {StatsLinePolicy.UnavailableText}"  // 取不到显「--」
+                : "画面信息检测中";                              // 还在重试周期内
+        }
+        else
+        {
+            core = Format(
+                (noFps && statsExhausted) ? 0 : origFps,
+                curFps, origW, origH, curW, curH);
+            // 部分缺失到限：缺失项也显「--」不静默
+            if (noFps && statsExhausted) core += "  原帧率 --";
+        }
+        return string.IsNullOrEmpty(tierName) ? core : $"{core}  AI画质：{tierName}";
+    }
 }
 
 /// <summary>

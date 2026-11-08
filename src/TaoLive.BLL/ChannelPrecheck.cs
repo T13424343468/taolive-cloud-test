@@ -22,7 +22,8 @@ public class SourceHealthEntry
     public string SourceId { get; set; } = "";
     public string EpgKey { get; set; } = "";
     public ChannelHealth State { get; set; } = ChannelHealth.Unknown;
-    public long CheckedAtMs { get; set; }   // 最近核验时间（Environment.TickCount64 基准，0=未核验）
+    public long CheckedAtMs { get; set; }   // 最近核验时间（Unix 毫秒，跨启动可比；0=未核验）
+    public int ConsecutiveFails { get; set; } // 连续失败计数（v1.0.10：达阈值自动淘汰交回重探）
 }
 
 /// <summary>
@@ -37,10 +38,32 @@ public class ChannelPrecheck
     private readonly Func<Channel, Task<bool>> _probe;
     private readonly int _intervalMs;
     private readonly ConcurrentDictionary<string, ChannelHealth> _states = new();
-    private readonly ConcurrentDictionary<string, SourceHealthEntry> _sourceHealth = new();
+    private ConcurrentDictionary<string, SourceHealthEntry> _sourceHealth = new();
+
+    /// <summary>连续失败多少次自动淘汰该来源记录（v1.0.10）：淘汰后交回预检重探，绝不把挂了的源一直当可用。</summary>
+    public const int RetireAfterConsecutiveFails = 3;
 
     /// <summary>状态变化事件：(台 EPG 键, 新状态)。UI 层订阅后刷新列表。</summary>
     public event Action<string, ChannelHealth>? StateChanged;
+
+    /// <summary>源健康账持久化（v1.0.10）：UI 注入后，每次健康表变化自动节流落盘；启动时经 Attach 灌回历史账。</summary>
+    public SourceHealthStore? HealthStore { get; private set; }
+
+    /// <summary>
+    /// 注入持久化存储：会话内已有结论与历史账合并（同键取核验时间新者）后，
+    /// 改为与账本共享同一本健康表——此后预检/播放实测回写直接落在账本条目上，节流落盘即所见即所存。
+    /// </summary>
+    public void AttachHealthStore(SourceHealthStore store)
+    {
+        HealthStore = store ?? throw new ArgumentNullException(nameof(store));
+        // 会话内已有结论并入账本（不覆盖账本里更新的记录）
+        foreach (var kv in _sourceHealth)
+        {
+            if (!store.Entries.TryGetValue(kv.Key, out var existing) || kv.Value.CheckedAtMs >= existing.CheckedAtMs)
+                store.Entries[kv.Key] = kv.Value;
+        }
+        _sourceHealth = store.Entries; // 共账：单一事实来源，回写即入账本
+    }
 
     public ChannelPrecheck(Func<Channel, Task<bool>> probe, int intervalMs = 600)
     {
@@ -101,16 +124,32 @@ public class ChannelPrecheck
     /// <summary>
     /// 来源级结果回写（v1.0.9 第⑬项）：播放实测与卡死自救换源的结论写进健康表，
     /// 播放实测覆盖预检结论；同频道任一来源通即整台转可用。
+    /// v1.0.10：连续失败达阈值自动淘汰（交回重探）；每次变化节流落盘。
     /// </summary>
     public void ReportSourceResult(Channel ch, bool ok, long nowMs)
     {
-        var entry = _sourceHealth.GetOrAdd(SourceKey(ch), _ => new SourceHealthEntry
+        WriteSourceResult(ch, ok, nowMs);
+    }
+
+    /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。</summary>
+    private void WriteSourceResult(Channel ch, bool ok, long nowMs)
+    {
+        var key = SourceKey(ch);
+        var entry = _sourceHealth.GetOrAdd(key, _ => new SourceHealthEntry
         {
             SourceId = ch.SourceId,
             EpgKey = ch.EpgKey,
         });
         entry.State = ok ? ChannelHealth.Alive : ChannelHealth.Dead;
-        entry.CheckedAtMs = nowMs;
+        entry.CheckedAtMs = nowMs > 0 ? nowMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        entry.ConsecutiveFails = ok ? 0 : entry.ConsecutiveFails + 1;
+        if (!ok && entry.ConsecutiveFails >= RetireAfterConsecutiveFails)
+        {
+            _sourceHealth.TryRemove(key, out _); // 连挂自动淘汰：不再被选源取用，交回预检重探
+            HealthStore?.MarkDirty();
+            return;
+        }
+        HealthStore?.MarkDirty();
         if (ok) MarkState(ch, ChannelHealth.Alive);
     }
 
@@ -140,13 +179,7 @@ public class ChannelPrecheck
                 bool ok;
                 try { ok = await _probe(ch).ConfigureAwait(false); }
                 catch { ok = false; }
-                var entry = _sourceHealth.GetOrAdd(SourceKey(ch), _ => new SourceHealthEntry
-                {
-                    SourceId = ch.SourceId,
-                    EpgKey = ch.EpgKey,
-                });
-                entry.State = ok ? ChannelHealth.Alive : ChannelHealth.Dead;
-                entry.CheckedAtMs = Environment.TickCount64;
+                WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 anyOk |= ok;
                 if (_intervalMs > 0)
                 {

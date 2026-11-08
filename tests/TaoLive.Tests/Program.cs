@@ -332,6 +332,79 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(ChannelPrecheck.NormalizeName("CCTV-1 综合") == ChannelPrecheck.NormalizeName("CCTV-1综合"), "台名归并忽略空格");
 }
 
+// v1.0.10 第①项：源健康账持久化——落盘、回灌、过期清理、连挂自动淘汰
+{
+    var dir = Path.Combine(Path.GetTempPath(), "taolive_test_" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var probe = new ChannelPrecheck(_ => Task.FromResult(true), intervalMs: 1);
+        var store = new SourceHealthStore(dir);
+        probe.AttachHealthStore(store);
+        // 预检一轮：来源记录健康并带 Unix 毫秒时间
+        var chans = new List<Channel>
+        {
+            new() { Name = "央视频一套", SourceId = "yangshipin", EpgKey = "cctv1" },
+        };
+        await probe.RunAsync(chans);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        Check(probe.SourceHealthOf(chans[0])?.CheckedAtMs is > 1_700_000_000_000, "健康记录时间=Unix 毫秒（跨启动可比）");
+        Check(store.Entries.ContainsKey("yangshipin:cctv1"), "预检结论进持久化账本");
+
+        store.FlushNow();
+        Check(File.Exists(Path.Combine(dir, "source_health.json")), "落盘文件生成");
+
+        // 新会话：新账本灌回未过期历史账，换台仍能直连已验证源
+        var probe2 = new ChannelPrecheck(_ => Task.FromResult(true), intervalMs: 1);
+        var store2 = new SourceHealthStore(dir);
+        store2.Load();
+        probe2.AttachHealthStore(store2);
+        Check(probe2.SourceHealthOf(chans[0])?.State == ChannelHealth.Alive, "重启后历史账灌回：已验证源仍可用");
+
+        // 过期规则：Alive 超 24h 丢、Dead 超 30 分钟丢
+        var staleDir = Path.Combine(Path.GetTempPath(), "taolive_stale_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(staleDir);
+        try
+        {
+            var staleStore = new SourceHealthStore(staleDir);
+            staleStore.Entries["yangshipin:old_alive"] = new SourceHealthEntry
+            {
+                SourceId = "yangshipin", EpgKey = "old_alive", State = ChannelHealth.Alive,
+                CheckedAtMs = now - SourceHealthStore.AliveTtlMs - 60_000,
+            };
+            staleStore.Entries["yangshipin:old_dead"] = new SourceHealthEntry
+            {
+                SourceId = "yangshipin", EpgKey = "old_dead", State = ChannelHealth.Dead,
+                CheckedAtMs = now - SourceHealthStore.DeadTtlMs - 60_000,
+            };
+            staleStore.Entries["yangshipin:fresh_dead"] = new SourceHealthEntry
+            {
+                SourceId = "yangshipin", EpgKey = "fresh_dead", State = ChannelHealth.Dead,
+                CheckedAtMs = now,
+            };
+            staleStore.FlushNow();
+            staleStore.Entries.Clear();
+            staleStore.Load();
+            Check(!staleStore.Entries.ContainsKey("yangshipin:old_alive"), "过期 Alive 条目丢弃（交回重探）");
+            Check(!staleStore.Entries.ContainsKey("yangshipin:old_dead"), "过期 Dead 条目丢弃（不留死账）");
+            Check(staleStore.Entries.ContainsKey("yangshipin:fresh_dead"), "未过期 Dead 条目保留（无信号延续展示）");
+        }
+        finally { Directory.Delete(staleDir, true); }
+
+        // 连挂自动淘汰：连续 3 次失败移出健康表，绝不再被选源取用
+        var retire = new ChannelPrecheck(_ => Task.FromResult(false), intervalMs: 1);
+        var retireCh = new Channel { Name = "挂台", SourceId = "yangshipin", EpgKey = "gone" };
+        for (int i = 0; i < ChannelPrecheck.RetireAfterConsecutiveFails; i++)
+            retire.ReportSourceResult(retireCh, false, now + i);
+        Check(retire.SourceHealthOf(retireCh) == null, $"连挂 {ChannelPrecheck.RetireAfterConsecutiveFails} 次自动淘汰（交回预检重探）");
+        Check(retire.BestAliveSource(retireCh, new[] { retireCh }) == null, "淘汰后不再被选源取用");
+    }
+    finally
+    {
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+    }
+}
+
 // 追加：列表宽度度量（v1.0.8，越小越好）——不超半屏、下限兜底、内容自适应
 {
     float d = 2f; int sw = 1920;
@@ -370,15 +443,22 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(ListPaging.NextFirstVisible(3, 0, 6, +1) == 0, "列表比一屏短时原地不动");
 }
 
-// 追加：设置页画质档位循环（v1.0.8 第17项a 用户 23:41 拍板：三档位=智能(默认)/低/高）
+// 追加：设置页画质档位循环（v1.0.10 用户 12:37 拍板：统一三档「自动/低/高」全中文，智能档并入自动档）
 {
-    Check(SettingsCycler.NextAiTier("smart") == "low", "档位循环 智能→低");
+    Check(SettingsCycler.NextAiTier("auto") == "low", "档位循环 自动→低");
     Check(SettingsCycler.NextAiTier("low") == "high", "档位循环 低→高");
-    Check(SettingsCycler.NextAiTier("high") == "smart", "档位循环 高→智能（闭环）");
-    Check(SettingsCycler.NextAiTier("auto") == "low", "档位循环 旧 auto 值按智能档循环");
+    Check(SettingsCycler.NextAiTier("high") == "auto", "档位循环 高→自动（闭环）");
+    Check(SettingsCycler.NextAiTier("smart") == "low", "旧版 smart 值按自动档口径循环");
     Check(SettingsCycler.NextAiTier("SMART") == "low", "大小写不敏感");
     Check(SettingsCycler.NextAiTier("未知值") == "low", "未知值落低档让用户显式选");
     Check(SettingsCycler.NextAiTier(null!) == "low", "空值安全兜底");
+    // 显示名统一全中文三档，绝不出「智能」
+    Check(LiveQuality.DisplayName("auto") == "自动", "显示名 auto=自动");
+    Check(LiveQuality.DisplayName("smart") == "自动", "显示名 旧版smart=自动（并入自动档）");
+    Check(LiveQuality.DisplayName("low") == "低", "显示名 low=低");
+    Check(LiveQuality.DisplayName("high") == "高", "显示名 high=高");
+    Check(LiveQuality.DisplayName(null!) == "自动", "显示名空值兜底=自动");
+    Check(LiveQuality.DisplayName("SMART") != "智能" && LiveQuality.DisplayName("auto") != "智能", "显示名全链路无「智能」字样");
 }
 
 // 追加：循环预检保态复测（v1.0.8 用户拍板：列表不闪烁）——已知台复测不先置检测中
@@ -708,6 +788,74 @@ Check(fsDiff.Contains("现帧率 18fps") && fsDiff.Contains("现分辨率 1280×
 // ⑧分类统计加可连数（口径与⑬统一：可连=至少一个来源可达）
 Check(ListHeaderStats.Format("央视", 21, 18, true) == "央视(21·可连18)", "⑧统计格式「央视(21·可连18)」");
 Check(ListHeaderStats.Format("央视", 21, 18, false) == "央视(21)", "⑧未出结果先显总数");
+
+// ---- v1.0.10 修复③④⑤⑥⑦⑨⑩⑪⑫ 断言 ----
+// ③启动贴面时序：未就绪等回调不抢跑；就绪才贴；等待间隙纹理回收退回等待，绝不带 null 表面进 AWindow
+Check(SurfaceAttachGate.Decide(playerPresent: true, windowAbsent: true, textureReady: false) == AttachAction.WaitSurface, "③纹理未就绪：先等 OnSurfaceTextureAvailable，不抢跑");
+Check(SurfaceAttachGate.Decide(playerPresent: true, windowAbsent: true, textureReady: true) == AttachAction.AttachNow, "③纹理就绪：才允许真正贴面");
+Check(SurfaceAttachGate.Decide(playerPresent: false, windowAbsent: true, textureReady: true) == AttachAction.WaitSurface, "③播放器未给：不动作");
+Check(SurfaceAttachGate.Decide(playerPresent: true, windowAbsent: false, textureReady: true) == AttachAction.WaitSurface, "③已贴过 AWindow：不重复贴");
+
+// ④退出弹窗焦点：默认落取消（继续看）；左右键两按钮间切换、到边不动；返回键=继续看
+Check(ExitDialogFocus.Initial == ExitButton.Cancel, "④弹窗默认焦点落「取消（继续看）」，防误退");
+Check(ExitDialogFocus.Move(ExitButton.Cancel, +1) == ExitButton.Exit && ExitDialogFocus.Move(ExitButton.Exit, -1) == ExitButton.Cancel, "④左右键在退出与取消间切换");
+Check(ExitDialogFocus.Move(ExitButton.Exit, +1) == ExitButton.Exit && ExitDialogFocus.Move(ExitButton.Cancel, -1) == ExitButton.Cancel, "④到边不动不环绕，防误触退出");
+Check(ExitDialogFocus.Back() == ExitButton.Cancel, "④返回键=继续看");
+
+// ⑤画面信息行：首帧后重试（500ms×10），到限显「--」不留「检测中」；并显 AI 档位
+Check(StatsLinePolicy.IntervalMs == 500 && StatsLinePolicy.MaxRetries == 10, "⑤重试口径：每500ms至多10次");
+Check(StatsLinePolicy.NextDelayMs(0) == 500 && StatsLinePolicy.NextDelayMs(9) == 500 && StatsLinePolicy.NextDelayMs(10) is null, "⑤到限停止重试");
+Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: false).Contains("检测中"), "⑤重试期内维持「检测中」");
+Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: true).Contains("--") && !FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, true).Contains("检测中"), "⑤到限显「--」不留「检测中」");
+Check(FrameStatsLine.FormatEx(null, null, 1920, 1080, 1920, 1080, null, true).Contains("原帧率 --"), "⑤部分缺失到限：缺失项显「--」");
+Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("AI画质：自动"), "⑤并显 AI 档位（口径同【二】全中文）");
+
+// ⑥换台提速：先连最快出画面档，亮后无感升高档，失败留在当前档
+var tiers = new List<(int Height, long Bandwidth)> { (1080, 8_000_000), (720, 3_000_000), (480, 1_500_000) };
+Check(FastStartPlanner.First(tiers)!.Value.Height == 480, "⑥多档先连最快出画面档（带宽最低先亮）");
+Check(FastStartPlanner.UpgradeTarget(tiers, 480)!.Value.Height == 1080, "⑥画面亮后无感升级最高档");
+Check(FastStartPlanner.UpgradeTarget(tiers, 1080) is null, "⑥已是最高档不折腾");
+Check(FastStartPlanner.OnUpgradeFailed(tiers, 720).Height == 720, "⑥升级失败留在当前档");
+
+// ⑦切台清屏：换台即铺底色，新流首帧到齐才亮；反复花屏走备用载体重接
+Check(SwitchRevealPolicy.ShouldVeilOnSwitch(frameEverShown: true), "⑦换台瞬间即铺干净底色，GPU 残留不外露");
+Check(!SwitchRevealPolicy.ShouldReveal(newStreamFirstFrame: false) && SwitchRevealPolicy.ShouldReveal(newStreamFirstFrame: true), "⑦新流首帧到齐才亮，中间绝不亮残留");
+Check(!SwitchRevealPolicy.ShouldFallbackCarrier(1) && SwitchRevealPolicy.ShouldFallbackCarrier(2), "⑦短期反复花屏达阈值改走备用载体重接");
+
+// ⑨⑩缓冲水位：低配自适应、低水位先攒（提前介入）、平稳平滑追回、贴边保持
+Check(BufferPolicy.MaxWatermarkSeconds(4L * 1024 * 1024 * 1024) == 60, "⑩内存充裕安全水位上限60秒");
+Check(BufferPolicy.MaxWatermarkSeconds(2L * 1024 * 1024 * 1024) == 45, "⑩中配缩到45秒");
+Check(BufferPolicy.MaxWatermarkSeconds(0) == 30, "⑩未知内存按低配30秒（不落磁盘，纯内存环形）");
+Check(BufferPolicy.Observe(5, networkSteady: true, 4L * 1024 * 1024 * 1024) == BufferAction.BuildUp, "⑩水位低先攒池子（提前介入不等6秒）");
+Check(BufferPolicy.Observe(10, networkSteady: false, 4L * 1024 * 1024 * 1024) == BufferAction.BuildUp, "⑩网络抖动主动落后安全水位");
+Check(BufferPolicy.Observe(35, networkSteady: true, 4L * 1024 * 1024 * 1024) == BufferAction.CatchUp, "⑩平稳后平滑追回直播边缘");
+Check(BufferPolicy.Observe(60, networkSteady: true, 4L * 1024 * 1024 * 1024) == BufferAction.HoldEdge, "⑩贴直播边缘零延迟感");
+
+// ⑪列表一键展开/折叠：总开关全收/全开切换；无信号组参与；默认展开习惯不变
+var fold = new ListFoldController();
+var groups = new List<string> { "收藏", "央视", "省台", "无信号" };
+var expanded = ListFoldController.DefaultExpanded(groups, "收藏", "央视");
+Check(expanded.Count == 2 && expanded.Contains("收藏") && expanded.Contains("央视") && !expanded.Contains("无信号"), "⑪默认只展开收藏+当前台所在组，习惯不变");
+var collapsed = fold.ToggleAll(groups);
+Check(collapsed.Count == groups.Count, "⑪全开时总开关一键全部收起（含无信号组）");
+Check(fold.IsCollapsed("无信号"), "⑪无信号组参与收放");
+collapsed = fold.ToggleAll(groups);
+Check(collapsed.Count == 0, "⑪有任何折叠时总开关一键全部展开");
+Check(ListFoldController.ToggleLabel(0) == "全部收起" && ListFoldController.ToggleLabel(1) == "全部展开", "⑪总开关行文案随状态切换");
+fold.ToggleGroup("央视");
+Check(fold.IsCollapsed("央视"), "⑪单组点收原逻辑不变");
+fold.ToggleGroup("央视");
+Check(!fold.IsCollapsed("央视"), "⑪单组再点恢复展开");
+
+// ⑫连接失败矩阵：失败分类枚举逐类归因；限流冷却退避
+Check(ConnectFailure.Classify("getaddrinfo ENOTFOUND x") == ConnectFailureKind.DnsFailure, "⑫DNS 解析失败单列");
+Check(ConnectFailure.Classify("connection timed out") == ConnectFailureKind.ConnectTimeout, "⑫连接超时单列");
+Check(ConnectFailure.Classify("取票返回 iretcode=403", 403) == ConnectFailureKind.RateLimited, "⑫限流/风控归冷却退避类");
+Check(ConnectFailure.Classify("HTTP 502", 502) == ConnectFailureKind.Rejected, "⑫被拒（HTTP 状态）归健康账淘汰类");
+Check(ConnectFailure.Classify("certificate verify failed") == ConnectFailureKind.TimeSkew, "⑫证书类错误归校时触发路径");
+Check(ConnectFailure.Classify("decode error at surface") == ConnectFailureKind.DecoderSurface, "⑫播放器内部错误归三级自救");
+Check(ConnectFailure.Classify("神秘异常") == ConnectFailureKind.Unknown, "⑫未知异常单列：落日志+「正在自动重试」不无限转圈");
+Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4) == 16 && ConnectFailure.CooldownSeconds(9) == 60, "⑫限流冷却指数退避封顶60秒，不无限重试");
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;

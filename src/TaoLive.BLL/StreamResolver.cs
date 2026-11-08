@@ -62,6 +62,7 @@ public class StreamResolver
             "gzstv" => await ResolveCachedAsync(ch, ResolveGzstvAsync, force),
             "kankan" => await ResolveCachedAsync(ch, ResolveKankanAsync, force),
             "nmtv" => await ResolveCachedAsync(ch, ResolveNmtvAsync, force),
+            "gxtv" => await ResolveCachedAsync(ch, ResolveGxtvAsync, force),
             "jstv" => await ResolveCachedAsync(ch, ch2 => Task.FromResult(ResolveJstv(ch2)), force),
             _ => ch.StreamUrl,
         };
@@ -261,13 +262,32 @@ public class StreamResolver
         {
             var raw = System.Convert.FromBase64String(body.Trim().Trim('"'));
             var json = System.Text.Encoding.UTF8.GetString(NmtvXxtea.Decrypt(raw));
-            // 定位该频道名对应的 streamUrl（解析整段而非假定字段序）
-            var idx = json.IndexOf($"\"title\":\"{ch.Name}\"", StringComparison.Ordinal);
-            if (idx < 0) return null;
-            var m = M3u8Regex.Match(json[idx..]);
-            return m.Success ? m.Value.Replace("\\/", "/") : null;
+            // 行级匹配（2026-11-08 修复「包头」取不到流：整表行内 data.streamUrl 位于 title 之前，
+            // 旧「title 向右找首个 m3u8」全行顺位偏差；NmtvSource.LocateStreamUrl 间隙法主口径+兜底）
+            return NmtvSource.LocateStreamUrl(json, ch.Name);
         }
         catch { return null; }
+    }
+
+    // ---- 广西 gxtv：电视频道口径清单直吐（encodeM3u8），60 秒缓存 ----------------
+
+    private async Task<string?> ResolveGxtvAsync(Channel ch)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, GxtvSource.ChannelListApi);
+        req.Headers.TryAddWithoutValidation("Referer", GxtvSource.Referer);
+        req.Headers.TryAddWithoutValidation("User-Agent", GxtvSource.UserAgent);
+        req.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["pageNo"] = "1", ["pageSize"] = "1000", ["liveMethod"] = "0",
+        });
+        string? json;
+        try
+        {
+            using var resp = await Http.SendAsync(req);
+            json = await resp.Content.ReadAsStringAsync();
+        }
+        catch { return null; }
+        return GxtvSource.LocateStreamUrl(json ?? "", ch.Name);
     }
 
     // ---- 江苏 jstv：txSecret 短效 180s，播放时重签 --------------------------------

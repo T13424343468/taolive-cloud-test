@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Android.App;
@@ -61,8 +61,10 @@ public class MainActivity : Activity
     private int _loadingSeq;
     private Handler _ui = new Handler(Looper.MainLooper!);
 
-    // 返回键防错（v1.0.8）：播放态第一次按只提示，2 秒内再按才退后台
-    private long _lastBackMs;
+    // 退出确认（v1.0.9 用户拍板）：播放态按返回弹窗二次确认；确认后真完全关闭，
+    // 重开是全新冷启动。弹窗开着时返回键=取消继续播放。
+    private AlertDialog? _exitDialog;
+    private bool _resumedOnce;  // 首启 OnResume 与回前台重接的分流（v1.0.9）
 
     // 收藏排序模式（v1.0.8 第14项，用户 23:23 拍板）：独立状态机，退出恢复默认键位
     private bool _sortMode;
@@ -117,9 +119,11 @@ public class MainActivity : Activity
         // 攻克名单（2026-11-07 全量真连 83/100 后按用户指令暂时下架，逐路攻克后接回）：
         // - 上海 kankan 8 路：取流仅认上海本地出口 IP，沙箱 0/8，待用户真机复测再定去留；
         // - 江苏 jstv 3 路：沙箱 DNS 解析不到流域名，待真机复测；
-        // - 广西 gxtv 1 路：取票接口 404，待适配。
+        // - 广西 gxtv：2026-11-08 电视频道口径接口恢复（POST channelList 直吐 encodeM3u8），
+        //   本地 7 路 + CETV-2/4 接回；广西卫视/CETV-1 央视频已覆盖不重号。
         _catalog.RegisterSource(new XatvSource());
         _catalog.RegisterSource(new NmtvSource());
+        _catalog.RegisterSource(new GxtvSource());
         _catalog.Rebuild();
         _resolver = new StreamResolver();
         _host = new LiveVideoHost();
@@ -247,13 +251,13 @@ public class MainActivity : Activity
         // 1.5 起播亮牌（雷二·延迟亮）：换台后 0.8 秒内没出首帧才亮，亮了带台名和呼吸点，
         // 明确反馈「没死机」，首帧落地才撤
         _loadingPanel = new FrameLayout(this);
-        _loadingPanel.SetBackgroundColor(Color.Argb(200, 0x2B, 0x33, 0x3B));
+        _loadingPanel.SetBackgroundColor(InkTranslucency.LoadingColor(this)); // v1.0.9 第③项：底色随亮度自适应
         _loadingText = new TextView(this)
         {
             Gravity = GravityFlags.Center,
             TextSize = 24,
         };
-        _loadingText.SetTextColor(Color.ParseColor("#F7F5EE"));
+        _loadingText.SetTextColor(InkTranslucency.TextPrimary(this));
         _loadingPanel.AddView(_loadingText, new FrameLayout.LayoutParams(-1, -2)
         {
             Gravity = GravityFlags.Center,
@@ -267,8 +271,9 @@ public class MainActivity : Activity
             Gravity = GravityFlags.Center,
             Visibility = ViewStates.Invisible,
         };
-        _infoBar.SetTextColor(Color.ParseColor("#F7F5EE"));
-        _infoBar.SetBackgroundColor(Color.Argb(InkTranslucency.InfoAlpha, 0x52, 0x70, 0x8A)); // 透明化基线（v1.0.8 第15项）
+        _infoBar.SetTextColor(InkTranslucency.TextPrimary(this));
+        _infoBar.SetBackgroundColor(InkTranslucency.InfoColor(this)); // v1.0.9 第③项：底色随亮度自适应
+        InkTranslucency.ApplyReadabilityShadow(_infoBar);
         _infoBar.SetPadding(36, 16, 36, 16);
         _infoBar.TextSize = 22;
         _root.AddView(_infoBar, new FrameLayout.LayoutParams(-2, -2)
@@ -279,7 +284,7 @@ public class MainActivity : Activity
 
         // 3. 频道列表（菜单键呼出，焦点式；分类树形可折叠+收藏置顶+宽度随内容）
         _listPanel = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        _listPanel.SetBackgroundColor(InkTranslucency.PanelColor()); // 全局透明化：极淡底，画面仍可见（v1.0.8 第15项）
+        _listPanel.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v1.0.9 第③项：底色加深并随亮度自适应
         _listPanel.Visibility = ViewStates.Gone;
         _root.AddView(_listPanel, new FrameLayout.LayoutParams(-1, -1));
 
@@ -465,7 +470,7 @@ public class MainActivity : Activity
     private LinearLayout BuildSettingsPanel()
     {
         var panel = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        panel.SetBackgroundColor(InkTranslucency.PanelColor()); // 全局透明化：极淡底（v1.0.8 第15项）
+        panel.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v1.0.9 第③项：底色加深并随亮度自适应
         panel.SetPadding(40, 28, 40, 36);
         panel.SetMinimumWidth((int)(360 * Resources!.DisplayMetrics!.Density));
         panel.Visibility = ViewStates.Gone;
@@ -484,7 +489,8 @@ public class MainActivity : Activity
         void AddLabel(string text)
         {
             var tv = new TextView(this) { Text = text, TextSize = 15 };
-            tv.SetTextColor(Color.ParseColor("#7C8894"));
+            tv.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(tv);
             tv.SetPadding(24, 18, 24, 6);
             _settingsPanel!.AddView(tv);
         }
@@ -684,13 +690,13 @@ public class MainActivity : Activity
         var rows = new List<Row>();
         var favs = _favorites.TopGroup(_catalog.All.ToList());
 
-        // 首次呼出：收藏组 + 当前台所在组自动展开，其余默认收起（硬要求：默认收起）
+        // v1.0.9 用户拍板：打开列表所有分类默认全展开，一屏可见；
+        // 手动折叠仍支持（确认键切换），折叠状态由 _expanded 记录。
         if (!_expandedInit)
         {
             if (favs.Count > 0) _expanded["★ 收藏"] = true;
             foreach (var g in _catalog.Groups)
-                if (_current != null && g.Channels.Any(c => c.Number == _current.Number))
-                    _expanded[g.Title] = true;
+                _expanded[g.Title] = true;
             _expandedInit = true;
         }
 
@@ -707,12 +713,12 @@ public class MainActivity : Activity
             if (open) rows.AddRange(g.Channels.Select(c => new Row { Channel = c }));
         }
 
-        // 确认不可用的台归「无信号」分组（v1.0.8 第11项定名）：置底、默认折叠、只能看不能切；恢复可用自动移回原分类
+        // 「无信号」分组（v1.0.8 第11项定名）：置底、默认展开（v1.0.9 用户拍板全展开）、只能看不能切；恢复可用自动移回原分类
         var dead = _catalog.All.Where(c => _precheck.Of(c) == ChannelHealth.Dead).ToList();
         if (dead.Count > 0)
         {
-            bool dOpen = _expanded.GetValueOrDefault("✕ 无信号", false);
-            rows.Add(new Row { Header = HeaderText("无信号", dead.Count, dOpen), HeaderKey = "✕ 无信号", HeaderDefault = false });
+            bool dOpen = _expanded.GetValueOrDefault("✕ 无信号", true);
+            rows.Add(new Row { Header = HeaderText("无信号", dead.Count, dOpen), HeaderKey = "✕ 无信号", HeaderDefault = true });
             if (dOpen) rows.AddRange(dead.Select(c => new Row { Channel = c, DeadOnly = true }));
         }
         return rows;
@@ -810,38 +816,48 @@ public class MainActivity : Activity
             if (row.Header != null)
             {
                 var h = new TextView(ctx) { Text = row.Header };
-                Style(h, "#8FB4D4", 18);
+                Style(h, "#A9CFEC", 18);
+                InkTranslucency.ApplyReadabilityShadow(h);
                 line.AddView(h);
                 return line;
             }
 
             var ch = row.Channel!;
             var num = new TextView(ctx) { Text = $"{ch.Number,3}", Gravity = GravityFlags.Right };
-            Style(num, "#C9D6E2", 20);
+            Style(num, InkTranslucency.TextSecondary, 20);
+            InkTranslucency.ApplyReadabilityShadow(num);
             num.SetPadding(0, 0, 32, 0);
             line.AddView(num);
 
             var star = new TextView(ctx) { Text = _isFav(ch.Number) ? "★" : " " };
-            Style(star, "#E8B84B", 20);
+            Style(star, "#F0C563", 20);
+            InkTranslucency.ApplyReadabilityShadow(star);
             star.SetPadding(0, 0, 24, 0);
             line.AddView(star);
 
             var name = new TextView(ctx) { Text = ch.Name };
             var isCur = _current?.Number == ch.Number;
-            Style(name, isCur ? "#FFFFFF" : "#C9D6E2", 22);
+            Style(name, isCur ? "#FFFFFF" : InkTranslucency.TextSecondary, 22);
+            InkTranslucency.ApplyReadabilityShadow(name);
+            if (isCur)
+            {
+                line.SetBackgroundColor(InkTranslucency.CurrentRowFill(ctx)); // v1.0.9 第③项：当前台整行强调底，一眼认出正在看的台
+                name.Typeface = global::Android.Graphics.Typeface.DefaultBold;
+            }
             line.AddView(name);
 
             // 可连状态标识（v1.0.8 预检握手）：绿点可用 · 灰点检测中/未探 · 红叉连不上
             var health = _health(ch);
             var (mark, color) = health switch
             {
-                ChannelHealth.Alive => ("●", "#6FBF73"),
-                ChannelHealth.Dead => ("✕", "#D96A6A"),
-                ChannelHealth.Checking => ("●", "#8A9AA8"),
-                _ => ("●", "#5A6672"),
+                ChannelHealth.Alive => ("●", "#7ED182"),
+                ChannelHealth.Dead => ("✕", "#E97F7F"),
+                ChannelHealth.Checking => ("●", "#B5C4D0"),
+                _ => ("●", "#8894A0"),
             };
             var dot = new TextView(ctx) { Text = mark };
             Style(dot, color, 18);
+            InkTranslucency.ApplyReadabilityShadow(dot);
             dot.SetPadding(24, 0, 0, 0);
             line.AddView(dot);
             return line;
@@ -865,6 +881,13 @@ public class MainActivity : Activity
 
     private void ExitOrCollapseList()
     {
+        // 退出确认弹窗开着：返回键=取消，继续播放（v1.0.9）
+        if (_exitDialog != null)
+        {
+            _exitDialog.Dismiss();
+            _exitDialog = null;
+            return;
+        }
         if (_listOpen)
         {
             CloseChannelList();
@@ -877,16 +900,75 @@ public class MainActivity : Activity
             }
             return;
         }
-        // 播放态防错：第一次按只屏显提示，2 秒内再按才退后台，超时重新计数
-        long now = System.Environment.TickCount64;
-        if (_lastBackMs > 0 && now - _lastBackMs <= 2000)
-        {
-            _lastBackMs = 0;
-            MoveTaskToBack(true); // 退后台不退出进程（开机即看）
-            return;
-        }
-        _lastBackMs = now;
-        FlashInfo("再按一次返回键退出");
+        // 退出确认（v1.0.9 用户拍板）：弹窗二次确认，确认后真完全关闭（结束进程），
+        // 重开走全新冷启动；返回键/取消=继续播放。不再用「再按一次」防错。
+        ShowExitConfirmDialog();
+    }
+
+    /// <summary>
+    /// 退出确认弹窗（v1.0.9 用户拍板）：水墨深色面板，确认键=退出、返回键=取消继续播放。
+    /// 确认后：先停播放（音频、取流、看门狗全停）→ FinishAndRemoveTask → 结束进程，
+    /// 不留后台声音、不留半死播放内核；重新打开即冷启动（开机默认台/收藏首位照旧）。
+    /// </summary>
+    private void ShowExitConfirmDialog()
+    {
+        if (_exitDialog != null) return; // 弹窗已开着：不重复弹
+        var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        int pad = (int)(20 * Resources!.DisplayMetrics!.Density);
+        box.SetPadding(pad * 2, pad * 2, pad * 2, pad);
+        box.SetBackgroundColor(Color.ParseColor("#2B333B")); // 水墨深底
+
+        var msg = new TextView(this) { Text = "确认退出道映？", TextSize = 20 };
+        msg.SetTextColor(Color.ParseColor("#E8E2D6"));
+        box.AddView(msg);
+
+        var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        var lp = new LinearLayout.LayoutParams(0, -2, 1f) { TopMargin = pad };
+        var no = new Button(this) { Text = "取消（继续看）" };
+        no.SetBackgroundColor(Color.ParseColor("#3A4750"));
+        no.SetTextColor(Color.ParseColor("#E8E2D6"));
+        no.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; };
+        var yes = new Button(this) { Text = "退出" };
+        yes.SetBackgroundColor(Color.ParseColor("#8A3B34"));
+        yes.SetTextColor(Color.ParseColor("#F2EDE4"));
+        yes.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; ExitAppCompletely(); };
+        buttons.AddView(no, lp);
+        buttons.AddView(yes, lp);
+        box.AddView(buttons);
+
+        var dialog = new AlertDialog.Builder(this)
+            .SetView(box)
+            .SetCancelable(true)
+            .Create()!;
+        _exitDialog = dialog;
+        dialog.Show();
+        yes.RequestFocus(); // 默认焦点在「退出」；返回键=取消继续播放（OnCancelListener 复位）
+        dialog.SetOnCancelListener(new DialogActionPeer(() => _exitDialog = null));
+        dialog.SetOnDismissListener(new DismissActionPeer(() => _exitDialog = null));
+    }
+
+    /// <summary>标准监听器适配（v1.0.9）：把 Android 弹窗回调接成普通 C# 动作，避免匿名监听类散落。</summary>
+    private sealed class DialogActionPeer : Java.Lang.Object, global::Android.Content.IDialogInterfaceOnCancelListener
+    {
+        private readonly Action _act;
+        public DialogActionPeer(Action act) { _act = act; }
+        public void OnCancel(global::Android.Content.IDialogInterface? dialog) => _act();
+    }
+
+    private sealed class DismissActionPeer : Java.Lang.Object, global::Android.Content.IDialogInterfaceOnDismissListener
+    {
+        private readonly Action _act;
+        public DismissActionPeer(Action act) { _act = act; }
+        public void OnDismiss(global::Android.Content.IDialogInterface? dialog) => _act();
+    }
+
+    /// <summary>真完全关闭（v1.0.9）：停播放→去任务→结束进程；重开必为冷启动。</summary>
+    private void ExitAppCompletely()
+    {
+        try { _host.Stop(); } catch { /* 已停不碍退出 */ }
+        try { _precheckCts?.Cancel(); } catch { }
+        FinishAndRemoveTask();
+        Java.Lang.JavaSystem.Exit(0); // 结束进程：重开即全新冷启动，不留后台音
     }
 
     // ---- 遥控键 ----
@@ -1084,55 +1166,32 @@ public class MainActivity : Activity
     protected override void OnNewIntent(Intent? intent)
     {
         base.OnNewIntent(intent);
-        // B 档：自定义键绑打开道映 → 秒开回上次频道。
-        // 纹理载体：后台本来就在放且播放实际存活 → 回来原样续，不再重起一遍造成闪动；
-        // 播放已死（v1.0.8 黑屏修复：后台播放被系统杀/流断，IsPlaying 可能还在但时钟停走）
-        // → 复位首帧状态按冷启动路径重播，绝不黑屏干等。
-        if (!_host.IsAlive)
-        {
-            _frameEverShown = false; // 复位：重播按冷启动路径立即亮牌，不误留黑旧画面
-            Play(_current ?? DefaultChannel());
-            return;
-        }
-        if (!_frameEverShown) Play(DefaultChannel());
+        // B 档：自定义键绑打开道映 → 回上次频道。
+        // v1.0.9 起重接播放统一交给 OnResume（singleTask 重开必经 OnResume），
+        // 这里不再自行起播，避免双 Play 造成重复停起。
     }
 
-    // v1.0.7 双载体退后台策略：
-    // - 纹理载体：退后台画面照常走（不回收），声音先闭掉，回前台恢复；
-    // - 表面载体（稳定档）：退后台主动停播，回前台重新接当前台（v1.0.5 已验证行为）
+    // v1.0.9 退后台统一策略（真机反馈修复）：
+    // 无论载体，退后台一律停播（声音、取流、看门狗全停），回前台重接当前台。
+    // 旧纹理路径「静音续播」在真机上出现回前台黑屏有声——播放内核活着但视频面
+    // 已被系统收走且未重建，IsAlive 判活通过就永远黑屏。统一停播后回前台必然
+    // 重新接线起播，画面必出；代价是退后台不续播，电视场景可接受（第一原则：保画面）。
     protected override void OnPause()
     {
         base.OnPause();
-        _lastBackMs = 0; // 防错计数不跨后台
-        if (_carrierTexture)
-        {
-            // 活着退后台 = 载体没崩，视为兼容（用户中途退出不该误判为崩溃）
-            if (!_frameForCurrentSwitch) CarrierPolicy.MarkOk(this);
-            _host.MuteForBackground();
-        }
-        else
-        {
-            _host.Stop();
-        }
+        // 活着退后台 = 载体没崩，视为兼容（用户中途退出不该误判为崩溃）
+        if (_carrierTexture && !_frameForCurrentSwitch) CarrierPolicy.MarkOk(this);
+        _host.Stop();
     }
 
     protected override void OnResume()
     {
         base.OnResume();
-        if (_carrierTexture)
+        if (!_resumedOnce) { _resumedOnce = true; return; } // 首启：OnCreate 已起播，不重复
+        if (_current != null && !_listOpen)
         {
-            _host.UnmuteAfterBackground();
-            // v1.0.8 黑屏修复：纹理路径退后台后播放可能已死（系统杀后台播放/流断），
-            // 只恢复音量不重播就是永远黑屏；回前台校验播放实际存活，不活则重播当前台
-            if (_current != null && !_listOpen && !_host.IsAlive)
-            {
-                _frameEverShown = false; // 复位：重播按冷启动路径立即亮牌
-                Play(_current);
-            }
-        }
-        else if (_current != null && !_listOpen)
-        {
-            Play(_current); // 表面载体：回前台重接画面（走取流缓存秒回）
+            _frameEverShown = false; // 复位：重播按冷启动路径立即亮牌
+            Play(_current);          // 统一重接当前台（走取流缓存秒回），画面必重建
         }
     }
 

@@ -70,6 +70,19 @@
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ChannelAdapter.ReplaceRows(System.Collections.Generic.List{TaoLive.UI.Android.Tv.MainActivity.Row})">
             <summary>预检状态实时刷新：换行数据通知重绘（滚动位置尽量保留）。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ShowExitConfirmDialog">
+            <summary>
+            退出确认弹窗（v1.0.9 用户拍板）：水墨深色面板，确认键=退出、返回键=取消继续播放。
+            确认后：先停播放（音频、取流、看门狗全停）→ FinishAndRemoveTask → 结束进程，
+            不留后台声音、不留半死播放内核；重新打开即冷启动（开机默认台/收藏首位照旧）。
+            </summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.MainActivity.DialogActionPeer">
+            <summary>标准监听器适配（v1.0.9）：把 Android 弹窗回调接成普通 C# 动作，避免匿名监听类散落。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ExitAppCompletely">
+            <summary>真完全关闭（v1.0.9）：停播放→去任务→结束进程；重开必为冷启动。</summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ListNav(System.Int32,Android.Views.KeyEvent)">
             <summary>
             左右键列表导航（v1.0.8 用户拍板）：列表未呼出 → 呼出列表；
@@ -139,16 +152,50 @@
             </summary>
         </member>
         <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.PanelAlpha">
-            <summary>面板/列表底色透明度（0-255，越低越透明）：极淡底，画面仍可见。</summary>
+            <summary>面板/列表底色透明度（0-255）：v1.0.9 第③项调深（56→76），
+            亮画面上文字仍清晰可读，同时保持半透明水墨质感。</summary>
         </member>
         <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.FocusFillAlpha">
-            <summary>焦点/确认效果层底色透明度：极淡，仅与底部区分。</summary>
+            <summary>焦点/确认效果层底色透明度：v1.0.9 第③项加深（40→64），高亮更醒目。</summary>
         </member>
         <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.FocusStrokeAlpha">
-            <summary>焦点细边框透明度：低配电视肉眼可辨的底线（1px 细边框）。</summary>
+            <summary>焦点细边框透明度：v1.0.9 第③项加深（104→160），低配电视肉眼清晰可辨。</summary>
         </member>
         <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.InfoAlpha">
-            <summary>FlashInfo/信息条底色透明度（原 160 大幅调淡，文字保持可读）。</summary>
+            <summary>FlashInfo/信息条底色透明度：v1.0.9 第③项调深（150→200），亮画面上文字保持可读。</summary>
+        </member>
+        <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.LoadingAlpha">
+            <summary>起播亮牌底色透明度。</summary>
+        </member>
+        <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.CurrentFillAlpha">
+            <summary>当前台高亮底色透明度：v1.0.9 第③项新增，强调色半透明底，一眼认出正在看的台。</summary>
+        </member>
+        <member name="F:TaoLive.UI.Android.Tv.Shared.InkTranslucency.TextSecondary">
+            <summary>次要文字色：v1.0.9 第③项提亮（原 #7C8894 偏灰看不清）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.IsLowBrightness(Android.Content.Context)">
+            <summary>亮度自适应（v1.0.9 第③项）：系统亮度 ≤ 30% 视为夜间/暗房，底色再加深一档。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.PanelColor(Android.Content.Context)">
+            <summary>自适应面板/列表底色：暗屏时加深一档，文字更容易看清。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.InfoColor(Android.Content.Context)">
+            <summary>自适应信息条底色：暗屏时加深一档，文字保持可读。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.LoadingColor(Android.Content.Context)">
+            <summary>自适应亮牌底色：暗屏时加深一档。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.CurrentRowFill(Android.Content.Context)">
+            <summary>当前台高亮底色（v1.0.9 第③项）：强调色半透明底，一眼认出正在看的台，暗屏时略加深。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.TextPrimary(Android.Content.Context)">
+            <summary>主文字色（v1.0.9 第③项「亮度自适应」）：暗屏（夜间/暗房）自动提到纯白。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.ApplyReadabilityShadow(Android.Widget.TextView)">
+            <summary>
+            可读性兜底（v1.0.9 第③项「亮度自适应」）：给文字加深色投影，
+            无论底下画面偏亮偏暗，文字始终与背景拉开对比度；标准 TextView API，全机型可用。
+            </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.FocusDrawable">
             <summary>焦点/确认效果层：极淡底 + 细边框（统一一套，全局复用）。</summary>

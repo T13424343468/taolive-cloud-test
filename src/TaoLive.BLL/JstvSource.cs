@@ -110,31 +110,107 @@ public class XatvSource : IChannelSource
 }
 
 /// <summary>
-/// 广西网络台 gxtv（2026-11-07 摸底第二轮：api2019.gxtv.cn 公开接口直吐 videoLiveUrl，105 条多为活动直播）。
-/// 电视频道同族接口口径待真机确认，先接接口通路段。
-/// 证据：调研/省市源证据/（gx_*），需真机复测。
+/// 广西网络台 gxtv（2026-11-08 电视频道口径接口恢复：POST memberApi/channel/channelList）。
+/// 页面实锤：tv.gxtv.cn/static/web/js/channel/channeliveList.js 调用
+/// POST https://api2019.gxtv.cn/memberApi/channel/channelList（pageNo=1&pageSize=1000&liveMethod=0，
+/// Referer https://tv.gxtv.cn/），rows[].name / state / showChannel / encodeM3u8。
+/// 实测口径：encodeM3u8 为在用直播清单（liangtv.cn CDN，明文 HLS，无需签名/防盗链）；
+/// decodeM3u8 旧域 mobilelive.gxtv.cn 已 404 停流，不接。
+/// 取流器播放时实时取清单按 name 精确匹配（60 秒缓存），源变更自刷新。
+/// 本地 7 路（城市台）+ CETV-2/4（专项，gxtv 官方重流）；广西卫视/CETV-1 央视频已覆盖不重号。
+/// 证据：调研/长尾移植/广西电视频道口径-已打通.md + 证据/gx_tv_channel_list_20261108.json。
+/// 需真机复测。
 /// </summary>
 public class GxtvSource : IChannelSource
 {
     public string SourceId => "gxtv";
 
-    public static string ApiUrl(string apiId) => $"https://api2019.gxtv.cn/{apiId}";
-    public const string Referer = "https://www.gxtv.cn/";
+    /// <summary>电视频道口径接口（POST 表单 pageNo=1&pageSize=1000&liveMethod=0）。</summary>
+    public const string ChannelListApi = "https://api2019.gxtv.cn/memberApi/channel/channelList";
+    public const string ChannelListForm = "pageNo=1&pageSize=1000&liveMethod=0";
+    public const string Referer = "https://tv.gxtv.cn/";
+    public const string UserAgent =
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+    /// <summary>2026-11-08 实测在流的本地频道（title 精确匹配 channelList.rows[].name）。</summary>
+    public static readonly (string Name, ChannelCategory Cat)[] Channels =
+    {
+        ("综艺旅游频道", ChannelCategory.City),
+        ("都市频道", ChannelCategory.City),
+        ("影视频道", ChannelCategory.City),
+        ("新闻频道", ChannelCategory.City),
+        ("国际频道", ChannelCategory.City),
+        ("乐思购频道", ChannelCategory.City),
+        ("移动数字电视频道", ChannelCategory.City),
+        ("中国教育电视台CETV-2频道", ChannelCategory.Special),
+        ("中国教育电视台CETV-4频道", ChannelCategory.Special),
+    };
+
+    /// <summary>
+    /// 接口清单按 name 定位 encodeM3u8：data.rows[] 逐行（括号计数切行，行内深嵌套），
+    /// 同 name 多行取首个 encodeM3u8 非空的行（实测国际频道双行同 hash）。
+    /// 不取 decodeM3u8（旧域 mobilelive 已 404 停流）。
+    /// </summary>
+    public static string? LocateStreamUrl(string json, string name)
+    {
+        if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(name)) return null;
+        var rowsStart = json.IndexOf("\"rows\":[", StringComparison.Ordinal);
+        if (rowsStart < 0) return null;
+        var i = json.IndexOf('{', rowsStart);
+        while (i >= 0)
+        {
+            var end = JsonBlockEnd(json, i);
+            if (end < 0) break;
+            var row = json.Substring(i, end - i + 1);
+            if (row.Contains($"\"name\":\"{name}\""))
+            {
+                var u = System.Text.RegularExpressions.Regex.Match(
+                    row, "\"encodeM3u8\":\"(https?://[^\"]+)\"");
+                if (u.Success && u.Groups[1].Value != "")
+                    return u.Groups[1].Value.Replace("\\/", "/");
+            }
+            i = json.IndexOf('{', end + 1);
+        }
+        return null;
+    }
+
+    /// <summary>忽略字符串内花括号与转义的配对花括号定位（无 JSON 依赖的轻量解析）。</summary>
+    private static int JsonBlockEnd(string s, int open)
+    {
+        var depth = 0; var inStr = false;
+        for (var i = open; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (inStr)
+            {
+                if (c == '\\') i++;
+                else if (c == '"') inStr = false;
+            }
+            else if (c == '"') inStr = true;
+            else if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return i;
+        }
+        return -1;
+    }
 
     public List<Channel> FetchChannels()
     {
-        // 电视频道同族接口口径待真机确认：先挂取票端点，播放端取 videoLiveUrl 后直连。
-        return new List<Channel>
+        var list = new List<Channel>();
+        foreach (var (name, cat) in Channels)
         {
-            new()
+            list.Add(new Channel
             {
-                // 广西卫视已由央视频覆盖（c_gxws），此路为网络台补充源，归城市台组。
-                Name = "广西网络台", Category = ChannelCategory.City, SourceId = SourceId,
-                StreamUrl = ApiUrl("api/open/broadcast/live"),
-                Referer = Referer, QualityTiers = new List<string> { "auto" },
-                Verdict = "需适配（公开接口直吐 videoLiveUrl；电视频道口径待真机确认）",
-                EpgKey = "gx_main",
-            },
-        };
+                Name = name,
+                Category = cat,
+                SourceId = SourceId,
+                StreamUrl = ChannelListApi, // 播放端经取流器取清单按 name 匹配 encodeM3u8
+                Referer = Referer,
+                UserAgent = UserAgent,
+                QualityTiers = new List<string> { "auto" },
+                Verdict = "可直接接（2026-11-08 电视频道口径实测：清单直吐明文 HLS，分片可解码；需真机复测）",
+                EpgKey = $"gx{name}",
+            });
+        }
+        return list;
     }
 }

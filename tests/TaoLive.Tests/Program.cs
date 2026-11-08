@@ -115,14 +115,30 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(XatvSource.PlayUrl(2) == "https://stream.xiancity.cn/live/2/index.m3u8", "xatv 流地址固化");
     Check(XatvSource.Channels.Length == 4, "xatv 接入 4 路（直播间/都市/戏剧影视/丝路）");
 }
-// 6.7 广西网络台：公开接口直吐 videoLiveUrl（电视口径待真机确认）
+// 6.7 广西网络台：电视频道口径接口恢复（2026-11-08：POST channelList 直吐 encodeM3u8）
 {
-    Check(GxtvSource.ApiUrl("api/open/broadcast/live") == "https://api2019.gxtv.cn/api/open/broadcast/live", "gxtv 接口端点固化");
+    Check(GxtvSource.ChannelListApi == "https://api2019.gxtv.cn/memberApi/channel/channelList", "gxtv 电视频道口径接口固化");
+    Check(GxtvSource.ChannelListForm == "pageNo=1&pageSize=1000&liveMethod=0", "gxtv 接口表单固化");
     var chans = new GxtvSource().FetchChannels();
-    Check(chans.Count == 1 && chans[0].Category == ChannelCategory.City, "gxtv 补充源归城市台组");
+    Check(chans.Count == 9, $"gxtv 接回 9 路（本地 7 + CETV-2/4，实际 {chans.Count}）");
+    Check(chans.Count(c => c.Category == ChannelCategory.City) == 7, "gxtv 本地 7 路归城市台组");
+    Check(chans.Count(c => c.Category == ChannelCategory.Special) == 2, "gxtv CETV-2/4 归专项组");
+    Check(chans.All(c => c.Name != "广西卫视") && chans.All(c => c.Name != "中国教育电视台CETV-1频道"),
+        "gxtv 不与央视频覆盖重复（广西卫视/CETV-1 不重号）");
+    Check(chans.All(c => c.StreamUrl == GxtvSource.ChannelListApi), "gxtv 台目入口=清单接口（播放端实时匹配）");
+    // 行级定位器：真实清单形态（深嵌套行、encodeM3u8 在 name 同行；同名录取首个非空）
+    var rowA = "{\"clickCount\":null,\"keywords\":\"\",\"editorUid\":{\"name\":\"盟市节目\"},\"encodeM3u8\":\"\",\"decodeM3u8\":\"\",\"showChannel\":1,\"data\":{\"streamUrl\":\"\"}}";
+    var fixture = "{\"code\":0,\"data\":{\"total\":4,\"rows\":["
+        + rowA + ","
+        + "{\"name\":\"综艺旅游频道\",\"encodeM3u8\":\"https://txlivecdn.liangtv.cn/live/a1/b1.m3u8\"},"
+        + "{\"name\":\"国际频道\",\"encodeM3u8\":\"\"},"
+        + "{\"name\":\"国际频道\",\"encodeM3u8\":\"https://hlscdn.liangtv.cn/live/x/y.m3u8\"}]}}";
+    Check(GxtvSource.LocateStreamUrl(fixture, "综艺旅游频道") == "https://txlivecdn.liangtv.cn/live/a1/b1.m3u8", "gxtv 按 name 定位 encodeM3u8");
+    Check(GxtvSource.LocateStreamUrl(fixture, "国际频道") == "https://hlscdn.liangtv.cn/live/x/y.m3u8", "gxtv 同名录取首个非空行");
+    Check(GxtvSource.LocateStreamUrl(fixture, "不存在的台") == null, "gxtv 未命中返回 null");
+    Check(GxtvSource.LocateStreamUrl("{\"rows\":[]}", "综艺旅游频道") == null, "gxtv 空清单容错");
 }
-
-// 6.8 内蒙古 XXTEA：加解密往返（长度小端尾缀口径）＋密钥固化
+// 6.8 内蒙古 XXTEA：加解密往返（长度小端尾缀口径）＋密钥固化＋行级流匹配
 {
     var plain = System.Text.Encoding.UTF8.GetBytes("{\"title\":\"nmtv01\",\"streamUrl\":\"http://s/live.m3u8\"}");
     var enc = NmtvXxtea.Encrypt(plain);
@@ -130,6 +146,21 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     var dec = NmtvXxtea.Decrypt(enc);
     Check(System.Text.Encoding.UTF8.GetString(dec) == System.Text.Encoding.UTF8.GetString(plain), "XXTEA 加解密往返还原");
     Check(NmtvXxtea.Key == "5b28bae827e651b3", "XXTEA 密钥固化");
+    // 行级流匹配（2026-11-08 修「包头」）：真实整表行内顺序 = {"aiGene"…data.streamUrl…streamUrls[]…title…}，
+    // 流在台名之前——旧「title 向右找」把每台串到下一台、表尾行必失败；新口径按行归属还原。
+    var nmtvRows = string.Concat(Enumerable.Range(1, 3).Select(i =>
+        "{\"aiGene\":0,\"data\":{\"indexId\":" + (2300 + i) + ",\"streamUrl\":\"https://livestream-bt.nmtv.cn/nmtv/" + (2300 + i) + "general.m3u8?txSecret=s" + i + "\"},"
+        + "\"streamUrls\":[\"https://livestream-bt.nmtv.cn/nmtv/" + (2300 + i) + "general.m3u8?txSecret=s" + i + "\"],"
+        + "\"title\":\"台" + i + "\"}"));
+    var whole = "{\"code\":0,\"data\":[" + nmtvRows + "]}";
+    Check(NmtvSource.LocateStreamUrl(whole, "台1") == "https://livestream-bt.nmtv.cn/nmtv/2301general.m3u8?txSecret=s1", "nmtv 首行流按行归属匹配");
+    Check(NmtvSource.LocateStreamUrl(whole, "台3") == "https://livestream-bt.nmtv.cn/nmtv/2303general.m3u8?txSecret=s3", "nmtv 表尾行（包头形态）匹配成功");
+    Check(NmtvSource.LocateStreamUrl(whole, "台2") == "https://livestream-bt.nmtv.cn/nmtv/2302general.m3u8?txSecret=s2", "nmtv 中间行不串行");
+    Check(NmtvSource.LocateStreamUrl(whole, "不存在") == null, "nmtv 未命中返回 null");
+    // 兜底1：名前无流（字段序反转形态）时按静态表 indexId 定位同行流
+    var flipped = "{\"code\":0,\"data\":[{\"title\":\"包头\",\"data\":{\"indexId\":2358,\"streamUrl\":\"https://livestream-bt.nmtv.cn/nmtv/2358general.m3u8?txSecret=x\"}}]}";
+    Check(NmtvSource.LocateStreamUrl(flipped, "包头") == "https://livestream-bt.nmtv.cn/nmtv/2358general.m3u8?txSecret=x", "nmtv 字段序反转走 indexId 兜底");
+    Check(NmtvSource.Channels.Length == 10, $"nmtv 10 路（包头接回，实际 {NmtvSource.Channels.Length}）");
 }
 // 6.9 取流器路由：江苏播放时重签 txTime=hex(now+180s)；非取票源直连透传 Referer
 {
@@ -151,12 +182,14 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
 {
     var fav2 = new FavoriteStore();
     var cat = new ChannelCatalog(fav2);
-    // 2026-11-07 全量真连后按用户指令：上海/江苏/广西暂下架（攻克名单），包头暂下架
+    // 2026-11-07 全量真连后按用户指令：上海/江苏暂下架（攻克名单）；
+    // 2026-11-08：广西电视频道口径恢复接回（本地 7 + CETV-2/4），内蒙古包头接回
     cat.RegisterSource(new YangshipinSource());
     cat.RegisterSource(new CztvSource());
     cat.RegisterSource(new GzstvSource());
     cat.RegisterSource(new XatvSource());
     cat.RegisterSource(new NmtvSource());
+    cat.RegisterSource(new GxtvSource());
     cat.Rebuild();
     var cctv = cat.Groups.First(g => g.Category == ChannelCategory.Cctv).Channels.Count;
     var cgtn = cat.Groups.First(g => g.Category == ChannelCategory.Cgtn).Channels.Count;
@@ -165,8 +198,10 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(cctv == 21, $"央视 21 路（实际 {cctv}）");
     Check(cgtn == 6, $"CGTN 6 路（实际 {cgtn}）");
     Check(prov == 31 + 4 + 7 + 8, $"省台=央视频31+浙江4+贵州7+内蒙古8（实际 {prov}）");
-    Check(city == 4 + 1, $"城市台 西安4+呼和浩特1（实际 {city}）");
+    Check(city == 4 + 2 + 7, $"城市台 西安4+内蒙古2（呼和浩特/包头）+广西7（实际 {city}）");
     var special = cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels.Count;
+    Check(special == cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels
+        .Count(c => c.SourceId == "yangshipin") + 2, $"专项含 gxtv 重流 CETV-2/4（实际 {special}）");
     Check(cat.All.Count == cctv + cgtn + special + prov + city, "总台数=各分类和，编号无空洞");
     Check(cat.All.Select(c => c.Number).SequenceEqual(Enumerable.Range(1, cat.All.Count)), "编号 1..N 连续无跳号");
     Check(cat.UnavailableChannels.Count == 0, "接不进的路未挂进正式源（湖北/湖南不排期）");
@@ -257,6 +292,44 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     var c2 = new Channel { Name = "x", EpgKey = "x" };
     await boom.RunAsync(new[] { c2 });
     Check(boom.Of(c2) == ChannelHealth.Dead, "探测异常按失效处理");
+}
+
+// 追加：v1.0.9 第⑬项——预检按频道全源检测 + 来源级健康表
+{
+    // 同名频道两个来源：一方通一方挂，整台=可用；各来源单独记录
+    var multi = new ChannelPrecheck(ch => Task.FromResult(ch.SourceId == "a"), intervalMs: 1);
+    var va = new Channel { Name = "CCTV-1 综合", SourceId = "a", EpgKey = "a1" };
+    var vb = new Channel { Name = "CCTV-1 综合", SourceId = "b", EpgKey = "b1" };
+    await multi.RunAsync(new[] { va, vb });
+    Check(multi.Of(va) == ChannelHealth.Alive, "全源检测：任一来源通整台=可用");
+    Check(multi.Of(vb) == ChannelHealth.Alive, "可用口径按频道归并，不按单来源判死");
+    Check(multi.SourceHealthOf(va)?.State == ChannelHealth.Alive, "来源A健康=Alive");
+    Check(multi.SourceHealthOf(vb)?.State == ChannelHealth.Dead, "来源B健康=Dead");
+    Check(multi.SourceHealthOf(va)?.CheckedAtMs > 0, "来源健康记录核验时间");
+    // 全源挂=死
+    var allDead = new ChannelPrecheck(_ => Task.FromResult(false), intervalMs: 1);
+    var da = new Channel { Name = "央2", SourceId = "a", EpgKey = "a2" };
+    var db = new Channel { Name = "央2", SourceId = "b", EpgKey = "b2" };
+    await allDead.RunAsync(new[] { da, db });
+    Check(allDead.Of(da) == ChannelHealth.Dead && allDead.Of(db) == ChannelHealth.Dead, "全源不可达整台=失效");
+    // 最优来源：取最近验证可用的变体
+    var picked = allDead.BestAliveSource(da, new[] { da, db });
+    Check(picked is null, "全源挂时无最优可用来源");
+    var pick2 = multi.BestAliveSource(vb, new[] { va, vb });
+    Check(pick2 != null && pick2.EpgKey == "a1", "最优来源=最近验证可用的变体");
+    // 自救/播放实测回写：失败来源被播放实测翻绿，整台状态随之恢复
+    multi.ReportSourceResult(vb, true, 123456L);
+    Check(multi.SourceHealthOf(vb)?.State == ChannelHealth.Alive, "回写：失败来源被实测翻绿");
+    Check(multi.SourceHealthOf(vb)?.CheckedAtMs == 123456L, "回写记录核验时间");
+    Check(multi.Of(vb) == ChannelHealth.Alive, "回写可用后整台状态=可用");
+    multi.ReportSourceResult(va, false, 234567L);
+    Check(multi.SourceHealthOf(va)?.State == ChannelHealth.Dead, "回写：实测失效覆盖预检结论");
+    Check(multi.Of(va) == ChannelHealth.Alive, "单来源失效但另一来源可用，整台仍=可用");
+    multi.ReportSourceResult(vb, false, 345678L);
+    Check(multi.SourceHealthOf(vb)?.State == ChannelHealth.Dead, "全部来源实测失败均已记录");
+    Check(multi.Of(vb) == ChannelHealth.Alive, "回写只记来源结论，整台判死交给下一轮预检");
+    // 台名归并：空格差异不影响分组
+    Check(ChannelPrecheck.NormalizeName("CCTV-1 综合") == ChannelPrecheck.NormalizeName("CCTV-1综合"), "台名归并忽略空格");
 }
 
 // 追加：列表宽度度量（v1.0.8，越小越好）——不超半屏、下限兜底、内容自适应

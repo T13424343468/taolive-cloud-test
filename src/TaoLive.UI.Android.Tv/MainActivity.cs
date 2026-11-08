@@ -85,6 +85,14 @@ public class MainActivity : Activity
     private readonly Dictionary<string, bool> _expanded = new();
     private bool _expandedInit;
 
+    // v1.0.9 第④项：列表旁操作提示去掉，改为实时画面信息行（原/现帧率/分辨率）
+    private TextView? _statsLine;
+    private System.Threading.Timer? _statsTicker;
+    // v1.0.9 第⑦/⑪项：重建列表的焦点锚点（分类键或 C:频道号），锚定原位置不跳头
+    private string? _pendingFocusAnchor;
+    // v1.0.9 第⑬项：本台会话实际取播的来源变体（健康表优先取最近验证可用来源）
+    private Channel? _playSource;
+
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
@@ -151,6 +159,13 @@ public class MainActivity : Activity
             // 票据静默续期：每 4 分钟为当前台换新票
             _precheckCts = new System.Threading.CancellationTokenSource();
             _ = Task.Run(() => PrecheckLoopAsync(_precheckCts.Token));
+            // v1.0.9 第④项：画面信息行实时刷新（2 秒节拍，列表开着才写字）
+            _statsTicker = new System.Threading.Timer(_ => _ui.Post(() =>
+            {
+                if (_statsLine is null) return;
+                var (ofps, cfps, ow, oh, cw, chh) = _host.SnapshotStats();
+                _statsLine.Text = FrameStatsLine.Format(ofps, cfps, ow, oh, cw, chh);
+            }), null, 2000, 2000);
             _ticketKeeper = new System.Threading.Timer(async _ =>
             {
                 var cur = _current;
@@ -186,14 +201,30 @@ public class MainActivity : Activity
     private void WireHostEvents()
     {
         // 重连前重新取票（v1.0.8）：换台代数守卫在宿主内，这里只管拿新鲜入口
+        // ⑬联动：优先取本台会话实际使用的来源变体（健康表最近验证可用者）
         _host.ReconnectRefresher = async () =>
         {
-            if (_current is null) return null;
-            var fresh = await _resolver.ResolvePlayUrlAsync(_current, force: true);
+            var src = _playSource ?? _current;
+            if (src is null) return null;
+            var fresh = await _resolver.ResolvePlayUrlAsync(src, force: true);
             if (fresh is null) return null;
             var opts = new List<(string Key, string Value)>(fresh.Options);
             foreach (var (k, v) in LiveQuality.OptionsFor(_aiTier)) opts.Add((k, v));
             return new RefreshedStream { Url = fresh.Url, Options = opts };
+        };
+        // ⑫联动：降清晰度=AI 增强降一档（软解负载减轻）；无档可降时自救并入静默重取流
+        _host.HasLowerQuality = () => DeviceProfile.AiEnhanceTierSetting switch
+        {
+            "high" => true,   // 高→低
+            "low" => true,    // 低→关
+            _ => _aiTier > AiLiveTier.Off, // auto 按实设备档判
+        };
+        _host.LowerQualityRequested += () =>
+        {
+            if (DeviceProfile.AiEnhanceTierSetting == "high") DeviceProfile.AiEnhanceTierSetting = "low";
+            else if (DeviceProfile.AiEnhanceTierSetting == "low") DeviceProfile.AiEnhanceTierSetting = "off";
+            else if (_aiTier > AiLiveTier.Off) _aiTier--;
+            _prefs?.Edit()?.PutString("ai_tier", DeviceProfile.AiEnhanceTierSetting)?.Apply();
         };
         _host.StatusChanged += text => _ui.Post(() =>
         {
@@ -222,6 +253,8 @@ public class MainActivity : Activity
             _frameForCurrentSwitch = true;
             if (_carrierTexture) CarrierPolicy.MarkOk(this); // 纹理载体活到首帧：判兼容
             if (_current != null) _precheck.MarkState(_current, ChannelHealth.Alive); // 播放实测存活
+            // ⑬健康表回写：播放实测成功覆盖预检结论（取播来源变体优先）
+            if (_playSource != null) _precheck.ReportSourceResult(_playSource, true, Environment.TickCount64);
             HideLoading();
         });
     }
@@ -326,6 +359,10 @@ public class MainActivity : Activity
     private void Play(Channel? ch)
     {
         if (ch is null) return;
+        // ⑬播放选源（v1.0.9）：同频道多来源优先取最近验证可用的来源变体（来源级健康表），
+        // 无已验证来源回到本台本身；任一来源通=频道可用，全挂才进无信号组。
+        var source = _precheck.BestAliveSource(ch, _catalog.All.ToList()) ?? ch;
+        _playSource = source;
         int seq = ++_playSeq;
         _current = ch;
         _frameForCurrentSwitch = false;
@@ -350,10 +387,11 @@ public class MainActivity : Activity
         var resolver = _resolver;
         Task.Run(async () =>
         {
-            var resolved = await resolver.ResolvePlayUrlAsync(ch);
+            var resolved = await resolver.ResolvePlayUrlAsync(source);
             if (seq != _playSeq) return; // 换台后旧任务作废
             if (resolved is null)
             {
+                _precheck.ReportSourceResult(source, false, Environment.TickCount64); // ⑬：取流失败回写健康表
                 _ui.Post(() =>
                 {
                     if (seq != _playSeq) return;
@@ -430,17 +468,26 @@ public class MainActivity : Activity
 
     // ---- 软件设置面板（v1.0.8 用户拍板：设置键 4077 单击呼出、长按跳系统设置）----
 
-    /// <summary>长按设置键：直接跳电视系统设置（标准入口）；厂商限制调不起时屏显说明，不硬撑。</summary>
+    /// <summary>
+    /// ⑨「去系统设置」三级跳（v1.0.9 用户拍板）：对口设置页（显示/画质）→ 系统设置总入口 → 文字指引，
+    /// 分级降级，绝不硬撑；哪级成立用哪级。
+    /// </summary>
     private void OpenSystemSettings()
     {
-        try
+        foreach (var action in new[]
         {
-            StartActivity(new Intent(global::Android.Provider.Settings.ActionSettings));
-        }
-        catch
+            global::Android.Provider.Settings.ActionDisplaySettings, // ①对口设置页
+            global::Android.Provider.Settings.ActionSettings,         // ②系统设置总入口
+        })
         {
-            FlashInfo("此机型暂不支持跳转系统设置");
+            try
+            {
+                StartActivity(new Intent(action));
+                return;
+            }
+            catch { /* 该级调不起：降级下一级 */ }
         }
+        FlashInfo("请按遥控器「设置/菜单」键进入电视系统设置"); // ③文字指引
     }
 
     private void ToggleSettingsPanel()
@@ -547,13 +594,23 @@ public class MainActivity : Activity
         try
         {
             var path = new Java.IO.File(FilesDir, "taolive_crash.log");
-            if (!path.Exists()) { FlashInfo("暂无崩溃日志"); return; }
+            if (!path.Exists()) { FlashInfo("暂无崩溃日志"); return; } // 空态提示（v1.0.9 第⑩项）
             var text = System.IO.File.ReadAllText(path.AbsolutePath);
             if (text.Length > 4000) text = "…\n" + text[^4000..];
             new AlertDialog.Builder(this)
                 .SetTitle("崩溃日志")
                 .SetMessage(text)
                 .SetPositiveButton("关闭", (s, a) => { })
+                // ⑩一键清理（v1.0.9 用户拍板）：确认键清空，清完空态提示
+                .SetNeutralButton("一键清理", (s, a) =>
+                {
+                    try
+                    {
+                        System.IO.File.Delete(path.AbsolutePath);
+                        FlashInfo("崩溃日志已清空");
+                    }
+                    catch { FlashInfo("清理失败，请重试"); }
+                })
                 .Show();
         }
         catch { FlashInfo("日志读取失败"); }
@@ -628,8 +685,8 @@ public class MainActivity : Activity
         if (_listOpen) CloseChannelList(); else OpenChannelList();
     }
 
-    private static string HeaderText(string title, int count, bool expanded) =>
-        $"{(expanded ? "▾" : "▸")} {title} ({count})";
+    private static string HeaderText(string title, bool expanded) =>
+        $"{(expanded ? "▾" : "▸")} {title}";
 
     private void OpenChannelList()
     {
@@ -637,14 +694,17 @@ public class MainActivity : Activity
         _listPanel.RemoveAllViews();
         _listPanel.Visibility = ViewStates.Visible; // 呼出列表：盖板必须显式转可见（v1.0.3 漏了这步，真机按菜单无反应）
 
-        var title = new TextView(this)
+        // v1.0.9 第④项（用户拍板）：操作提示全部去掉，列表旁改为实时画面信息行
+        //（原帧率/现帧率/原分辨率/现分辨率，2 秒节拍刷新；测量缺失显示「检测中」）
+        _statsLine = new TextView(this)
         {
-            Text = "频道列表（确认键展开/收起分类，返回键收起）",
-            TextSize = 20,
+            Text = "画面信息检测中",
+            TextSize = 18,
         };
-        title.SetTextColor(Color.ParseColor("#F7F5EE"));
-        title.SetPadding(48, 40, 48, 24);
-        _listPanel.AddView(title);
+        _statsLine.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(_statsLine);
+        _statsLine.SetPadding(48, 40, 48, 24);
+        _listPanel.AddView(_statsLine);
 
         _listView = new ListView(this) { Divider = null };
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
@@ -670,7 +730,9 @@ public class MainActivity : Activity
             if (r.HeaderKey != null)
             {
                 _expanded[r.HeaderKey] = !_expanded.GetValueOrDefault(r.HeaderKey, r.HeaderDefault);
-                OpenChannelList(); // 展开收起：重建列表（焦点随当前台/首行归位）
+                // v1.0.9 第⑦项：展开/收起后光标锚定当前分类位置，不跳列表头
+                _pendingFocusAnchor = r.HeaderKey;
+                OpenChannelList(); // 展开收起：重建列表（焦点按锚点归位）
             }
         };
         _listPanel.AddView(_listView, new LinearLayout.LayoutParams(-1, -1));
@@ -678,11 +740,46 @@ public class MainActivity : Activity
         // 宽度随内容（v1.0.8）：按最长行文本估宽，上限半屏、下限 360dp，绝不超屏
         ApplyListWidth(rows);
 
-        // 焦点定位：排序模式跟被排序的台，否则跟当前频道
+        // 焦点定位（v1.0.9 第⑪项全局焦点锚定）：锚点优先（⑦分类展开收起/收藏切换均锚原位），
+        // 否则排序模式跟被排序的台，否则跟当前频道
         var focusNumber = _sortMode ? _sortChannel?.Number : _current?.Number;
-        var curIdx = rows.FindIndex(r => r.Channel?.Number == focusNumber);
+        var curIdx = -1;
+        if (_pendingFocusAnchor != null)
+        {
+            curIdx = rows.FindIndex(r =>
+                r.HeaderKey != null ? r.HeaderKey == _pendingFocusAnchor
+                : r.Channel != null && "C:" + r.Channel.Number == _pendingFocusAnchor);
+        }
+        _pendingFocusAnchor = null;
+        if (curIdx < 0) curIdx = rows.FindIndex(r => r.Channel?.Number == focusNumber);
         if (curIdx >= 0) _listView.SetSelection(curIdx);
         _listView.RequestFocus();
+    }
+
+    /// <summary>当前焦点行锚点键（⑪全局焦点锚定）：分类行取分类键，频道行取 C:频道号。</summary>
+    private string? CurrentFocusKey()
+    {
+        if (_listView is null || _adapter is null) return null;
+        int pos = _listView.SelectedItemPosition;
+        if (pos < 0 || pos >= _adapter.Count) return null;
+        var r = _adapter[pos];
+        if (r.HeaderKey != null) return r.HeaderKey;
+        return r.Channel is null ? null : "C:" + r.Channel.Number;
+    }
+
+    /// <summary>⑥左右键分类间跳转（v1.0.9 用户 10:04 拍板）：从当前行沿方向找最近分类头，焦点落到分类头上。</summary>
+    private void JumpCategory(int dir)
+    {
+        if (_listView is null || _adapter is null) return;
+        int pos = _listView.SelectedItemPosition;
+        if (pos < 0) pos = 0;
+        for (int p = pos + dir; p >= 0 && p < _adapter.Count; p += dir)
+        {
+            if (_adapter[p].HeaderKey == null) continue;
+            _listView.SetSelection(p);
+            _listView.RequestFocus();
+            return;
+        }
     }
 
     private List<Row> BuildRows()
@@ -703,13 +800,23 @@ public class MainActivity : Activity
         if (favs.Count > 0)
         {
             bool favOpen = _expanded.GetValueOrDefault("★ 收藏", true);
-            rows.Add(new Row { Header = HeaderText("★ 收藏", favs.Count, favOpen), HeaderKey = "★ 收藏", HeaderDefault = true });
+            rows.Add(new Row { Header = HeaderText(ListHeaderStats.Format("★ 收藏", favs.Count, favs.Count, true), favOpen), HeaderKey = "★ 收藏", HeaderDefault = true });
             if (favOpen) rows.AddRange(favs.Select(c => new Row { Channel = c }));
         }
         foreach (var g in _catalog.Groups.Where(g => g.Channels.Count > 0))
         {
             bool open = _expanded.GetValueOrDefault(g.Title, false);
-            rows.Add(new Row { Header = HeaderText(g.Title, g.Channels.Count, open), HeaderKey = g.Title, HeaderDefault = false });
+            // ⑧分类统计加可连数（v1.0.9）：口径与⑬统一——可连=至少一个来源可达的频道数；
+            // 预检未出结果先显总数，后台静默刷新不断焦点（沿用 StateChanged 实时重建）。
+            int total = g.Channels.Count;
+            int connectable = g.Channels.Count(c => _precheck.Of(c) != ChannelHealth.Dead);
+            bool known = g.Channels.Any(c => _precheck.Of(c) != ChannelHealth.Unknown);
+            rows.Add(new Row
+            {
+                Header = HeaderText(ListHeaderStats.Format(g.Title, total, connectable, known), open),
+                HeaderKey = g.Title,
+                HeaderDefault = false,
+            });
             if (open) rows.AddRange(g.Channels.Select(c => new Row { Channel = c }));
         }
 
@@ -718,7 +825,7 @@ public class MainActivity : Activity
         if (dead.Count > 0)
         {
             bool dOpen = _expanded.GetValueOrDefault("✕ 无信号", true);
-            rows.Add(new Row { Header = HeaderText("无信号", dead.Count, dOpen), HeaderKey = "✕ 无信号", HeaderDefault = true });
+            rows.Add(new Row { Header = HeaderText(ListHeaderStats.Format("无信号", dead.Count, 0, true), dOpen), HeaderKey = "✕ 无信号", HeaderDefault = true });
             if (dOpen) rows.AddRange(dead.Select(c => new Row { Channel = c, DeadOnly = true }));
         }
         return rows;
@@ -874,7 +981,7 @@ public class MainActivity : Activity
         ShowInfoBar(_favorites.IsFavorite(_current.Number)
             ? $"{_current.Number}  {_current.Name}  ★ 已收藏"
             : $"{_current.Number}  {_current.Name}  已取消收藏");
-        if (_listOpen) OpenChannelList(); // 列表开着则刷新
+        if (_listOpen) { _pendingFocusAnchor = CurrentFocusKey(); OpenChannelList(); } // 列表开着则刷新（⑪焦点锚原位）
     }
 
     // ---- 返回键（v1.0.8 防错）----
@@ -1000,12 +1107,16 @@ public class MainActivity : Activity
 
         if (_listOpen && _listView != null)
         {
-            // 列表开：上下/确认交给 ListView 焦点导航；菜单或返回收起
-            if (keyCode is Keycode.DpadUp or Keycode.DpadDown or Keycode.DpadCenter or Keycode.Enter or Keycode.Menu or Keycode.Back)
+            // 列表开：⑥左右键=分类间跳转（用户 10:04 拍板，去掉与上下键重合的翻页/拖动逻辑）；
+            // 上下/确认交给 ListView 焦点导航（上下=选台、确认=播放）；菜单或返回收起
+            if (keyCode is Keycode.Menu or Keycode.Back) { ExitOrCollapseList(); return true; }
+            if (keyCode is Keycode.DpadLeft or Keycode.DpadRight)
             {
-                if (keyCode == Keycode.Menu || keyCode == Keycode.Back) { ExitOrCollapseList(); return true; }
-                return base.OnKeyDown(keyCode, e);
+                JumpCategory(keyCode == Keycode.DpadLeft ? -1 : +1);
+                return true;
             }
+            if (keyCode is Keycode.DpadUp or Keycode.DpadDown or Keycode.DpadCenter or Keycode.Enter)
+                return base.OnKeyDown(keyCode, e);
         }
         switch (keyCode)
         {
@@ -1202,6 +1313,8 @@ public class MainActivity : Activity
         _precheckCts = null;
         _ticketKeeper?.Dispose();
         _ticketKeeper = null;
+        _statsTicker?.Dispose(); // ④画面信息行节拍
+        _statsTicker = null;
         _host.Dispose();
         base.OnDestroy();
     }

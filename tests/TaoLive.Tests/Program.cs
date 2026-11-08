@@ -687,6 +687,28 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
         "互扰D：断网时热更新按无缓存口径失败，不影响播放主链路");
 }
 
+// ============ v1.0.9 追加：⑫分级快速自救 + ④画面信息行 + ⑧分类统计 ============
+
+// ⑫分级快速自救（静默重取流 → 降清晰度 → 软重启播放内核，用户 10:40 拍板）
+Check(StallRescue.Plan(0, true) == StallRescueAction.SilentRefresh, "⑫第1次卡死：静默重取流（不发状态不占重连次数）");
+Check(StallRescue.Plan(1, true) == StallRescueAction.LowerQuality, "⑫第2次卡死：降清晰度（有档可降）");
+Check(StallRescue.Plan(1, false) == StallRescueAction.SilentRefresh, "⑫第2次卡死：无档可降并入重取流，绝不空转一档");
+Check(StallRescue.Plan(2, false) == StallRescueAction.RestartKernel, "⑫第3次卡死：软重启播放内核（不动系统）");
+Check(StallRescue.Plan(5, true) == StallRescueAction.RestartKernel, "⑫连环卡死：持续用最强自救，不回退");
+Check(StallRescue.KernelRestartAt == 3, "⑫内核软重启档位=第3次卡死");
+
+// ④画面信息行（原/现帧率/分辨率；操作提示去掉，测量缺失显示检测中）
+Check(FrameStatsLine.Format(null, null, 0, 0, 0, 0) == "画面信息检测中", "④测量缺失：显示检测中，绝不编数字");
+Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原帧率 25fps"), "④原帧率如实展示");
+Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原分辨率 1920×1080"), "④原分辨率如实展示");
+Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现帧率") && FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现分辨率"), "④原现同值单行如实展示（无缩放）");
+var fsDiff = FrameStatsLine.Format(25.0, 18.0, 1920, 1080, 1280, 720);
+Check(fsDiff.Contains("现帧率 18fps") && fsDiff.Contains("现分辨率 1280×720"), "④原现不同：分别如实展示");
+
+// ⑧分类统计加可连数（口径与⑬统一：可连=至少一个来源可达）
+Check(ListHeaderStats.Format("央视", 21, 18, true) == "央视(21·可连18)", "⑧统计格式「央视(21·可连18)」");
+Check(ListHeaderStats.Format("央视", 21, 18, false) == "央视(21)", "⑧未出结果先显总数");
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 

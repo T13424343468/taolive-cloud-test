@@ -48,15 +48,47 @@ public class LiveVideoHost : IDisposable
     private Timer? _watchdog;                // 卡流看门狗：2 秒巡检
     private volatile bool _streamDead;       // 断流标志：报错/看门狗触发到重连成功之间为真（IsAlive 口径）
     private int _cachingIndex;               // 重连网络缓存档位（重连递增，软解跟不上自适应）
+    private int _stallCount;                 // 本台会话内卡死次数（⑫分级自救的行进依据）
+    private bool _kernelRebuilding;          // 软重启互斥（⑫③级）
+
+    // ⑫画面信息行（第④项）：原/现帧率与分辨率快照。分辨率在起播解析媒体轨道取得（原=现，无缩放）；
+    // 现帧率按展示帧差实测，测不出如实给「检测中」。
+    private double? _origFps; private int _origW, _origH;
+    private long _fpsLastMs; private uint _fpsLastDisplayed; private double? _measuredFps;
 
     public event Action<string>? StatusChanged;
+
+    /// <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
+    public (double? OrigFps, double? CurFps, int OrigW, int OrigH, int CurW, int CurH) SnapshotStats()
+    {
+        var st = _player?.Statistics;
+        if (st != null && st.DisplayedPictures > 0)
+        {
+            long now = Environment.TickCount64;
+            if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
+            {
+                double fps = (st.DisplayedPictures - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
+                if (fps > 0 && fps < 240) _measuredFps = fps;
+            }
+            _fpsLastDisplayed = st.DisplayedPictures;
+            _fpsLastMs = now;
+        }
+        return (_origFps, _measuredFps, _origW, _origH, _origW, _origH);
+    }
 
     /// <summary>
     /// 重连前刷新入口（v1.0.8）：断流重连不再拿旧地址硬重试——直播源票据 5 分钟级过期，
     /// 旧 URL 重试一百次也是失败。UI 层挂入换票委托，重连前先取新鲜入口；取不到（源端
     /// 失效/冷却中）沿用原地址再试一次，重试次数照旧计。
+    /// ⑫/⑬联动：静默重取流走同一委托（消费来源级健康表优先取最近验证可用来源）。
     /// </summary>
     public Func<Task<RefreshedStream?>>? ReconnectRefresher { get; set; }
+
+    /// <summary>⑫②级降清晰度：是否还有可降档（UI 按 AI 增强档位判断）；无档可降时自救直接并入重取流。</summary>
+    public Func<bool>? HasLowerQuality { get; set; }
+
+    /// <summary>⑫②级降清晰度请求：UI 收到后降一档 AI 增强（软解负载减轻），随后静默重接。</summary>
+    public event Action? LowerQualityRequested;
 
     /// <summary>首帧事件：第一次收到播放时钟即认为已有画面输出（用于撤掉「正在连接」遮罩）。</summary>
     public event Action? FrameShown;
@@ -86,10 +118,16 @@ public class LiveVideoHost : IDisposable
     {
         _videoCarrier = videoView;
         Core.Initialize();
+        BuildKernel();
+    }
+
+    /// <summary>建播放内核（Attach 与⑫软重启共用）：LibVLC + 软解播放器 + 事件接线 + 看门狗。</summary>
+    private void BuildKernel()
+    {
         _libVlc = new LibVLC(enableDebugLogs: false);
         // 真机反馈：Amlogic t982 硬解黑屏，默认软解保画面（v1.0.2）
         _player = new MediaPlayer(_libVlc) { EnableHardwareDecoding = false };
-        _videoCarrier.MediaPlayer = _player;
+        _videoCarrier!.MediaPlayer = _player;
         _player.EncounteredError += (_, _) => OnStreamError();
         _player.Stopped += (_, _) => { /* 换台/重连的 Stop 有代数守卫，此处无需动作 */ };
         _player.TimeChanged += (_, _) =>
@@ -99,10 +137,26 @@ public class LiveVideoHost : IDisposable
             _frameShown = true;
             FrameShown?.Invoke();
         };
+        if (_watchdog is null)
+            _watchdog = new Timer(OnWatchdogTick, null, 2000, 2000);
+    }
 
-        // 卡流看门狗（v1.0.8）：直播流停止推进时 VLC 不触发错误，靠播放时钟判断。
-        // 2 秒巡检一次；首帧出过后播放时钟 6 秒无推进 = 流冻住，按断流走重连。
-        _watchdog = new Timer(OnWatchdogTick, null, 2000, 2000);
+    /// <summary>⑫③软重启播放内核：重建设播环境（不动系统），同流继续。互斥防连环重启。</summary>
+    public void RestartKernel()
+    {
+        if (_kernelRebuilding || _userStopped || _currentUrl is null) return;
+        _kernelRebuilding = true;
+        try
+        {
+            try { _player?.Stop(); } catch { /* 已停不碍重建 */ }
+            try { _player?.Dispose(); } catch { }
+            try { _libVlc?.Dispose(); } catch { }
+            _player = null; _libVlc = null;
+            _frameShown = false;
+            BuildKernel();
+            StartInternal();
+        }
+        finally { _kernelRebuilding = false; }
     }
 
     private void OnWatchdogTick(object? state)
@@ -112,7 +166,52 @@ public class LiveVideoHost : IDisposable
         long last = Volatile.Read(ref _lastTickMs);
         if (!PlaybackWatchdog.IsStalled(_frameShown, last, Environment.TickCount64)) return;
         Volatile.Write(ref _lastTickMs, Environment.TickCount64); // 防连发：触发一次后重新计时
-        OnStreamError();
+        HandleStall();                            // ⑫分级快速自救：快过断流重连阶梯
+    }
+
+    /// <summary>
+    /// ⑫画面卡住分级快速自救（用户拍板「可以就这么定」）：静默重取流 → 降清晰度 → 软重启播放内核。
+    /// 静默级不发状态不占断流重连次数；重取流消费⑬健康表（ReconnectRefresher 内优先取最近验证可用来源）。
+    /// </summary>
+    private void HandleStall()
+    {
+        if (_kernelRebuilding) return;
+        _stallCount++;
+        var action = StallRescue.Plan(_stallCount - 1, HasLowerQuality?.Invoke() ?? false);
+        switch (action)
+        {
+            case StallRescueAction.RestartKernel:
+                StatusChanged?.Invoke("画面卡住，正在重启播放内核…");
+                RestartKernel();
+                break;
+            default:
+                if (action == StallRescueAction.LowerQuality) LowerQualityRequested?.Invoke();
+                _ = SilentRefreshAsync();
+                break;
+        }
+    }
+
+    /// <summary>静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。</summary>
+    private async Task SilentRefreshAsync()
+    {
+        long gen = _genCounter.NextGeneration(); // 新一代：旧重连/旧自救路径全部作废
+        if (ReconnectRefresher != null)
+        {
+            try
+            {
+                var fresh = await ReconnectRefresher();
+                if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 期间换台：作废
+                if (fresh?.Url != null && fresh.Url != _currentUrl)
+                {
+                    _currentUrl = fresh.Url;
+                    if (fresh.Options != null)
+                        _currentOptions = fresh.Options.Select(o => $":{o.Key}={o.Value}").ToList();
+                }
+            }
+            catch { /* 换源失败：沿用原地址快速重接 */ }
+        }
+        if (_userStopped || !_genCounter.IsCurrent(gen)) return;
+        StartInternal(silent: true);
     }
 
     /// <summary>
@@ -127,6 +226,11 @@ public class LiveVideoHost : IDisposable
         _userStopped = false;
         _exhaustedNotified = false;
         _cachingIndex = 0;
+        _stallCount = 0;      // ⑫：换台自救行进清零，分级从静默重取流重新走
+        _measuredFps = null;  // ④：换台重新实测
+        _fpsLastDisplayed = 0;
+        _fpsLastMs = 0;
+        _origFps = null; _origW = 0; _origH = 0;
         _genCounter.NextGeneration(); // 新一代：旧重连定时器全作废
         StartInternal();
     }
@@ -140,14 +244,14 @@ public class LiveVideoHost : IDisposable
         return vol;
     }
 
-    private void StartInternal()
+    private void StartInternal(bool silent = false)
     {
         if (_player is null || _currentUrl is null) return;
         long gen = _genCounter.NextGeneration(); // 本次起播代数（Stop 事件/旧定时器作废）
         _frameShown = false; // 每次起播/重连都要重新等首帧，遮罩才撤得对
         _streamDead = false; // 起播即视为存活，等首帧与时钟验证
         Volatile.Write(ref _lastTickMs, Environment.TickCount64);
-        StatusChanged?.Invoke("连接中…");
+        if (!silent) StatusChanged?.Invoke("连接中…");
         _player.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
         using var media = new Media(_libVlc!, new Uri(_currentUrl));
         // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）
@@ -155,7 +259,28 @@ public class LiveVideoHost : IDisposable
         media.AddOption($":network-caching={caching}");
         media.AddOption($":live-caching={Math.Max(1200, caching)}");
         foreach (var opt in _currentOptions) media.AddOption(opt);
+        ParseMediaStats(media); // ④原/现帧率与分辨率：起播解析媒体轨道
         _player.Play(media);
+    }
+
+    /// <summary>解析媒体视频轨道（第④项）：原帧率/原分辨率；无缩放滤镜时现=原，测量缺失显示「检测中」。</summary>
+    private void ParseMediaStats(Media media)
+    {
+        try
+        {
+            media.Parse(MediaParseOptions.ParseLocal);
+            foreach (var t in media.Tracks)
+            {
+                if (t.TrackType != TrackType.Video) continue;
+                if (t.Data is VideoTrack vt)
+                {
+                    _origW = vt.Width; _origH = vt.Height;
+                    if (vt.FrameRateDen > 0) _origFps = vt.FrameRateNum / (double)vt.FrameRateDen;
+                }
+                break;
+            }
+        }
+        catch { /* 轨道信息取不到：画面信息行显示检测中，绝不影响播放 */ }
     }
 
     private void OnStreamError()

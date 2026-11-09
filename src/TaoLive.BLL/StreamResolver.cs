@@ -29,15 +29,24 @@ public class StreamResolver
     // H 连接复用参数（池寿命/空闲超时/并发上限/连接超时，取流应答极小，池化命中即省整个握手）；
     // G ConnectCallback 指定实测最优 IP（DoH 优选 + 延迟记账，TLS 仍按原域名；任何异常回落系统解析）；
     // F DoH 走 dns.alidns.com，失败静默回落系统 DNS，绝不阻塞取流。
-    private static readonly HttpClient Http = BuildHttpClient();
+    // 惰性装配（Lazy）：首次真实取流才建客户端——UI 已先行注入 MemAvailProvider，内存档不缺席。
+    private static readonly Lazy<HttpClient> HttpLazy = new(BuildHttpClient);
+
+    private static HttpClient Http => HttpLazy.Value;
+
+    /// <summary>H 内存档自适应：UI 首次取流前注入可用内存读取器（BLL 纯逻辑不依赖平台 API，测试可断言）。</summary>
+    public static Func<long>? MemAvailProvider { get; set; }
 
     private static HttpClient BuildHttpClient()
     {
+        // H 内存档自适应：池并发上限按可用内存档（充裕 16 / 低配 8）；内存未知按 16 不误伤。
+        long? avail = null;
+        try { avail = MemAvailProvider?.Invoke(); } catch (Exception) { avail = null; } // 读取失败按未知档
         var handler = new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.FromSeconds(60),      // H：池寿命（长连换票地址会过期，60s 翻新）
             PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),   // H：空闲回收
-            MaxConnectionsPerServer = 16,                             // H：并发上限（防刷单域）
+            MaxConnectionsPerServer = RaceConcurrencyPolicy.PoolPerServer(avail ?? 0), // H：并发上限（内存档自适应，防刷单域）
             ConnectTimeout = TimeSpan.FromSeconds(5),                 // H：连接超时（独立于总超时）
             AutomaticDecompression = System.Net.DecompressionMethods.All,
         };
@@ -124,6 +133,49 @@ public class StreamResolver
         if (string.IsNullOrEmpty(value)) return value ?? "";
         if (!value.Contains('\r') && !value.Contains('\n')) return value;
         return value.Replace("\r", " ").Replace("\n", " ").Trim();
+    }
+
+    /// <summary>
+    /// G2 跨源兜底链候选供给（冻结稿 v3.1，老板追加令 2026-11-09）：UI 注入同名台跨源候选，
+    /// 链序由 FallbackChainPlanner 按健康度排定（只排官方源、央视频不再唯一支柱，自有源不进链）；
+    /// null 或链内无他人候选时行为与 ResolveWithFailoverAsync 完全一致（现行链路兜底）。
+    /// </summary>
+    public Func<Channel, IReadOnlyList<Channel>>? ChainProvider { get; set; }
+
+    /// <summary>G2 链内健康评分（UI 注入 SourceScorer 口径；null=按供给顺序稳定排位）。</summary>
+    public Func<Channel, double?>? ChainScore { get; set; }
+
+    /// <summary>
+    /// G2 跨源兜底链取流：主源失败沿链下家（自动跳过拉黑/非法候选），备援连续成功
+    /// SourceFailover.RecoverToPrimaryAfter 轮自动回链首；链尾全败返回 null（「全源不可达」现行收口）。
+    /// 未注入链候选时退回现行两候选备援，绝不把台连死。
+    /// </summary>
+    public async Task<ResolvedStream?> ResolveWithChainAsync(Channel ch, bool force = false)
+    {
+        var provided = ChainProvider?.Invoke(ch);
+        var chain = FallbackChainPlanner.Plan(
+            ch, provided, ChainScore, src => Blackout.Check(src) == BlackoutState.BlackedOut);
+        if (chain.Count <= 1 && (chain.Count == 0 || chain[0].SourceId == ch.SourceId))
+            return await ResolveWithFailoverAsync(ch, force).ConfigureAwait(false); // 现行链路兜底
+
+        string key = ch.EpgKey;
+        int count = chain.Count;
+        int idx = _failover.CurrentIndex(key);
+        if (idx == 0)
+        {
+            var primary = await ResolvePlayUrlAsync(chain[0], force).ConfigureAwait(false);
+            if (primary != null) return primary;
+            idx = _failover.NextCandidateOnFailure(key, count); // 主源失败：沿链下家
+        }
+        while (idx > 0)
+        {
+            var cand = await ResolvePlayUrlAsync(chain[idx], force).ConfigureAwait(false);
+            if (cand != null) { _failover.OnSuccess(key); return cand; }
+            var next = _failover.NextCandidateOnFailure(key, count);
+            if (next <= idx) break; // 已在链尾仍失败：无下家
+            idx = next;
+        }
+        return null; // 链尾全败：全源不可达，交回现行收口
     }
 
     /// <summary>

@@ -134,6 +134,9 @@ public class MainActivity : Activity
     private Channel? _lastRefreshSource;
     // v1.0.10 第①项：源健康账本地存储（应用私有目录，跨启动保留已验证源）
     private SourceHealthStore? _healthStore;
+    // v1.0.20 批1（方案 A/E）：播放实测首帧延迟记账——Play 起记起点，首个首帧顺路入健康账（EMA）
+    private long _playStartTicks;
+    private bool _awaitFirstFrame;
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -180,7 +183,19 @@ public class MainActivity : Activity
         _catalog.RegisterSource(new NmtvSource());
         _catalog.RegisterSource(new GxtvSource());
         _catalog.Rebuild();
+        StreamResolver.MemAvailProvider = () => // H 内存档自适应：池并发按可用内存档（BLL 纯逻辑判定）
+        {
+            var hMem = new ActivityManager.MemoryInfo();
+            ((ActivityManager)GetSystemService(ActivityService)!).GetMemoryInfo(hMem);
+            return hMem.AvailMem;
+        };
         _resolver = new StreamResolver();
+        // G2 跨源兜底链接线（冻结稿 v3.1，老板追加令+修正令）：同名台全部官方源进链参选，
+        // 链序=健康评分降序（央视频不再唯一支柱）；链内不排用户自有源（修正令），执行走既有备援口径
+        _resolver.ChainProvider = ch => _catalog.All
+            .Where(c => !c.Unavailable && SameChannel(c, ch) && c.SourceId != ch.SourceId)
+            .ToList();
+        _resolver.ChainScore = c => SourceScorer.Score(_precheck.SourceHealthOf(c), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         CheckStartupSelfClean(); // v1.0.20 F：上次未正常退出（崩溃/被杀）→ 清取流缓存等可疑状态
         _host = new LiveVideoHost { TotalMemBytes = _totalMem }; // ⑩内存水位自适应口径注入
         WireHostEvents();
@@ -328,7 +343,7 @@ public class MainActivity : Activity
             if (!ReferenceEquals(source, _playSource) && source.SourceId != _playSource?.SourceId)
                 CrashNet.Record($"[Reconnect] 换源重连：{_playSource?.SourceId ?? "无"} → {source.SourceId}（{cur.Name}）");
             _playSource = source;
-            var fresh = await _resolver.ResolveWithFailoverAsync(source, force: true);
+            var fresh = await _resolver.ResolveWithChainAsync(source, force: true); // G2：重连沿健康链换源
             if (fresh is null)
             {
                 CrashNet.Record($"[Reconnect] 候选取流全失败（{cur.Name}）——播放器重试余量耗尽后如实收口");
@@ -395,7 +410,16 @@ public class MainActivity : Activity
                 CrashNet.Record("[FallbackLoop] 画面恢复（首帧落地），解除暂停并随台清账");
             }
             // ⑬健康表回写：播放实测成功覆盖预检结论（取播来源变体优先；Unix 毫秒，落盘可比）
-            if (_playSource != null) _precheck.ReportSourceResult(_playSource, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            // 批1 A/E：首帧顺路记延迟（Play→首帧全程，EMA 入账）；仅起播窗口记，
+            // 稳播期换档/热切帧不污染延迟账（_awaitFirstFrame 记一次即收）
+            if (_playSource != null)
+            {
+                int? delay = _awaitFirstFrame
+                    ? (int)Math.Clamp(System.Environment.TickCount64 - _playStartTicks, 0L, int.MaxValue)
+                    : null;
+                _awaitFirstFrame = false;
+                _precheck.ReportSourceResult(_playSource, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), delay);
+            }
             HideLoading();
             _ = UpgradeAfterFirstFrameAsync(); // 【六】先亮后升：最快档已亮，后台无感升最高档（双实例）
         });
@@ -548,6 +572,9 @@ public class MainActivity : Activity
         // 无已验证来源回到本台本身；任一来源通=频道可用，全挂才进无信号组。
         var source = _precheck.BestAliveSource(ch, _catalog.All.ToList()) ?? ch;
         _playSource = source;
+        // 批1 A/E（冻结稿）：播放实测天然经过一次 HTTP 往返，顺路记时长——起点在起播请求前，首个首帧落地即入账
+        _playStartTicks = System.Environment.TickCount64;
+        _awaitFirstFrame = true;
         _precheck.MarkUsed(source, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // v1.0.16 方案 A：最近使用入账（评分衰减基准）
         // fix31：真正换台时长窗断路随台清账（计数清零、退出观察期/收口态、恢复自动链路）；
         // 重连同台不清——失败循环总量照旧累计，断路口径不被重连重置绕过
@@ -610,7 +637,7 @@ public class MainActivity : Activity
                 //（网络刚通/取票抖动最常见，网络级失败已不进 30 秒冷却）；服务器明确拒绝仍走冷却慢路
                 for (int attempt = 1; ; attempt++)
                 {
-                    resolved = await resolver.ResolvePlayUrlAsync(source);
+                    resolved = await resolver.ResolveWithChainAsync(source); // G2：主源失败沿健康链下家，单链自动退现行备援
                     if (resolved is not null || attempt >= 3) break;
                     if (seq != _playSeq) return; // 换台后旧任务作废
                     await Task.Delay(2000);
@@ -748,6 +775,15 @@ public class MainActivity : Activity
             if (variants.Count <= 1) return null; // 单源无可竞速：直接走现行链路
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var candidates = _racer.Pick(variants, c => SourceScorer.Score(_precheck.SourceHealthOf(c), now), now);
+            if (candidates.Count == 0) return null;
+            // 冻结稿场景⑫：竞速并发按内存三档收缩（充裕 3 路 / 紧张、极低 2 路），低配设备内存占用不升
+            var raceAm = (ActivityManager)GetSystemService(ActivityService)!;
+            var raceMem = new ActivityManager.MemoryInfo();
+            raceAm.GetMemoryInfo(raceMem);
+            candidates = RaceConcurrencyPolicy.Shrink(
+                candidates,
+                c => SourceScorer.Score(_precheck.SourceHealthOf(c), now),
+                RaceConcurrencyPolicy.Cap(raceMem.AvailMem));
             if (candidates.Count == 0) return null;
             return await _racer.RunAsync(candidates,
                 c => _resolver.ProbeReachableDetailedAsync(c.StreamUrl, c.Referer, c.UserAgent),
@@ -1131,10 +1167,16 @@ public class MainActivity : Activity
     /// <summary>【九】A自动档巡检（5 秒节拍，口径同 SmartGovernor）：档位变化走双实例，绝不重起当前台。</summary>
     private void TickGovernor()
     {
-        if (_current is null || _host.IsSwapPending || _hotSwap.HasPending) return;
+        var cur = _current;
+        // 批1 A（冻结稿「巡检每 5 秒已喂帧统计，顺路回写」）：卡顿率顺路入健康账——
+        // 口径：首帧已出后播放时钟停滞（IsLive）才算卡顿；起播连接期不算（那段是延迟与失败口径，不污染卡顿账）。
+        // 观测先于自动档守卫：热切换/换台挂起期间照记，不漏窗口；零额外请求
+        bool stalled = cur is not null && _frameForCurrentSwitch && !_host.IsAlive;
+        if (cur is not null && _playSource != null)
+            _precheck.ReportStallObserved(_playSource, stalled);
+        if (cur is null || _host.IsSwapPending || _hotSwap.HasPending) return;
         var g = _governor;
         if (g is null) return;
-        bool stalled = !_host.IsAlive; // 播放时钟停滞（IsLive 口径）即卡顿信号
         // fix25：升档观察窗——稳不住（帧率跌破 85% 或停滞）自动退回原档，判定即收口只退一次
         if (_keeper.Watching)
         {

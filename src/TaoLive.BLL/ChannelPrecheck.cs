@@ -161,6 +161,22 @@ public class ChannelPrecheck
         HealthStore?.MarkDirty();
     }
 
+    /// <summary>
+    /// 卡顿率顺路回写（v1.0.20 批1，冻结稿 A「近期卡顿率：巡检每 5 秒已喂帧统计，顺路回写」）：
+    /// 巡检节拍对当前播放源观测一次，EMA(α=0.5) 收敛近期卡顿率——零额外请求。
+    /// 只记快慢不改通断：State/CheckedAtMs 原样（不刷新核验时间），判死仍走连败 3 次原口径。
+    /// </summary>
+    public void ReportStallObserved(Channel ch, bool stalled)
+    {
+        var entry = _sourceHealth.GetOrAdd(SourceKey(ch), _ => new SourceHealthEntry
+        {
+            SourceId = ch.SourceId,
+            EpgKey = ch.EpgKey,
+        });
+        entry.StallRate = (entry.StallRate + (stalled ? 1.0 : 0.0)) / 2.0;
+        HealthStore?.MarkDirty();
+    }
+
     /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。</summary>
     private void WriteSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null)
     {

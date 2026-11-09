@@ -1292,6 +1292,50 @@ Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: false) == SwapMode.
         }
         finally { try { System.IO.Directory.Delete(dir, true); } catch { } }
     }
+    {
+        // 批1 A：卡顿率顺路回写（EMA α=0.5）——只记快慢不改通断结论与核验时间
+        var pre = new ChannelPrecheck(_ => Task.FromResult(true), 0);
+        var ch = new Channel { Name = "卡顿台", SourceId = "st", EpgKey = "k", StreamUrl = "http://st/1" };
+        pre.ReportSourceResult(ch, true, 1_000); // 先探通入账
+        pre.ReportStallObserved(ch, stalled: true);
+        var e = pre.SourceHealthOf(ch);
+        Check(e is not null && Math.Abs(e.StallRate - 0.5) < 1e-9, "批1 A 卡顿账：首次卡顿观测 EMA=0.5");
+        pre.ReportStallObserved(ch, stalled: true);
+        Check(Math.Abs(pre.SourceHealthOf(ch)!.StallRate - 0.75) < 1e-9, "批1 A 卡顿账：连卡两次向 1 收敛（0.75）");
+        pre.ReportStallObserved(ch, stalled: false);
+        Check(Math.Abs(pre.SourceHealthOf(ch)!.StallRate - 0.375) < 1e-9, "批1 A 卡顿账：平稳观测向 0 收敛（0.375）");
+        Check(pre.SourceHealthOf(ch)!.State == ChannelHealth.Alive && pre.SourceHealthOf(ch)!.CheckedAtMs == 1_000,
+            "批1 A 卡顿账：只记快慢不改通断结论与核验时间");
+        double withStall = SourceScorer.Score(pre.SourceHealthOf(ch), 2_000) ?? 0;
+        double clean = SourceScorer.Score(new SourceHealthEntry { FirstDelayMs = 400, SuccessStreak = 1, CheckedAtMs = 1_000 }, 2_000) ?? 0;
+        Check(withStall < clean, "批1 A 卡顿账：有卡顿劣迹的源评分低于同等流畅源");
+        Check(SourceScorer.Score(new SourceHealthEntry { FirstDelayMs = 400, SuccessStreak = 1, CheckedAtMs = 1_000, StallRate = 1.0 }, 2_000)
+            < SourceScorer.Score(new SourceHealthEntry { FirstDelayMs = 400, SuccessStreak = 1, CheckedAtMs = 1_000 }, 2_000),
+            "批1 A 卡顿账：全卡死源评分垫底（评分用上卡顿维度）");
+    }
+    {
+        // 批1 A/E：播放实测首帧延迟入账（EMA 与预检同口径）；旧版账本 JSON 缺新字段载入缺省安全
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "taolive_test_" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            var pre = new ChannelPrecheck(_ => Task.FromResult(true), 0);
+            var ch = new Channel { Name = "实测台", SourceId = "pb", EpgKey = "k", StreamUrl = "http://pb/1" };
+            pre.ReportSourceResult(ch, true, 1_000, 2000); // 播放实测：起播→首帧 2000ms
+            Check(pre.SourceHealthOf(ch)!.FirstDelayMs == 2000, "批1 A/E 记账：播放实测首帧延迟入账");
+            pre.ReportSourceResult(ch, true, 1_100, 400);  // 再次实测更快：EMA(2000,400)=1200
+            Check(pre.SourceHealthOf(ch)!.FirstDelayMs == 1200, "批1 A/E 记账：播放实测延迟 EMA 平滑（2000,400→1200）");
+            var oldJson = "[{\"K\":\"pb:k\",\"SourceId\":\"pb\",\"EpgKey\":\"k\",\"State\":\"Alive\",\"UtcMs\":"
+                + (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 1000) + "}]";
+            System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "source_health.json"), oldJson);
+            var store = new SourceHealthStore(dir);
+            store.Load();
+            Check(store.Entries.TryGetValue("pb:k", out var oldE) && oldE.State == ChannelHealth.Alive
+                && oldE.FirstDelayMs == 0 && oldE.StallRate == 0.0 && oldE.SuccessStreak == 0 && oldE.LastUsedMs == 0,
+                "批1 A 落盘：旧版账本（无 A/E 新字段）载入缺省安全，向后兼容");
+        }
+        finally { try { System.IO.Directory.Delete(dir, true); } catch { } }
+    }
 
     // ---- 方案 B：换台探测竞速（择先胜出/全败回落/作废/被拒/同源间隔/择路封顶）----
     long bNow = 1_000_000;
@@ -1334,6 +1378,18 @@ Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: false) == SwapMode.
             _ => Task.Delay(10_000).ContinueWith(_ => (true, false)), _ => true);
         long cost = Environment.TickCount64 - start;
         Check(hang is null && cost < 5_000, "B 竞速：探测挂死按总窗口收口，不拖慢换台");
+    }
+
+    // ---- 方案 B 场景⑫：竞速并发按内存三档收缩 ----
+    {
+        var chans = Enumerable.Range(1, 5).Select(i => new Channel { Name = "竞速台", SourceId = $"s{i}", EpgKey = "k", StreamUrl = $"http://s{i}/1" }).ToList();
+        double Score2(Channel c) => double.TryParse(c.SourceId[1..], out var n) ? n : 0;
+        Check(RaceConcurrencyPolicy.Cap(900L * 1024 * 1024) == 3, "B 场景⑫：内存充裕并发 3 路");
+        Check(RaceConcurrencyPolicy.Cap(700L * 1024 * 1024) == 2 && RaceConcurrencyPolicy.Cap(300L * 1024 * 1024) == 2, "B 场景⑫：紧张与极低档收缩为 2 路");
+        Check(RaceConcurrencyPolicy.Cap(0) == 3, "B 场景⑫：内存未知按充裕 3 路兜底");
+        var shrunk = RaceConcurrencyPolicy.Shrink(chans, c => Score2(c), 2);
+        Check(shrunk.Count == 2 && shrunk[0].SourceId == "s5" && shrunk[1].SourceId == "s4", "B 场景⑫：低配收缩按评分降序截取前 2 路");
+        Check(RaceConcurrencyPolicy.Shrink(chans, c => Score2(c), 3).Count == 5, "B 场景⑫：cap 达上限时不额外截断");
     }
 
     // ---- 方案 F：DoH 解析与静默回落 ----
@@ -1390,8 +1446,97 @@ Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: false) == SwapMode.
         finally { DomainFallback.Map = backup; }
     }
 
-    // ---- 方案 H：连接复用参数口径（池化常量在位）----
-    Check(true, "H 复用：池寿命 60s/空闲 30s/并发 16/连接超时 5s 已在 BuildHttpClient 装配（编译口径断言占位）");
+    // ---- 方案 H：连接复用参数口径（反射核验装配真值，替代编译占位）----
+    {
+        var httpField = typeof(StreamResolver).GetField("HttpLazy",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(httpField is not null, "H 复用：共享客户端字段在位");
+        if (httpField is not null)
+        {
+            var lazy = (Lazy<System.Net.Http.HttpClient>)httpField.GetValue(null)!;
+            var http = lazy.Value; // 惰性装配：此时 MemAvailProvider 未注入（未知档），按 16 兜底
+            // .NET 8 处理器私有字段在基类 HttpMessageInvoker 上：沿继承链反射，同一核验口径
+            System.Reflection.FieldInfo? handlerField = null;
+            for (var t = typeof(System.Net.Http.HttpClient); t != null && handlerField is null; t = t.BaseType!)
+                handlerField = t.GetField("_handler",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Check(handlerField is not null, "H 复用：HttpClient 内部处理器字段可反射");
+            if (handlerField is not null)
+            {
+                var handler = (System.Net.Http.SocketsHttpHandler)handlerField.GetValue(http)!;
+                Check(handler.PooledConnectionLifetime == TimeSpan.FromSeconds(60), "H 复用：池寿命 60s（票据短效，连接随票翻新）");
+                Check(handler.PooledConnectionIdleTimeout == TimeSpan.FromSeconds(30), "H 复用：空闲回收 30s");
+                Check(handler.MaxConnectionsPerServer == 16, "H 复用：并发上限 16（防刷单域）");
+                Check(handler.ConnectTimeout == TimeSpan.FromSeconds(5), "H 复用：连接超时 5s（独立于总超时）");
+            }
+        }
+        Check(RaceConcurrencyPolicy.PoolPerServer(0) == 16, "H 自适应：内存未知按 16 不误伤");
+        Check(RaceConcurrencyPolicy.PoolPerServer(1L * 1024 * 1024 * 1024) == 16, "H 自适应：充裕档维持 16");
+        Check(RaceConcurrencyPolicy.PoolPerServer(500L * 1024 * 1024) == 8, "H 自适应：紧张档缩 8（低配省内存）");
+        Check(RaceConcurrencyPolicy.PoolPerServer(200L * 1024 * 1024) == 8, "H 自适应：极低档缩 8");
+    }
+
+    // ============ 冻结稿 v3.1 老板追加令+修正令：G2 跨源兜底链（只排官方源/健康度排链/拉黑跳过/链尾收口） ============
+    {
+        var chainCurrent = new Channel { Name = "广西卫视", SourceId = "ysp-main", EpgKey = "gxws", StreamUrl = "ftp://bad-entry" };
+        var userCh = new Channel { Name = "广西卫视", SourceId = "user-m3u", EpgKey = "gxws", StreamUrl = "http://user/gxws.m3u8" };
+        var cztvCh = new Channel { Name = "广西卫视", SourceId = "gxtv", EpgKey = "gxws", StreamUrl = "http://gxtv/gxws.m3u8" };
+        var yspCh = new Channel { Name = "广西卫视", SourceId = "yangshipin", EpgKey = "gxws", StreamUrl = "https://ysp/entry" };
+        var deadCh = new Channel { Name = "广西卫视", SourceId = "jstv-dead", EpgKey = "gxws", StreamUrl = "https://dead/x" };
+        // 供执行断言用的直连官方源（未知 SourceId 走默认分支，直接取 StreamUrl，不打真实网络）
+        var srcA = new Channel { Name = "广西卫视", SourceId = "src-a", EpgKey = "gxws", StreamUrl = "http://srca/gxws.m3u8" };
+        var srcB = new Channel { Name = "广西卫视", SourceId = "src-b", EpgKey = "gxws", StreamUrl = "http://srcb/gxws.m3u8" };
+
+        // 修正令：链内不排用户自有源，只排官方源；其余按评分降序（未测 0 分保持供给序）
+        var chain = FallbackChainPlanner.Plan(chainCurrent, new[] { yspCh, cztvCh, userCh, deadCh },
+            c => c.SourceId == "gxtv" ? 0.9 : (c.SourceId == "yangshipin" ? 0.5 : 0.0), null);
+        Check(chain.Select(c => c.SourceId).SequenceEqual(new[] { "gxtv", "yangshipin", "jstv-dead" }),
+            "G2 链序：自有源不进链，非法地址主源剔除，官方源按健康评分降序");
+
+        // 拉黑观察期整段跳过（死源快认输）；非法流地址不进链
+        var chain2 = FallbackChainPlanner.Plan(chainCurrent, new[] { userCh, cztvCh, deadCh },
+            null, src => src == "gxtv");
+        Check(chain2.Select(c => c.SourceId).SequenceEqual(new[] { "jstv-dead" }),
+            "G2 跳源：拉黑源整段跳过；自有源与非法地址（ftp 主源）不进链");
+
+        // 去重：同一来源只留一个候选
+        var dup = new Channel { Name = "广西卫视", SourceId = "gxtv", EpgKey = "gxws", StreamUrl = "http://gxtv/alt.m3u8" };
+        var chain3 = FallbackChainPlanner.Plan(chainCurrent, new[] { cztvCh, dup, dup }, null, null);
+        Check(chain3.Count(c => c.SourceId == "gxtv") == 1, "G2 去重：同源多候选只留一个");
+
+        // 链执行：主源失败沿链下家（未知 SourceId 走默认分支直取地址，不打真实网络）
+        {
+            var r = new StreamResolver();
+            r.ChainProvider = _ => new[] { userCh, srcA, srcB };
+            var ok = await r.ResolveWithChainAsync(new Channel { SourceId = "src-cur", EpgKey = "gxws", StreamUrl = "ftp://bad" });
+            Check(ok is not null && ok.Url == "http://srca/gxws.m3u8", "G2 执行：主源失败沿链下家，首个健康官方源胜出，自有源不占位");
+        }
+
+        // 未注入链候选：行为与现行两候选备援一致（现行链路兜底，不把台连死）
+        {
+            var r = new StreamResolver();
+            var ok = await r.ResolveWithChainAsync(new Channel { SourceId = "src-x", EpgKey = "k", StreamUrl = "http://direct/s.m3u8" });
+            Check(ok is not null && ok.Url == "http://direct/s.m3u8", "G2 兜底：未注入链退现行两候选备援，行为不变");
+        }
+
+        // 链内无可选候选：全部剔除后退回现行备援，同样全败即返回 null（「全源不可达」现行收口）
+        {
+            var r = new StreamResolver();
+            r.ChainProvider = _ => new[] { new Channel { SourceId = "user-m3u", EpgKey = "k2", StreamUrl = "ftp://bad-user" },
+                                          new Channel { SourceId = "s-bad", EpgKey = "k2", StreamUrl = "ftp://bad2/x" } };
+            var none = await r.ResolveWithChainAsync(new Channel { SourceId = "s-cur", EpgKey = "k2", StreamUrl = "ftp://bad-cur" });
+            Check(none is null, "G2 收口：链内无官方候选退现行备援，全败返回 null，交回「全源不可达」现行收口");
+        }
+
+        // 链内评分口径注入（SourceScorer 联动由 UI 注入；此处验证排序函数生效）
+        {
+            var r = new StreamResolver();
+            r.ChainProvider = _ => new[] { srcB, srcA };
+            r.ChainScore = c => c.SourceId == "src-a" ? 0.9 : 0.1;
+            var ok = await r.ResolveWithChainAsync(new Channel { SourceId = "src-cur", EpgKey = "gxws2", StreamUrl = "ftp://bad" });
+            Check(ok is not null && ok.Url == "http://srca/gxws.m3u8", "G2 评分：健康分高的官方源排链首（央视频不再唯一支柱）");
+        }
+    }
 }
 
 // ============ fix31 防卡死（冻结稿 v2）：长窗兜底断路 + 403 冷却跳发现 ============

@@ -76,4 +76,15 @@ public static class LiveQuality
             "high" => "高",
             _ => "自动", // auto / 旧版 smart / 未知值
         };
+
+    /// <summary>
+    /// 实际生效档 → 显示名（v1.0.20 ⑪画质档如实）：关/低/高。
+    /// 与 DisplayName（设置值口径）区分：本方法吃的是生效档枚举（SmartGovernor 降级后的实际档）。
+    /// </summary>
+    public static string TierName(AiLiveTier tier) => tier switch
+    {
+        AiLiveTier.High => "高",
+        AiLiveTier.Low => "低",
+        _ => "关",
+    };
 }

@@ -16,7 +16,8 @@ public enum ChannelHealth
     Dead,
 }
 
-/// <summary>来源级健康记录（v1.0.9 第⑬项）：每来源单独记录通断与最近核验时间。</summary>
+/// <summary>来源级健康记录（v1.0.9 第⑬项）：每来源单独记录通断与最近核验时间。
+/// v1.0.16 抢流方案 A：新增延迟/卡顿率/连续成功/最近使用四项记账（评分择优用，向后兼容缺省）。</summary>
 public class SourceHealthEntry
 {
     public string SourceId { get; set; } = "";
@@ -24,6 +25,10 @@ public class SourceHealthEntry
     public ChannelHealth State { get; set; } = ChannelHealth.Unknown;
     public long CheckedAtMs { get; set; }   // 最近核验时间（Unix 毫秒，跨启动可比；0=未核验）
     public int ConsecutiveFails { get; set; } // 连续失败计数（v1.0.10：达阈值自动淘汰交回重探）
+    public int FirstDelayMs { get; set; }     // v1.0.16 方案 A/E：首包/探测延迟 EMA（0=未知）
+    public double StallRate { get; set; }     // v1.0.16 方案 A：卡顿率 0–1（0=未观测，评分按流畅满分处理）
+    public int SuccessStreak { get; set; }    // v1.0.16 方案 A：连续成功次数（失败清零，衰减不清零）
+    public long LastUsedMs { get; set; }      // v1.0.16 方案 A：最近被选去播放的时刻（0=从未；衰减基准）
 }
 
 /// <summary>
@@ -45,6 +50,13 @@ public class ChannelPrecheck
 
     /// <summary>状态变化事件：(台 EPG 键, 新状态)。UI 层订阅后刷新列表。</summary>
     public event Action<string, ChannelHealth>? StateChanged;
+
+    /// <summary>
+    /// 循环暂停闸（老板 2026-11-08 拍板：连接优先 + 续接循环）：
+    /// 连接优先时在任意台节点上就地挂起，冷了之后从暂停点接着往下探（不从头重转一轮）。
+    /// null=无闸照常跑；等待期间取消令牌触发即退出（正常退出，不属异常）。
+    /// </summary>
+    public Func<CancellationToken, Task>? PauseGate { get; set; }
 
     /// <summary>源健康账持久化（v1.0.10）：UI 注入后，每次健康表变化自动节流落盘；启动时经 Attach 灌回历史账。</summary>
     public SourceHealthStore? HealthStore { get; private set; }
@@ -91,20 +103,25 @@ public class ChannelPrecheck
         _sourceHealth.TryGetValue(SourceKey(ch), out var e) ? e : null;
 
     /// <summary>
-    /// 该台在健康表里最近验证可用的来源变体（v1.0.9 第⑬项）：
+    /// 该台在健康表里评分最高的可用来源变体（v1.0.16 方案 A：从「最近验证」升级为「评分最高」）：
+    /// 评分 = 延迟、卡顿率、连续成功加权（指数衰减不清零）；并列取核验时间新者。
     /// 播放选源与卡死自救换源优先取它；同频道没有已验证来源时返回当前台本身。
     /// </summary>
     public Channel? BestAliveSource(Channel ch, IEnumerable<Channel> catalog)
     {
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         Channel? best = null;
+        double bestScore = double.MinValue;
         long bestAt = -1;
         foreach (var cand in catalog)
         {
             if (GroupKey(cand) != GroupKey(ch) || cand.Unavailable) continue;
             var entry = SourceHealthOf(cand);
             if (entry is null || entry.State != ChannelHealth.Alive) continue;
-            if (entry.CheckedAtMs > bestAt)
+            double score = SourceScorer.Score(entry, nowMs) ?? 0.0;
+            if (score > bestScore || (score == bestScore && entry.CheckedAtMs > bestAt))
             {
+                bestScore = score;
                 bestAt = entry.CheckedAtMs;
                 best = cand;
             }
@@ -125,14 +142,27 @@ public class ChannelPrecheck
     /// 来源级结果回写（v1.0.9 第⑬项）：播放实测与卡死自救换源的结论写进健康表，
     /// 播放实测覆盖预检结论；同频道任一来源通即整台转可用。
     /// v1.0.10：连续失败达阈值自动淘汰（交回重探）；每次变化节流落盘。
+    /// v1.0.16 方案 A/E：可选带实测延迟（毫秒），EMA 记入 FirstDelayMs；成功累加连续成功，失败清零。
     /// </summary>
-    public void ReportSourceResult(Channel ch, bool ok, long nowMs)
+    public void ReportSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null)
     {
-        WriteSourceResult(ch, ok, nowMs);
+        WriteSourceResult(ch, ok, nowMs, delayMs);
+    }
+
+    /// <summary>被选去播放时记账（v1.0.16 方案 A）：刷新最近使用时刻，作为评分衰减基准。</summary>
+    public void MarkUsed(Channel ch, long nowMs)
+    {
+        var entry = _sourceHealth.GetOrAdd(SourceKey(ch), _ => new SourceHealthEntry
+        {
+            SourceId = ch.SourceId,
+            EpgKey = ch.EpgKey,
+        });
+        entry.LastUsedMs = nowMs;
+        HealthStore?.MarkDirty();
     }
 
     /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。</summary>
-    private void WriteSourceResult(Channel ch, bool ok, long nowMs)
+    private void WriteSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null)
     {
         var key = SourceKey(ch);
         var entry = _sourceHealth.GetOrAdd(key, _ => new SourceHealthEntry
@@ -143,6 +173,13 @@ public class ChannelPrecheck
         entry.State = ok ? ChannelHealth.Alive : ChannelHealth.Dead;
         entry.CheckedAtMs = nowMs > 0 ? nowMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         entry.ConsecutiveFails = ok ? 0 : entry.ConsecutiveFails + 1;
+        if (ok) entry.SuccessStreak++;
+        else entry.SuccessStreak = 0;
+        if (delayMs is { } d && d > 0)
+        {
+            // EMA 平滑（α=0.5）：单次毛刺不支配，趋势尽快跟上
+            entry.FirstDelayMs = entry.FirstDelayMs <= 0 ? d : (entry.FirstDelayMs + d) / 2;
+        }
         if (!ok && entry.ConsecutiveFails >= RetireAfterConsecutiveFails)
         {
             _sourceHealth.TryRemove(key, out _); // 连挂自动淘汰：不再被选源取用，交回预检重探
@@ -168,6 +205,8 @@ public class ChannelPrecheck
         foreach (var group in channels.GroupBy(GroupKey))
         {
             if (ct.IsCancellationRequested) return;
+            // 续接循环（老板 2026-11-08 拍板）：连接优先时在每个台节点前就地挂起，恢复后从断点继续，不从头重转
+            if (PauseGate is { } gate) await gate(ct).ConfigureAwait(false);
             var variants = group.ToList();
             var lead = variants[0];
             if (!keepKnownState || Of(lead) == ChannelHealth.Unknown)
@@ -177,14 +216,17 @@ public class ChannelPrecheck
             {
                 if (ct.IsCancellationRequested) return;
                 bool ok;
+                // v1.0.16 方案 E（预热记账，零新增请求）：预热探测顺路记延迟——探测耗时即轻探往返近似首包耗时
+                long probeStart = Environment.TickCount64;
                 try { ok = await _probe(ch).ConfigureAwait(false); }
-                catch { ok = false; }
-                WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                catch (Exception ex) { ok = false; BllLog.Warn("ChannelPrecheck", $"预检探源异常（{ch.SourceId}，台 {ch.Name}，url={BllLog.MaskUrl(ch.StreamUrl)}）——按失效处理，交回重探", ex); }
+                long probeDelay = Environment.TickCount64 - probeStart;
+                WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ok ? (int)Math.Min(probeDelay, int.MaxValue) : null);
                 anyOk |= ok;
                 if (_intervalMs > 0)
                 {
                     try { await Task.Delay(_intervalMs, ct).ConfigureAwait(false); }
-                    catch (OperationCanceledException) { return; }
+                    catch (OperationCanceledException) { BllLog.Info("ChannelPrecheck", "预检循环取消（正常退出，不属异常）"); return; }
                 }
             }
             foreach (var ch in variants)

@@ -34,11 +34,109 @@
             预检判死的台跳过，全部不可用返回 null 由调用方亮「无信号」。
             </summary>
         </member>
-        <member name="M:TaoLive.UI.Android.Tv.MainActivity.OnCurrentDeadByPrecheck(System.String)">
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.OnCurrentDeadByPrecheck(System.String,System.Boolean)">
             <summary>
             预检判死当前台（第16项衔接）：用户已在看的台（首帧已出）不擅自切台——交给看门狗重连；
             还没出画面的台（含开机默认台）预检判死即跳下一个可用台，全死亮「无信号」。
+            fix29：force=true 供首帧兜底强制跳台——无首帧时宿主 IsAlive 可能为真，不能挡住跳台。
+            v1.0.20 B 终局出口：距上次成功累计绕满一圈仍无一成功 → 停跳，亮「信号源暂时不可用」，
+            不再兜圈死循环（真机日志实锤的央1→央4 兜圈本体）。
             </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.Play(TaoLive.Model.Channel,System.Boolean)">
+            <summary>
+            起播。autoHop=true 表示本次 Play 来自自动跳台链路（OnCurrentDeadByPrecheck）——
+            v1.0.20 B：该链路在跳前已记账，这里不清终局账；用户手动选台（默认 false）即清账重新给额度。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.SameChannel(TaoLive.Model.Channel,TaoLive.Model.Channel)">
+            <summary>同频道归并（与 ChannelPrecheck 口径一致：台名去空格一致视为同一频道）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.RaceSwitchSourceAsync(TaoLive.Model.Channel,TaoLive.Model.Channel,System.Int32)">
+            <summary>
+            换台探测竞速（方案 B）：候选=同频道全部可用来源变体，按健康账评分取前 2~3 路；
+            单路 1.2s 超时、总窗 1.5s、同源间隔 ≥30s；被拒（403/429）回写健康账走现行冷却；
+            竞速任务挂播放代数，换台即作废；全败返回 null 退回现行取流链路。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.CompanionSourceFor(TaoLive.Model.Channel,TaoLive.Model.Channel)">
+            <summary>抢首包陪跑候选（方案 D）：同频道次优来源变体（排除当前胜出源，按评分取最高者）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.BeginFirstPacketCompanion(System.String,System.Collections.Generic.List{System.ValueTuple{System.String,System.String}})">
+            <summary>
+            发起抢首包陪跑（方案 D）：复用双实例「新流亮了再换」机制（BeginHotSwap 既有口径），
+            受理后 3 秒窗口：陪跑先亮即提交顶上（CommitHotSwap），到点未亮即断陪跑（留主画面）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ClearFirstPacketCut">
+            <summary>撤陪跑 3 秒收口回调（提交/放弃/换台时调用，不残留）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.WaitNetworkReadyAsync(System.Int32)">
+            <summary>
+            fix28：起播前等网络就绪——冷启动头几秒网络未必就绪，先连必败还白吃 30 秒冷却；
+            等就绪再连（最长 10 秒，超时不拦，连接重试链路兜底）。只在开机首连前用。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ScheduleConnectRetry(System.Int32,TaoLive.Model.Channel)">
+            <summary>
+            fix28：首连最终失败后，冷却一过（约 32 秒）主动重连当前台——连接优先，不干等冷启动轮询。
+            换台或已连上即作废（代数守卫）；重连再失败由本方法再排下一次，用户随时可切台。
+            fix29 修正①：轮数改用 ConnectRetryLedger 按频道记账——原按播放任务序号记账，
+            重连本身走 Play 换新任务序号，轮数永远数不到 3，「3 轮放开探活」实际不生效。
+            快失败约 3 轮 96 秒放开探活；慢失败（取流单次最长 10 秒叠加）最坏 2~3 分半——
+            宁可慢跳台也要把连接优先做足（老板 2026-11-08 定）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ShowObserveNotice">
+            <summary>观察期一次性提示：每次进入观察期提示一次，不刷屏。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.EnterObserve">
+            <summary>
+            进入 90 秒静默观察期：停自动兜底与自动跳台（宿主自救/静默重取流/断流重连全静默），
+            保持当前画面，按键全可用；期满自动恢复自动链路——源若仍坏，事件继续入账走下一轮或收口。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ClearObserveUnpause">
+            <summary>撤观察期到期回调（换台/收口时调用，不残留）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.CloseLoopAsNoSignal(TaoLive.Model.Channel)">
+            <summary>
+            断路收口（现行「全源不可达」口径）：连 3 轮观察仍全败，停自动兜底、亮无信号——
+            绝不无限空转；换台即恢复（Play 内清账放行）。只报一次，防刷屏。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.LogResourceWatermark(System.Object)">
+            <summary>fix31 ③：每 5 分钟资源观测日志（托管堆/系统内存/播放缓冲水位，为长跑稳定性排查留底）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.UpgradeAfterFirstFrameAsync">
+            <summary>
+            【六】先亮后升：最快档画面已亮，后台无感升最高档（双实例新流亮了再换）。
+            已是最高档/单档不折腾；升级失败或网络撑不住留当前档，绝不为升档搞挂画面。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ApplyTierChange(TaoLive.BLL.AiLiveTier,System.String)">
+            <summary>
+            【九】A/手动切档统一入口：绝不重起当前台（Play(_current) 路径退役）。
+            同档不折腾；可热应用优先热切（现渲染器滤镜随媒体参数生效，走双实例）；失败留当前档。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.BeginHotSwap(System.String,System.Collections.Generic.IReadOnlyList{System.ValueTuple{System.String,System.String}},System.Int32,System.String)">
+            <summary>发起一次双实例切换（会话受理→第二载体入视图树→宿主后台连新流）。受理失败=留在当前档，不重试到崩。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.CommitHotSwap">
+            <summary>第二实例新流已亮：顶上成主画面（无黑无闪），档位落账。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.AbortHotSwapUi(System.String)">
+            <summary>放弃切换：第二实例撤出视图树与播放内核，当前画面从头到尾原样。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.CreateSwapCarrier">
+            <summary>第二实例载体：与主载体同型（纹理/表面），入视图树垫底、暂不可见——新流在背后连，首帧到齐才亮。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.TickGovernor">
+            <summary>【九】A自动档巡检（5 秒节拍，口径同 SmartGovernor）：档位变化走双实例，绝不重起当前台。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ConnectHint(System.String)">
+            <summary>⑫逐类提示（ConnectFailure 口径）：不笼统「连接失败」，每类给对应说法。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ProbeChannelAsync(TaoLive.Model.Channel)">
             <summary>预检轻探（v1.0.8）：换票成功即服务器可达；直连源只取几 KB 头数据验证，不建视频传输。</summary>
@@ -49,7 +147,7 @@
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.PrecheckLoopAsync(System.Threading.CancellationToken)">
             <summary>
             常驻循环预检：每轮保态复测（可用台常绿、无信号台留组，探测完才翻转），轮间歇 20 秒；
-            单台间隔 600ms + 央视频取票 403 冷却兜底，全程不被判异常流量。关掉开关时空转低耗等待。
+            单台间隔 1000ms（v1.0.13 让路前台切台）+ 央视频取票 403 冷却兜底，全程不被判异常流量。关掉开关时空转低耗等待。
             </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.OpenSystemSettings">
@@ -59,10 +157,25 @@
             </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.CycleAiTier">
-            <summary>画质档循环（auto→off→low→high）：立即按新档重起当前台生效，档位持久化。</summary>
+            <summary>画质档循环（自动→低→高→自动，v1.0.10 全中文）：档位持久化，生效走双实例无感切换（绝不重起当前台）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ToggleRush">
+            <summary>换台竞速开关（v1.0.16 方案 B，默认开）：关掉即全走现行选源链路。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ToggleFirstPacket">
+            <summary>并行抢首包开关（v1.0.16 方案 D，默认关）：实验能力，开起后换台并行双实例抢首包。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ShowBootLoading">
+            <summary>fix28（老板拍板）：起播前等网络就绪也给亮牌——「正在连接网络」呼吸点，不黑屏干等。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.StartLoadingDots(TaoLive.Model.Channel)">
             <summary>亮牌期间的呼吸点动画：正在连接 → 正在连接· → ·· → ···，让「还没死机」一眼可见。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ListGroupKeys">
+            <summary>⑪全部可收放分组键：收藏组（有收藏时）+ 非空分类 + 无信号组（有判死台时）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ToggleAllGroups">
+            <summary>⑪一键切换：全开→全部收起；有任何折叠→全部展开（含无信号组），重建列表。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.CurrentFocusKey">
             <summary>当前焦点行锚点键（⑪全局焦点锚定）：分类行取分类键，频道行取 C:频道号。</summary>
@@ -90,7 +203,16 @@
             <summary>标准监听器适配（v1.0.9）：把 Android 弹窗回调接成普通 C# 动作，避免匿名监听类散落。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ExitAppCompletely">
-            <summary>真完全关闭（v1.0.9）：停播放→去任务→结束进程；重开必为冷启动。</summary>
+            <summary>
+            真完全关闭（v1.0.9）：停播放→去任务→结束进程；重开必为冷启动。
+            v1.0.13 fix26 退出铁律（老板 2026-11-08 15:22 拍板：任何时候都要能退出）——
+            窗口先消失（退出观感即时）；停流挪后台线程、最多陪 2 秒（v1.0.20 F 定稿上限），卡死也绝不吊住退出；
+            超时照退（JavaSystem.Exit 硬杀），绝不白屏卡死只能重启电视（老板 22:45 症状）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.CheckStartupSelfClean">
+            <summary>v1.0.20 F 启动自清理：读上次退出标记——正常退出清标记放行；异常退出（崩溃/被杀）清取流缓存、
+            票据、拉黑账本、换路账本等可疑状态（与自愈8 ClearCache 同口径），落日志可查。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ListNav(System.Int32,Android.Views.KeyEvent)">
             <summary>
@@ -123,6 +245,9 @@
             - 若上一次启动的标记未清（进程死在起播过程中），永久回退到已验证的表面视图，
               用户不再经历第二次闪退。
             </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.CarrierPolicy.Edit(Android.Content.Context)">
+            <summary>取偏好编辑器（可能未就绪返回 null，调用方自行降级）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.CarrierPolicy.ResolveStartupCarrier(Android.Content.Context)">
             <summary>启动时决定载体：纹理可用返回 true；上一次纹理启动没活到首帧则回退表面视图。</summary>
@@ -231,10 +356,16 @@
             SurfaceView 退后台会被系统整层回收，回来必然对不上（贴底横条/闪黑）；
             TextureView 是普通视图层，退后台不销毁，回前台画面原样保留。
             接线方式与官方 VideoView（SurfaceView 版）逐行同构，仅载体换成 TextureView。
+            v1.0.10 修复项③（用户 12:38 确认真机启动崩溃 IllegalArgumentException surfaceTexture must not be null）：
+            贴播放器前先验 SurfaceTexture 就绪——未就绪先等 OnSurfaceTextureAvailable 回调再贴，不抢跑；
+            贴前逐道判空，任何一道不齐改走等待路径，绝不带 null 表面进 AWindow.attachTextureView。
             </summary>
         </member>
         <member name="P:TaoLive.UI.Android.Tv.Shared.LiveTextureView.MediaPlayer">
             <summary>The MediaPlayer object attached to this view.</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveTextureView.AttachNow">
+            <summary>真正贴面（纹理就绪后调用）：贴前再逐道判空，任何一道不齐留在等待路径，保证不崩。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveTextureView.OnSurfacesCreated(Org.Videolan.Libvlc.IVLCVout)">
             <summary>IVLCVout 回调：无附加动作。</summary>
@@ -258,6 +389,18 @@
         <member name="T:TaoLive.UI.Android.Tv.Shared.RefreshedStream">
             <summary>重连前刷新出的新播放入口（票据过期换票；Url 为空表示沿用原地址重试）。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.EnqueueKernel(System.Action)">
+            <summary>fix30：投递内核操作（无界队列不阻塞调用线程；串行执行天然防并发锁竞争）。</summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.TotalMemBytes">
+            <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.RescuePaused">
+            <summary>true=暂停宿主内自动兜底（看门狗自救/静默重取流/断流重连全部静默，保持当前画面）。</summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.LastBufferWatermark">
+            <summary>⑩最近一次缓冲水位快照（资源观测日志用；格式「缓存目标ms/缓冲%」，无数据为 null）。</summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SnapshotStats">
             <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
         </member>
@@ -278,6 +421,21 @@
         <member name="E:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.FrameShown">
             <summary>首帧事件：第一次收到播放时钟即认为已有画面输出（用于撤掉「正在连接」遮罩）。</summary>
         </member>
+        <member name="E:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.FirstFrameExhausted">
+            <summary>fix29 首帧兜底：自救阶梯走完仍无画面（UI 收到即判死本台、放开探活自动跳台收口）。</summary>
+        </member>
+        <member name="E:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SwapReady">
+            <summary>双实例无感切换：第二实例新流首帧到齐（UI 收到即提交；提交前旧画面原样保留，绝不黑屏）。</summary>
+        </member>
+        <member name="E:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SwapFailed">
+            <summary>双实例无感切换：第二实例起流失败/播放错误（UI 收到即放弃切换，留当前档）。</summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.IsSwapPending">
+            <summary>双实例切换是否有第二实例在连（未决期间自救让路，不与切换叠加）。</summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.CurrentUrl">
+            <summary>当前播放流地址（档位切换沿用同一流地址、只换画质参数时用）。</summary>
+        </member>
         <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.IsAlive">
             <summary>
             播放是否实际存活（v1.0.8 重进黑屏防护，判定走 PlaybackWatchdog.IsLive 专项断言）：
@@ -289,13 +447,30 @@
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.BuildKernel">
             <summary>建播放内核（Attach 与⑫软重启共用）：LibVLC + 软解播放器 + 事件接线 + 看门狗。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.WireKernelEvents(LibVLCSharp.Shared.MediaPlayer)">
+            <summary>主实例事件接线（BuildKernel 与双实例提交共用：提交后第二实例立即接管全部宿主职责）。</summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.RestartKernel">
             <summary>⑫③软重启播放内核：重建设播环境（不动系统），同流继续。互斥防连环重启。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.StartInternalCore(System.Boolean)">
+            <summary>fix30：内核线程内的直接起播（RestartKernel 重建后同队列接续，不再二次投递）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.StartStatsRetry">
+            <summary>⑤首帧后轨道解析重试：每 500ms 一次至多 10 次（StatsLinePolicy 口径），成功即停。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.HandleStall">
             <summary>
             ⑫画面卡住分级快速自救（用户拍板「可以就这么定」）：静默重取流 → 降清晰度 → 软重启播放内核。
             静默级不发状态不占断流重连次数；重取流消费⑬健康表（ReconnectRefresher 内优先取最近验证可用来源）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.ObserveBufferWatermark(System.Int64)">
+            <summary>
+            ⑩播放器侧水位实接（BufferPolicy 口径）：以当前 network-caching 窗口 × 播放器缓冲百分比
+            估算秒级水位（内存环形，不落磁盘）；网络平稳且贴边=零延迟感，水位低/抖动=攒水位
+            （重连缓存阶梯递增），平稳未满=平滑追回、缓降阶梯回贴边。动作只影响下一次重连的
+            缓冲池大小，不打断当前画面；变化才落日志（CrashNet 通道），界面不显示延迟。
             </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SilentRefreshAsync">
@@ -310,14 +485,43 @@
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.AdjustVolume(System.Int32)">
             <summary>音量步进（保留接口）：遥控音量走独立硬件键由系统处理，此接口暂不接线。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.ArmFirstFrameTimer(System.Int64)">
+            <summary>
+            fix29 首帧等待兜底（CCTV-7 卡死盲区）：起播后迟迟不出首帧时，看门狗按「未出首帧交给连接流程」让位、
+            静默自救路径又不接连接流程——两边互相等就无限期卡死。这里兜底：超时先走自救阶梯（HandleStall：
+            重取流→降清晰度→重启内核，各自救路径经 StartInternal 会重新武装本计时器），阶梯走完仍无画面
+            交回上层收口（FirstFrameExhausted：判死本台、放开探活自动跳台），绝不无限卡死。
+            </summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.ParseMediaStats(LibVLCSharp.Shared.Media)">
-            <summary>解析媒体视频轨道（第④项）：原帧率/原分辨率；无缩放滤镜时现=原，测量缺失显示「检测中」。</summary>
+            <summary>解析媒体视频轨道（第④项）：原帧率/原分辨率；无缩放滤镜时现=原，测量缺失显示「检测中」。媒体尚未挂上时静默跳过。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.BeginSwap(TaoLive.UI.Android.Tv.Shared.IVideoCarrierView,System.String,System.Collections.Generic.IReadOnlyList{System.ValueTuple{System.String,System.String}})">
+            <summary>
+            后台起第二实例连新流（新档变体或同流新画质参数）。载体由 UI 建好并已加入视图树（暂不可见）。
+            当前画面在提交前原样保留——绝不重起当前台。返回 false=未能受理（调用方留在当前档）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.CommitSwap">
+            <summary>
+            提交切换：第二实例新流已亮，顶上成主实例——用户只见新画面，无黑无闪。
+            只在第二实例首帧到齐后受理；绝不出「半程黑屏」。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.AbortSwap(System.String)">
+            <summary>放弃切换：第二实例撤掉，留当前档——当前画面从头到尾无任何扰动。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.MuteForBackground">
             <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.UnmuteAfterBackground">
             <summary>回前台：声音原样恢复（退前用户调到多少回多少，不回默认满音量）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.FailureKind(System.Exception)">
+            <summary>【十二】失败归因（ConnectFailure 分类口径）：逐类落日志，不笼统「连接失败」。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.MaskUrl(System.String)">
+            <summary>【八】脱敏源地址：只留协议+主机，路径与查询串不落日志。</summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.Resource">
             <summary>

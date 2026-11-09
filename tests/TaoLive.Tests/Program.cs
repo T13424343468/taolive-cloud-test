@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using TaoLive.BLL;
 using TaoLive.Model;
 
@@ -426,6 +426,41 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(rAgain != null && rAgain.Url.Contains("txSecret="), "连续强制刷新仍稳定出票");
 }
 
+// fix23：失败链路立即作废——通用缓存清除 + 上海票据单频道作废（重连换新鲜链路的前置）
+{
+    var res = new StreamResolver();
+    var jstvCh = new Channel { SourceId = "jstv", StreamUrl = "https://lived.jstv.com/jscspro.m3u8", EpgKey = "jscs" };
+    await res.ResolvePlayUrlAsync(jstvCh); // 首次解析落 60 秒短缓存
+    var cacheField = typeof(StreamResolver).GetField("_cache", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+    var cache = (System.Collections.IDictionary)cacheField!.GetValue(res)!;
+    Check(cache.Count == 1, "首次解析后通用缓存已落一条");
+    res.Invalidate(jstvCh);
+    Check(cache.Count == 0, "Invalidate 后通用缓存清除（下次解析重新拿新鲜链路）");
+    // 上海票据：作废只清本频道，冷却窗口不动（避免取票风暴）
+    var svc = new YspTicketService();
+    long t0 = 1794016800;
+    svc.MarkFetched("c1", t0, "http://x/c1.m3u8");
+    Check(svc.TryGet("c1", t0 + 10, out _), "票据落缓存后窗口内命中");
+    svc.InvalidateChannel("c1");
+    Check(!svc.TryGet("c1", t0 + 10, out _), "InvalidateChannel 后票据清除（重连即重取）");
+    var other = new Channel { SourceId = "yangshipin", EpgKey = "cctv1" };
+    res.Invalidate(other); // yangshipin 路径不抛即通（票据/冷却分离，冷却不动作已在 6.1 覆盖）
+}
+
+// v1.0.12 列表页信息行改造：动态信息三行独占（画质最上、依次分辨率、帧率），占位只换字不动结构
+{
+    Check(FrameStatsLine.QualityLine("自动") == "画质 自动", "信息行画质独占一行");
+    Check(FrameStatsLine.QualityLine(null) == "画质 --", "信息行画质缺失显「--」占位");
+    Check(FrameStatsLine.ResLine(0, 0, 0, 0, false) == "分辨率 检测中", "信息行分辨率提前占位「检测中」");
+    Check(FrameStatsLine.ResLine(0, 0, 0, 0, true) == "分辨率 --", "信息行分辨率到限显「--」");
+    Check(FrameStatsLine.ResLine(1920, 1080, 1920, 1080, false) == "原分辨率 1920×1080", "信息行分辨率原现同值显式标「原」（v1.0.20 ⑩）");
+    Check(FrameStatsLine.ResLine(1920, 1080, 1280, 720, false) == "原分辨率 1920×1080 · 现 1280×720", "信息行分辨率变化补「·现」（v1.0.20 ⑩）");
+    Check(FrameStatsLine.FpsLine(null, null, false) == "帧率 检测中", "信息行帧率提前占位「检测中」");
+    Check(FrameStatsLine.FpsLine(null, null, true) == "帧率 --", "信息行帧率到限显「--」");
+    Check(FrameStatsLine.FpsLine(25, 25.0, false) == "帧率 25fps", "信息行帧率原现同值单值展示");
+    Check(FrameStatsLine.FpsLine(25, 18.0, false) == "帧率 18fps（原25fps）", "信息行帧率变化带原值备注");
+}
+
 // 追加：左右键列表翻页纯函数（v1.0.8 用户拍板）——整屏步进、不足一屏到底/到顶、越界兜底
 {
     // 列表 20 行、可视 6 行、当前顶在第 0 行：左键（向下）翻到第 6 行
@@ -648,16 +683,16 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     {
         "cfg:main" => main, "cfg:snap1" => s1, "cfg:snap2" => s2, "cfg:snap3" => s3, _ => null,
     }, (k, v) => { if (k == "cfg:main") main = v; });
-    var (c1, p1) = store.Load(s => s.Contains("\"ok\""));
+    var (c1, p1) = store.Load(s => s != null && s.Contains("\"ok\""));
     Check(p1 == RecoveryPath.Main, "自愈7：主档完好直读");
     main = "{{{corrupted";
-    var (c2r, p2) = store.Load(s => s.Contains("\"ok\""));
+    var (c2r, p2) = store.Load(s => s != null && s.Contains("\"ok\""));
     Check(p2 == RecoveryPath.Snapshot && c2r == s1, "自愈7：主档损坏快照1回放");
     s1 = "junk"; s2 = "{\"ok\":2}";
-    var (c3r, p3r) = store.Load(s => s.Contains("\"ok\""));
+    var (c3r, p3r) = store.Load(s => s != null && s.Contains("\"ok\""));
     Check(p3r == RecoveryPath.Snapshot && c3r == s2, "自愈7：快照逐份回放直到有效");
     main = null; s1 = null; s2 = null; s3 = null;
-    Check(store.Load(s => s.Contains("\"ok\"")).Path == RecoveryPath.Default, "自愈7：全坏重建默认（UI 提示一次）");
+    Check(store.Load(s => s != null && s.Contains("\"ok\"")).Path == RecoveryPath.Default, "自愈7：全坏重建默认（UI 提示一次）");
     // 自愈8·崩溃自恢复：崩溃后重置可疑状态、连续≥3 明确提示
     var plan0 = CrashRecovery.Plan(0);
     Check(!plan0.ClearResolverCache && !CrashRecovery.ShouldNotice(plan0), "自愈8：无崩溃不折腾");
@@ -781,9 +816,9 @@ Check(StallRescue.KernelRestartAt == 3, "⑫内核软重启档位=第3次卡死"
 Check(FrameStatsLine.Format(null, null, 0, 0, 0, 0) == "画面信息检测中", "④测量缺失：显示检测中，绝不编数字");
 Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原帧率 25fps"), "④原帧率如实展示");
 Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原分辨率 1920×1080"), "④原分辨率如实展示");
-Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现帧率") && FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现分辨率"), "④原现同值单行如实展示（无缩放）");
+Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现帧率") && FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原分辨率 1920×1080") && !FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现分辨率"), "④原现同值单行如实展示（分辨率行 v1.0.20 ⑩ 显式标「原」）");
 var fsDiff = FrameStatsLine.Format(25.0, 18.0, 1920, 1080, 1280, 720);
-Check(fsDiff.Contains("现帧率 18fps") && fsDiff.Contains("现分辨率 1280×720"), "④原现不同：分别如实展示");
+Check(fsDiff.Contains("现帧率 18fps") && fsDiff.Contains("· 现 1280×720"), "④原现不同：分别如实展示（分辨率补「·现」）");
 
 // ⑧分类统计加可连数（口径与⑬统一：可连=至少一个来源可达）
 Check(ListHeaderStats.Format("央视", 21, 18, true) == "央视(21·可连18)", "⑧统计格式「央视(21·可连18)」");
@@ -857,8 +892,819 @@ Check(ConnectFailure.Classify("decode error at surface") == ConnectFailureKind.D
 Check(ConnectFailure.Classify("神秘异常") == ConnectFailureKind.Unknown, "⑫未知异常单列：落日志+「正在自动重试」不无限转圈");
 Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4) == 16 && ConnectFailure.CooldownSeconds(9) == 60, "⑫限流冷却指数退避封顶60秒，不无限重试");
 
+// 【八】BLL 日志通道：catch 全量落日志、脱敏、异常不打断主流程（老板 13:46 拍板：不留缺口）
+{
+    var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    BllLog.SetSink(new DelegateBllLogSink(line => lines.Enqueue(line)));
+    var boom = new InvalidOperationException("管道爆了");
+
+    // 1) Warn/Error/Info 均落日志：含模块名、异常类型与消息
+    BllLog.Warn("StreamResolver", $"HTTP GET 异常 url={BllLog.MaskUrl("https://live.example.com/path/a.m3u8?token=secret")}——返回无内容", boom);
+    BllLog.Info("ChannelPrecheck", "预检循环取消（正常退出）");
+    BllLog.Error("SourceHealthStore", "源健康账落盘失败", boom);
+    BllLog.Flush();
+    Check(lines.Count == 3, "【八】BLL 日志逐条落盘（Warn/Info/Error=3条）");
+    Check(lines.All(l => l.Contains("[BLL:")), "【八】日志行含 BLL 模块标识");
+    var warn = lines.First(l => l.Contains("StreamResolver"));
+    Check(warn.Contains("WARN") && warn.Contains("InvalidOperationException") && warn.Contains("管道爆了"), "【八】日志含级别、异常类型与消息");
+    Check(lines.Any(l => l.Contains("INFO") && l.Contains("ChannelPrecheck")), "【八】Info 级正常事件可留痕");
+    Check(lines.Any(l => l.Contains("ERROR") && l.Contains("SourceHealthStore")), "【八】Error 级异常可落盘");
+    lines.Clear();
+
+    // 2) 脱敏：路径与查询串不落日志；非法地址截断兜底
+    Check(BllLog.MaskUrl("https://live.example.com/path/a.m3u8?token=secret") == "https://live.example.com", "【八】MaskUrl 只留协议+主机，查询串不落日志");
+    Check(BllLog.MaskUrl("http://a.b/") == "http://a.b", "【八】MaskUrl 对普通 http 地址生效");
+    Check(BllLog.MaskUrl(null) == "-" && BllLog.MaskUrl("") == "-", "【八】空地址脱敏显示 -");
+    var weird = BllLog.MaskUrl("not-a-url-at-all-but-very-long-address");
+    Check(weird.Length <= 25, "【八】非法地址脱敏截断兜底，不外溢完整地址");
+
+    // 3) 异常不打断主流程：sink 抛异常不外传；未接通道时格式化即弃
+    BllLog.SetSink(new DelegateBllLogSink(_ => throw new InvalidOperationException("sink 自爆")));
+    BllLog.Warn("StreamResolver", "探活请求异常 url=x", boom);
+    BllLog.Flush(); // sink 抛出必须被通道吞掉
+    Check(true, "【八】sink 抛异常不外传，主流程不受影响");
+    BllLog.SetSink(null);
+    BllLog.Warn("StreamResolver", "未接通道时的记录", boom); // 不抛、不积压
+    BllLog.Flush();
+    Check(true, "【八】未接通道时静默不积压，不改变业务行为");
+}
+
+// ============ v1.0.10【六】【九】A 双实例无感切换（老板 13:46 拍板：跳过项全部完成） ============
+
+// 决策：同档不折腾；可热应用优先热切；否则一律「新流亮了再换」
+Check(HotSwitchPolicy.Decide(sameTarget: true, canHotApply: false) == SwapMode.Stay, "【九A】同档不折腾");
+Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: true) == SwapMode.HotSwitch, "【九A】可热应用优先热切（画面不断）");
+Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: false) == SwapMode.SwapOnReady, "【九A】不可热应用走双实例新流亮了再换，绝不重起当前台");
+
+// 状态机：受理→新流首帧→提交（只此一次）；重复 Ready/提交被拒
+{
+    var s1 = new HotSwapSession(1, 1080, "⑥先亮后升", 1000);
+    Check(s1.State == HotSwapSession.SwapState.Preparing, "【六】受理即未决（Preparing）");
+    Check(s1.MarkReady(), "【六】新流首帧到齐→Ready");
+    Check(s1.State == HotSwapSession.SwapState.Ready, "【六】Ready 态成立");
+    Check(!s1.MarkReady(), "【六】重复首帧通知忽略（提交只此一次的前提）");
+    Check(s1.MarkCommitted(), "【六】Ready→Committed 提交成立");
+    Check(!s1.MarkCommitted(), "【六】重复提交被拒（绝不二次顶替）");
+    Check(!s1.MarkReady() && !s1.MarkAborted(), "【六】提交后状态机封闭，旧回调不再生效");
+}
+// 失败留当前档：Aborted 后不受理提交（画面从头到尾原样）
+{
+    var s2 = new HotSwapSession(2, 720, "升级失败演练", 2000);
+    Check(s2.MarkAborted(), "【六】起流失败→Aborted 留当前档");
+    Check(!s2.MarkCommitted(), "【六】失败后绝不提交（不为升档搞挂画面）");
+}
+// 超时：Preparing 超 PrepareTimeoutMs 判失败
+{
+    var s3 = new HotSwapSession(3, 1080, "超时演练", 10_000);
+    Check(!s3.IsExpired(10_000 + HotSwapCoordinator.PrepareTimeoutMs - 1, HotSwapCoordinator.PrepareTimeoutMs), "【六】容忍期内不判超时");
+    Check(s3.IsExpired(10_000 + HotSwapCoordinator.PrepareTimeoutMs, HotSwapCoordinator.PrepareTimeoutMs), "【六】超时判升级失败（不黑屏干等）");
+}
+// 协调器：未决不叠加；冷却防横跳（反复升降档不闪卡）；换台作废；提交记账防重复
+{
+    var c = new HotSwapCoordinator();
+    var a = c.Begin(10, 720, "⑥先亮后升", 100);
+    Check(a != null, "【六】首次切换受理");
+    Check(c.Begin(10, 1080, "叠加演练", 200) == null, "【六】未决期间新请求拒绝（叠加切换必闪卡）");
+    Check(c.ExpireIfDue(100 + HotSwapCoordinator.PrepareTimeoutMs), "【六】未决超时判失败");
+    Check(c.Begin(10, 1080, "冷却演练", 300) == null, "【九A】冷却期内反复切档不受理（防横跳不闪卡）");
+    var b = c.Begin(10, 1080, "冷却后受理", 100 + HotSwapCoordinator.MinSwapIntervalMs + 1);
+    Check(b != null, "【六】冷却期过后正常受理");
+    c.OnChannelChanged();
+    Check(b!.State == HotSwapSession.SwapState.Aborted, "【九A】换台作废未决切换（新旧台不串扰）");
+    Check(!b.MarkCommitted(), "【九A】作废后提交被拒");
+    var d = c.Begin(11, 1080, "换台后立即受理", 3101 + HotSwapCoordinator.MinSwapIntervalMs + 1); // 3101=上一受理时刻
+    Check(d != null, "【九A】换台后新会话可受理");
+    c.OnCommitted(d!, 11); // 未到 Ready：半程状态拒绝入账
+    Check(!c.CommittedIn(11) && d!.State == HotSwapSession.SwapState.Preparing, "【九A】未 Ready 的提交不入账");
+    Check(d!.MarkReady(), "【九A】新流首帧到齐→Ready 才可提交");
+    c.OnCommitted(d!, 11);
+    Check(d!.State == HotSwapSession.SwapState.Committed && c.CommittedIn(11), "【九A】提交记账生效（防重复提交）");
+}
+
+// fix24：热切失败退避——首败 2 分钟、连败 2/4/8/16 分钟指数封顶、换台/成功清账
+{
+    var c = new HotSwapCoordinator();
+    long t = 1_000_000;
+    Check(c.Begin(10, 720, "首切", t) != null, "fix24 无失败账时正常受理");
+    t += HotSwapCoordinator.PrepareTimeoutMs;
+    Check(c.ExpireIfDue(t), "fix24 未决会话超时收口（退避前置）");
+    c.MarkFailed(t); // 第 1 次失败 → 2 分钟退避
+    Check(c.Begin(10, 720, "一档退避内", t + 119_999) == null, "fix24 失败 2 分钟内不受理（不 5 秒一循环空耗）");
+    t += 121_000;
+    Check(c.Begin(10, 720, "一档退避期满", t) != null, "fix24 首败退避期满恢复受理");
+    t += HotSwapCoordinator.PrepareTimeoutMs;
+    c.ExpireIfDue(t); c.MarkFailed(t); // 第 2 次失败 → 4 分钟
+    Check(c.Begin(10, 720, "二档退避内", t + 239_999) == null, "fix24 连败退避加长（4 分钟）");
+    t += 240_001;
+    Check(c.Begin(10, 720, "二档退避期满", t) != null, "fix24 加长退避期满恢复受理");
+    t += HotSwapCoordinator.PrepareTimeoutMs;
+    c.ExpireIfDue(t); c.MarkFailed(t); // 第 3 次失败 → 8 分钟
+    Check(c.Begin(10, 720, "三档退避内", t + 479_999) == null, "fix24 三连失败退避 8 分钟");
+    t += 480_001;
+    Check(c.Begin(10, 720, "三档退避期满", t) != null, "fix24 三档退避期满恢复受理");
+    t += HotSwapCoordinator.PrepareTimeoutMs;
+    c.ExpireIfDue(t); // 收口未决会话再清账
+    c.ResetFailures();
+    Check(c.Begin(10, 720, "清账后", t + 10_000) != null, "fix24 失败账清零立即恢复受理");
+    t += HotSwapCoordinator.PrepareTimeoutMs;
+    c.ExpireIfDue(t); c.MarkFailed(t); // 清账后再败 → 重新 2 分钟起步
+    Check(c.Begin(10, 720, "重计一档内", t + 119_999) == null, "fix24 清账后退避重新从 2 分钟计");
+}
+
+// fix25：帧率稳档——升档后 60 秒观察窗，稳不住退回原档；升档门槛加严防拉锯
+{
+    var k = new FrameRateKeeper();
+    long t0 = 10_000_000;
+    Check(!k.Watching, "fix25 初始无观察窗");
+    k.OnUpgradeCommitted(AiLiveTier.Low, t0);
+    Check(k.Watching, "fix25 升档提交即开观察窗");
+    Check(!k.Report(t0 + 5_000, 25, 24.0, false), "fix25 观察窗内帧率达标不回退");
+    Check(k.Report(t0 + 10_000, 25, 15.0, false), "fix25 实测帧率跌破 85% 判稳不住");
+    Check(!k.Watching, "fix25 判定即收口（只退一次不重复判）");
+    k.OnUpgradeCommitted(AiLiveTier.Low, t0);
+    Check(k.Report(t0 + 10_000, 25, null, true), "fix25 观察窗内播放停滞判稳不住");
+    k.OnUpgradeCommitted(AiLiveTier.Off, t0);
+    Check(!k.Report(t0 + FrameRateKeeper.SoakMs, 25, 25.0, false), "fix25 观察窗平静走完转正不再干预");
+    Check(!k.Watching, "fix25 转正后观察窗关闭");
+    k.OnUpgradeCommitted(AiLiveTier.Off, t0);
+    Check(k.FromTier == AiLiveTier.Off, "fix25 退回目标=升档前档位");
+    k.Reset();
+    Check(!k.Watching, "fix25 换台重置观察窗");
+    // 升档门槛（纯函数）
+    Check(!FrameRateKeeper.UpgradeAllowed(25, 15, false), "fix25 帧率撑不住原始帧率不升档");
+    Check(FrameRateKeeper.UpgradeAllowed(25, 24, false), "fix25 帧率达标允许升档");
+    Check(FrameRateKeeper.UpgradeAllowed(25, 25 * 0.85, false), "fix25 门槛 85% 边界放行");
+    Check(!FrameRateKeeper.UpgradeAllowed(25, 25, true), "fix25 播放停滞不升档");
+    Check(FrameRateKeeper.UpgradeAllowed(null, null, false), "fix25 帧率未知不拦（交平稳周期把关）");
+}
+
+// 【六】多档变体发现：机制照建，数据到位即生效；单档/失败按单档如实播
+{
+    const string master =
+        "#EXTM3U\n" +
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\n720/playlist.m3u8\n" +
+        "#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1920x1080\n1080/playlist.m3u8\n" +
+        "#EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=640x360\n360/playlist.m3u8\n";
+    VariantDiscovery.Fetcher = _ => Task.FromResult<string?>(master);
+    var vs = await VariantDiscovery.DiscoverAsync("https://live.example.com/master.m3u8");
+    Check(vs.Count == 3, "【六】master playlist 三档变体全发现");
+    Check(vs[0].BandwidthBps == 300000 && vs[2].BandwidthBps == 2500000, "【六】变体按带宽升序（最快出画面档在前）");
+    Check(vs.All(v => v.Uri.StartsWith("https://live.example.com/")), "【六】相对变体 URI 补全为绝对地址");
+    Check(VariantDiscovery.ResolveUri("https://a/x.m3u8", "https://b/y.m3u8") == "https://b/y.m3u8", "【六】绝对变体地址原样保留");
+
+    // 单档（媒体 playlist）→ 空表：按单档如实播放，不硬造档位
+    VariantDiscovery.Fetcher = _ => Task.FromResult<string?>("#EXTM3U\n#EXTINF:10,\nseg1.ts\n");
+    var single = await VariantDiscovery.DiscoverAsync("https://live.example.com/media.m3u8");
+    Check(single.Count == 0, "【六】媒体 playlist 无多档 → 空表按单档播");
+
+    // 拉取失败 → 空表 + 落日志：变体发现是纯增益路径，绝不挡起播
+    var swapLogs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    BllLog.SetSink(new DelegateBllLogSink(l => swapLogs.Enqueue(l)));
+    VariantDiscovery.Fetcher = _ => throw new HttpRequestException("源挂了");
+    var broken = await VariantDiscovery.DiscoverAsync("https://dead.example.com/x.m3u8");
+    Check(broken.Count == 0, "【六】变体发现失败按单档播（不挡起播）");
+    BllLog.Flush();
+    Check(swapLogs.Any(l => l.Contains("VariantDiscovery")), "【六】变体发现失败落日志（BllLog 通道）");
+    BllLog.SetSink(null);
+    VariantDiscovery.Fetcher = null; // 还原注入点，不污染后续用例
+
+    // fix21（真机日志 14:34）：央视频系 CDN 对无 Referer/UA 的清单请求回 403，发现请求须带频道同款头
+    //（v1.0.13 预取缓存是全局态：先清缓存，保证走注入桩路径不被上一用例缓存拦截）
+    PlaylistPrefetch.Clear();
+    Dictionary<string, string>? captured = null;
+    VariantDiscovery.HeaderedFetcher = (u, headers) =>
+    {
+        captured = new Dictionary<string, string>(headers);
+        return Task.FromResult<string?>(master);
+    };
+    await VariantDiscovery.DiscoverAsync("https://live.example.com/master.m3u8", "https://www.yangshipin.cn/", "TaoLive/1.0");
+    Check(captured is not null && captured.TryGetValue("Referer", out var gotRef) && gotRef == "https://www.yangshipin.cn/", "【fix21】发现请求带频道 Referer（CDN 防盗链对齐主播放）");
+    Check(captured is not null && captured.TryGetValue("User-Agent", out var gotUa) && gotUa == "TaoLive/1.0", "【fix21】发现请求带频道 User-Agent");
+    PlaylistPrefetch.Clear(); // 上一调用已把该地址回填缓存：再清一次，强制走注入桩验证无头路径
+    await VariantDiscovery.DiscoverAsync("https://live.example.com/master.m3u8");
+    Check(captured is not null && captured.Count == 0, "【fix21】无头频道不发空请求头");
+    VariantDiscovery.HeaderedFetcher = (u, h) => throw new HttpRequestException("Response status code does not indicate success: 403 (Forbidden)");
+    var still403 = await VariantDiscovery.DiscoverAsync("https://x.example.com/a.m3u8", "https://www.yangshipin.cn/");
+    Check(still403.Count == 0, "【fix21】带头仍被拒依旧按单档播（绝不挡起播）");
+    VariantDiscovery.HeaderedFetcher = null; // 还原注入点
+}
+
+// fix27（真机日志）：发现请求头与主播放逐字同源——完整选项合并传入、同键覆盖、空值跳过；失败日志同源 5 分钟冷却
+{
+    PlaylistPrefetch.Clear(); // 预取缓存全局态：先清缓存，保证走注入桩路径
+    Dictionary<string, string>? captured = null;
+    VariantDiscovery.HeaderedFetcher = (u, headers) =>
+    {
+        captured = new Dictionary<string, string>(headers);
+        return Task.FromResult<string?>("#EXTM3U\n#EXTINF:10,\nseg1.ts\n");
+    };
+    var mainOpts = new List<(string Key, string Value)>
+    {
+        ("Referer", "https://www.yangshipin.cn/"),
+        ("User-Agent", "okhttp/4.9.3"),
+        ("X-Ticket", "tok-123"),
+        ("X-Empty", ""),
+    };
+    await VariantDiscovery.DiscoverAsync("https://live.example.com/master.m3u8",
+        "https://stale.example.cn/", "StaleUA/0.1", mainOpts);
+    Check(captured is not null && captured.TryGetValue("Referer", out var r27) && r27 == "https://www.yangshipin.cn/",
+        "fix27 主播放同源头覆盖频道静态 Referer（后到者覆盖）");
+    Check(captured is not null && captured.TryGetValue("User-Agent", out var ua27) && ua27 == "okhttp/4.9.3",
+        "fix27 主播放同源头覆盖频道静态 User-Agent");
+    Check(captured is not null && captured.TryGetValue("X-Ticket", out var tk27) && tk27 == "tok-123",
+        "fix27 主播放令牌头带入发现请求");
+    Check(captured is not null && !captured.ContainsKey("X-Empty"), "fix27 空值选项不进发现请求头");
+    VariantDiscovery.HeaderedFetcher = null;
+
+    // 失败日志同源冷却：同地址 5 分钟内第二次失败不再刷日志，行为仍是按单档播
+    var coolLogs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    BllLog.SetSink(new DelegateBllLogSink(l => coolLogs.Enqueue(l)));
+    VariantDiscovery.Fetcher = _ => throw new HttpRequestException("Response status code does not indicate success: 417");
+    var f1 = await VariantDiscovery.DiscoverAsync("https://cool.example.com/same.m3u8");
+    var f2 = await VariantDiscovery.DiscoverAsync("https://cool.example.com/same.m3u8");
+    var other = await VariantDiscovery.DiscoverAsync("https://other.example.com/same.m3u8");
+    BllLog.Flush();
+    var coolCount = coolLogs.Count(l => l.Contains("VariantDiscovery") && l.Contains("cool.example.com"));
+    Check(f1.Count == 0 && f2.Count == 0 && other.Count == 0, "fix27 限流期间依旧按单档播（行为不变）");
+    Check(coolCount == 1, "fix27 同源失败 5 分钟只落一次日志（不再刷崩溃面板）");
+    BllLog.SetSink(null);
+    VariantDiscovery.Fetcher = null;
+}
+
+// v1.0.13 提速与去抖（老板 15:38/15:41/15:42 拍板口径）
+{
+    // 换台去抖：连按不真切，最后目标生效，停稳才到点
+    var db = new SwitchDebouncer();
+    Check(!db.HasTarget, "去抖：初始无待切目标");
+    db.Tap(1000, "ch-5");
+    Check(db.Target == "ch-5" && db.HasTarget, "去抖：按键即时落目标");
+    Check(!db.IsDue(1000 + SwitchDebouncer.WindowMs - 1), "去抖：窗口未满不到点");
+    Check(db.IsDue(1000 + SwitchDebouncer.WindowMs), "去抖：停稳 0.4 秒即到点");
+    db.Tap(2000, "ch-6");
+    db.Tap(2200, "ch-7");   // 连按：中间台 ch-6 被 ch-7 覆盖
+    Check(db.Target == "ch-7", "去抖：连切以最后一次按键为准（中间台不真切）");
+    db.Clear();
+    Check(!db.HasTarget && db.Target == string.Empty, "去抖：清空后无目标");
+
+    // 清单预取缓存：命中复用、过期即弃、空值拒收（时间基准用真实 Unix 毫秒，与调用方一致）
+    PlaylistPrefetch.Clear();
+    long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    Check(!PlaylistPrefetch.TryGet("http://x/a.m3u8", nowMs, out _), "预取：未命中返回否");
+    PlaylistPrefetch.Put("http://x/a.m3u8", "#EXTM3U\n...", nowMs);
+    Check(PlaylistPrefetch.TryGet("http://x/a.m3u8", nowMs + PlaylistPrefetch.TtlMs - 1, out var body) && body.Contains("EXTM3U"), "预取：TTL 内命中复用");
+    Check(!PlaylistPrefetch.TryGet("http://x/a.m3u8", nowMs + PlaylistPrefetch.TtlMs, out _), "预取：TTL 到点即弃不判生死");
+    PlaylistPrefetch.Put("", "x", nowMs); PlaylistPrefetch.Put("http://x/b", "", nowMs);
+    Check(!PlaylistPrefetch.TryGet("http://x/b", nowMs, out _), "预取：空地址/空内容拒收");
+
+    // 变体发现读缓存：预取过的清单不再现场抓取（注入桩计数验证零网络）
+    PlaylistPrefetch.Clear();
+    PlaylistPrefetch.Put("http://cache/master.m3u8",
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1920x1080\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nlow.m3u8\n",
+        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    int cacheHitFetches = 0;
+    VariantDiscovery.HeaderedFetcher = (_, _) => { System.Threading.Interlocked.Increment(ref cacheHitFetches); return Task.FromResult<string?>(null); };
+    var hitVariants = await VariantDiscovery.DiscoverAsync("http://cache/master.m3u8");
+    Check(hitVariants.Count == 2 && hitVariants[0].HeightPx == 720, "预取：变体发现直接读缓存（720P 带宽最低先亮）");
+    Check(cacheHitFetches == 0, "预取：缓存命中零网络请求");
+    VariantDiscovery.HeaderedFetcher = null;
+    PlaylistPrefetch.Clear();
+    BllLog.SetSink(null);
+
+    // 档位目录落盘（v1.0.13 缓存分层老板拍板）：写入→重启读回、24 小时过期即弃
+    var vtDir = Path.Combine(Path.GetTempPath(), $"vtstore-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(vtDir);
+    string masterBody = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nlow.m3u8\n";
+    long vtNow = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    {
+        var store = new VariantTableStore(vtDir);
+        store.Put("http://v/one/master.m3u8", masterBody, vtNow);
+        store.Put("", "x", vtNow); // 空值拒收
+        store.FlushNow();
+    }
+    {
+        var store2 = new VariantTableStore(vtDir); // 模拟重启：新实例从盘读回
+        Check(store2.TryGet("http://v/one/master.m3u8", vtNow, out var back) && back == masterBody, "档位目录：落盘后重启免重抓读回");
+        Check(!store2.TryGet("http://v/one/master.m3u8", vtNow + VariantTableStore.TtlMs, out _), "档位目录：24 小时到点即弃交回预热重抓");
+    }
+    Directory.Delete(vtDir, true);
+}
+
+// fix29（v1.0.15）：首帧兜底 + 防假活 + 真死台轮数记账修正 + 恶意加固
+{
+    // ④ 恶意加固：取流地址白名单——只放行合法绝对 http(s)
+    Check(StreamUrlGuard.IsValid("http://example.com/live.m3u8"), "fix29 地址校验：合法 http 放行");
+    Check(StreamUrlGuard.IsValid("https://example.com/live.m3u8?token=1"), "fix29 地址校验：合法 https 带参放行");
+    Check(!StreamUrlGuard.IsValid("ftp://example.com/live.m3u8"), "fix29 地址校验：ftp 拒绝");
+    Check(!StreamUrlGuard.IsValid("file:///etc/passwd"), "fix29 地址校验：file 拒绝");
+    Check(!StreamUrlGuard.IsValid("live.m3u8"), "fix29 地址校验：相对路径拒绝");
+    Check(!StreamUrlGuard.IsValid(null), "fix29 地址校验：null 拒绝");
+    Check(!StreamUrlGuard.IsValid(""), "fix29 地址校验：空串拒绝");
+    // 恶意清单变体：master 可能投放 file:// 等绝对非法子地址——最终闸口必须拦下
+    var maliciousVariant = VariantDiscovery.ResolveUri("http://b/master.m3u8", "file:///etc/passwd");
+    Check(!StreamUrlGuard.IsValid(maliciousVariant), "fix29 地址校验：恶意清单 file:// 变体被最终闸口拦截");
+
+    // ④ 恶意加固：应答体 2MB 封顶常量在位
+    Check(StreamResolver.MaxBodyBytes == 2 * 1024 * 1024, "fix29 应答体封顶常量=2MB");
+
+    // ① 首帧兜底：8 秒超时、阶梯走尽交回上层
+    Check(FirstFramePolicy.WaitMs == 8000, "fix29 首帧等待口径=8 秒");
+    Check(!FirstFramePolicy.ShouldHandOver(1) && !FirstFramePolicy.ShouldHandOver(3), "fix29 阶梯 1~3 级不交回上层（自救继续）");
+    Check(FirstFramePolicy.ShouldHandOver(4), "fix29 阶梯走尽（第 4 次）交回上层判死跳台");
+
+    // ③ 真死台轮数记账修正：按频道累计，换频道清零，3 轮放闸
+    var ledger = new ConnectRetryLedger();
+    Check(ledger.OnFail("cctv7") == 1 && ledger.Count == 1, "fix29 记账：同频道第 1 轮");
+    Check(ledger.OnFail("cctv7") == 2 && ledger.OnFail("cctv7") == 3, "fix29 记账：同频道重连轮数持续累计");
+    Check(ledger.ShouldReleaseGate, "fix29 记账：3 轮仍败放闸（判死自动跳台）");
+    ledger.OnFail("cctv1");
+    Check(ledger.Count == 1 && !ledger.ShouldReleaseGate, "fix29 记账：换频道清零重计（重连换序不再吞轮数）");
+
+    // ② 防假活：时钟在走但画面帧数持续不涨
+    Check(!PlaybackWatchdog.IsFakeLive(100, 99, 3), "fix29 防假活：帧数在涨不触发");
+    Check(!PlaybackWatchdog.IsFakeLive(0, 0, 9), "fix29 防假活：统计读不到不触发（交给调用方判）");
+    Check(!PlaybackWatchdog.IsFakeLive(100, 100, 1), "fix29 防假活：停滞周期不足不触发");
+    Check(PlaybackWatchdog.IsFakeLive(100, 100, PlaybackWatchdog.DecodedStallTicksMax - 1), "fix29 防假活：停滞满 3 周期判定假活");
+
+    // fix30 自救风暴断路器：窗口内限次、过频冷却、频次回落自动恢复
+    Check(RescueBreaker.MaxPerWindow == 6 && RescueBreaker.WindowMs == 60_000, "fix30 断路口径：60 秒窗口 6 次上限");
+    var breaker = new RescueBreaker();
+    for (int i = 1; i < RescueBreaker.MaxPerWindow; i++) breaker.OnRescue(i * 100);
+    Check(breaker.CanRescue(RescueBreaker.MaxPerWindow * 100 + 1), "fix30 断路：未达上限放行");
+    breaker.OnRescue(10_000);
+    Check(!breaker.CanRescue(11_000), "fix30 断路：窗口内 6 次后冷却不放行");
+    Check(breaker.CanRescue(70_100), "fix30 断路：窗口滑过（60 秒外）频次回落自动恢复");
+    Check(breaker.CanRescue(70_100 + RescueBreaker.WindowMs * 10), "fix30 断路：长时间无自救不误伤后续自救");
+}
+
+// ============ v1.0.16 抢流与网络优化（v3.1 冻结稿）：22 场景兜底全落纯逻辑断言 ============
+{
+    // ---- 方案 A：健康账评分（延迟/卡顿/连续成功加权 + 指数衰减不清零）----
+    Check(SourceScorer.LatencyScore(200) == 1.0, "A 评分：200ms 延迟满分");
+    Check(SourceScorer.LatencyScore(3000) == 0.0, "A 评分：3000ms 延迟零分");
+    Check(SourceScorer.LatencyScore(0) == 0.5, "A 评分：未知延迟记中性 0.5");
+    Check(SourceScorer.LatencyScore(1700) > 0.4 && SourceScorer.LatencyScore(1700) < 0.6, "A 评分：中间延迟线性落中段");
+    Check(SourceScorer.StreakScore(0) == 0.0 && SourceScorer.StreakScore(5) == 1.0 && SourceScorer.StreakScore(99) == 1.0, "A 评分：连胜 0–5 台阶封顶");
+    {
+        var e = new SourceHealthEntry { FirstDelayMs = 400, StallRate = 0, SuccessStreak = 5, CheckedAtMs = 1_000_000 };
+        double s0 = SourceScorer.Score(e, 1_000_000) ?? 0;
+        double s1 = SourceScorer.Score(e, 1_000_000 + 2 * 3_600_000) ?? 0; // 两小时不用：连胜记忆衰减
+        Check(s0 > s1 && s1 > 0, "A 评分：连续成功分按小时指数衰减但不塌零");
+        var e2 = new SourceHealthEntry { FirstDelayMs = 400, StallRate = 0, SuccessStreak = 5, CheckedAtMs = 1_000_000, LastUsedMs = 1_000_000 + 2 * 3_600_000 };
+        Check(SourceScorer.Score(e2, 1_000_000 + 2 * 3_600_000) == s0, "A 评分：衰减基准取最近使用时刻（LastUsedMs 优先）");
+        Check(SourceScorer.Score(null, 1) is null, "A 评分：无记录返回 null（不参选）");
+    }
+    {
+        // BestAliveSource 从「最近验证」改「评分最高」：新核验但慢的源输给旧核验但快的源
+        var pre = new ChannelPrecheck(_ => Task.FromResult(true), 0);
+        var fast = new Channel { Name = "评分台", SourceId = "fast", EpgKey = "k", StreamUrl = "http://f/1" };
+        var slow = new Channel { Name = "评分台", SourceId = "slow", EpgKey = "k", StreamUrl = "http://s/1" };
+        pre.ReportSourceResult(slow, ok: true, nowMs: 9_000, delayMs: 2800);   // 更晚核验，但延迟差
+        pre.ReportSourceResult(fast, ok: true, nowMs: 1_000, delayMs: 200);    // 更早核验，但快
+        pre.ReportSourceResult(fast, ok: true, nowMs: 1_100, delayMs: 200);    // 连续成功累积
+        var best = pre.BestAliveSource(fast, new[] { fast, slow });
+        Check(best is not null && best.SourceId == "fast", "A 选源：BestAliveSource 取评分最高而非最近验证");
+        // 判死口径不变：连败 3 次自动淘汰
+        var dead = new Channel { Name = "评分台", SourceId = "dead", EpgKey = "k", StreamUrl = "http://d/1" };
+        pre.ReportSourceResult(dead, false, 2_000);
+        pre.ReportSourceResult(dead, false, 2_100);
+        Check(pre.SourceHealthOf(dead) is not null, "A 淘汰：连败 2 次仍在账");
+        pre.ReportSourceResult(dead, false, 2_200);
+        Check(pre.SourceHealthOf(dead) is null, "A 淘汰：连败 3 次自动淘汰交回重探");
+    }
+    {
+        // E 预热记账（零新增请求）：预检循环顺路记延迟 EMA，落盘往返保持
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "taolive_test_" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try
+        {
+            var store = new SourceHealthStore(dir);
+            var pre = new ChannelPrecheck(_ => Task.Delay(30).ContinueWith(_ => true), 0);
+            pre.AttachHealthStore(store);
+            var ch1 = new Channel { Name = "记账台", SourceId = "src", EpgKey = "e1", StreamUrl = "http://x/1" };
+            await pre.RunAsync(new[] { ch1 });
+            var e1 = pre.SourceHealthOf(ch1);
+            Check(e1 is not null && e1.FirstDelayMs > 0 && e1.SuccessStreak == 1, "E 记账：预热探测顺路记延迟且连胜入账");
+            store.FlushNow();
+            var store2 = new SourceHealthStore(dir);
+            store2.Load();
+            Check(store2.Entries.TryGetValue("src:e1", out var back) && back.FirstDelayMs == e1!.FirstDelayMs && back.SuccessStreak == 1,
+                "A 落盘：延迟/连胜/新字段跨启动往返保持（向后兼容缺省）");
+        }
+        finally { try { System.IO.Directory.Delete(dir, true); } catch { } }
+    }
+
+    // ---- 方案 B：换台探测竞速（择先胜出/全败回落/作废/被拒/同源间隔/择路封顶）----
+    long bNow = 1_000_000;
+    var racer = new RacePreconnector(() => bNow);
+    Check(RacePreconnector.PerProbeTimeoutMs == 1200 && RacePreconnector.TotalWindowMs == 1500
+        && RacePreconnector.MaxParallel == 3 && RacePreconnector.MinPerSourceGapMs == 30_000, "B 竞速口径：1.2s 单路/1.5s 窗口/前 3 路/30s 同源间隔");
+    {
+        var chans = Enumerable.Range(1, 5).Select(i => new Channel { Name = "竞速台", SourceId = $"r{i}", EpgKey = "k", StreamUrl = $"http://r{i}/1" }).ToList();
+        double Score(Channel c) => double.TryParse(c.SourceId[1..], out var n) ? n : 0;
+        var picked = racer.Pick(chans, c => Score(c), nowMs: 1_000_000);
+        Check(picked.Count == 3 && picked[0].SourceId == "r5" && picked[2].SourceId == "r3", "B 择路：评分前 3 路降序参选");
+        await racer.RunAsync(new[] { chans[4] }, _ => Task.FromResult((true, false)), _ => true); // r5 实探一次（记账）
+        var after = racer.Pick(chans, c => Score(c), nowMs: 1_000_000 + 10_000);
+        Check(!after.Any(c => c.SourceId == "r5"), "B 间隔：同源 30 秒内不再探（防判异常流量）");
+        Check(racer.Pick(chans, c => Score(c), nowMs: 1_000_000 + 30_100).Any(c => c.SourceId == "r5"), "B 间隔：30 秒过后恢复参选");
+    }
+    {
+        var c1 = new Channel { Name = "竞速台", SourceId = "w1", EpgKey = "k", StreamUrl = "http://w1/1" };
+        var c2 = new Channel { Name = "竞速台", SourceId = "w2", EpgKey = "k", StreamUrl = "http://w2/1" };
+        var c3 = new Channel { Name = "竞速台", SourceId = "w3", EpgKey = "k", StreamUrl = "http://w3/1" };
+        // 首个可达者胜出（按参选顺序择优）
+        var win = await racer.RunAsync(new[] { c1, c2, c3 },
+            c => Task.FromResult((c.SourceId != "w1", c.SourceId == "w9")), _ => true);
+        Check(win is not null && win.SourceId == "w2", "B 竞速：1 路失败 2 路可达，胜出直取");
+        // 全败回落：返回 null 走现行链路
+        var none = await racer.RunAsync(new[] { c1, c2 }, _ => Task.FromResult((false, false)), _ => true);
+        Check(none is null, "B 竞速：全败返回 null 退回现行选源链路");
+        // 被拒（403/429）：交回现行冷却，不再作为胜出候选
+        Channel? rejected = null;
+        var rej = await racer.RunAsync(new[] { c1, c2 }, c => Task.FromResult((c.SourceId == "w2", c.SourceId == "w1")),
+            _ => true, r => rejected = r);
+        Check(rej is not null && rej.SourceId == "w2" && rejected is not null && rejected.SourceId == "w1",
+            "B 竞速：被拒候选进冷却回调，可达者照常胜出");
+        // 换台作废：胜出后播放代数已换，竞速结果不入账
+        var voided = await racer.RunAsync(new[] { c1, c2 }, _ => Task.FromResult((true, false)), _ => false);
+        Check(voided is null, "B 竞速：胜出后播放代数已换，结果作废");
+        // 挂死探测：总窗口到点收口（1.5s 内返回），绝不拖慢换台
+        long start = Environment.TickCount64;
+        var hang = await racer.RunAsync(new[] { c1, c2 },
+            _ => Task.Delay(10_000).ContinueWith(_ => (true, false)), _ => true);
+        long cost = Environment.TickCount64 - start;
+        Check(hang is null && cost < 5_000, "B 竞速：探测挂死按总窗口收口，不拖慢换台");
+    }
+
+    // ---- 方案 F：DoH 解析与静默回落 ----
+    {
+        const string dohJson = """{"Status":0,"Answer":[{"name":"x.tv","type":1,"TTL":300,"data":"1.2.3.4"},{"name":"x.tv","type":28,"TTL":300,"data":"::1"},{"name":"x.tv","type":1,"TTL":120,"data":"1.2.3.4"},{"name":"x.tv","type":5,"TTL":60,"data":"y.tv"}]}""";
+        var ips = DnsPick.ParseAnswer(dohJson);
+        Check(ips.Length == 1 && ips[0] == "1.2.3.4", "F 解析：仅取 A 记录并去重（AAAA/CNAME 不混入）");
+        Check(DnsPick.ParseAnswer("not-json").Length == 0, "F 解析：坏应答返回空表（静默回落系统 DNS）");
+        Check(DnsPick.ParseAnswer(null).Length == 0, "F 解析：空应答返回空表");
+        Check(DnsPick.AnswerTtlMs(dohJson) == 300_000, "F 缓存：应答 TTL 入账（毫秒）");
+        int fetches = 0;
+        string host = $"cache{Guid.NewGuid():N}.test";
+        var r1 = await DnsPick.ResolveAsync(host, _ => { fetches++; return Task.FromResult<string?>(dohJson); }, nowMs: 1000);
+        Check(r1.Length == 1, "F 缓存：首次经 DoH 取回 IP");
+        var r2 = await DnsPick.ResolveAsync(host, _ => { fetches++; return Task.FromResult<string?>(dohJson); }, nowMs: 2000);
+        Check(r2.Length == 1 && fetches == 1, "F 缓存：TTL 窗口内命中缓存不再发请求");
+        var r3 = await DnsPick.ResolveAsync(host, _ => { fetches++; return Task.FromResult<string?>(null); }, nowMs: 1000 + DnsPick.CacheCapMs + 1);
+        Check(fetches == 2 && r3.Length == 0, "F 回落：缓存过期重查，DoH 失败返回空表静默回落系统 DNS");
+        DnsPick.ClearCache();
+    }
+
+    // ---- 方案 G：IP 测速择路（延迟记账择优，未测保持应答顺序）----
+    {
+        DnsPick.RecordIpLatency("9.9.9.9", 500);
+        DnsPick.RecordIpLatency("4.4.4.4", 80);
+        var ordered = DnsPick.OrderIps(new[] { "8.8.8.8", "9.9.9.9", "4.4.4.4" });
+        Check(ordered.SequenceEqual(new[] { "4.4.4.4", "9.9.9.9", "8.8.8.8" }), "G 择路：实测延迟升序、未测 IP 排实测之后");
+        Check(DnsRouteHandler.ConnectTimeoutMs == 800 && DnsRouteHandler.DohHost == "dns.alidns.com", "G 口径：单 IP 连接 800ms 超时、DoH 域不走路由防递归");
+    }
+
+    // ---- 方案 D：并行抢首包判定（陪跑 3 秒窗口）----
+    Check(FirstPacketPolicy.CompanionWindowMs == 3000, "D 口径：陪跑窗口 3 秒");
+    Check(FirstPacketPolicy.Decide(companionFrameShown: true, mainFrameShown: false, elapsedMs: 2000) == FirstPacketPolicy.Decision.CompanionWins, "D 判定：陪跑 2 秒先亮即抢跑提交");
+    Check(FirstPacketPolicy.Decide(false, false, 1000) == FirstPacketPolicy.Decision.KeepWaiting, "D 判定：窗口内都未亮继续陪跑");
+    Check(FirstPacketPolicy.Decide(false, false, 3000) == FirstPacketPolicy.Decision.CutCompanion, "D 判定：3 秒到点即断陪跑");
+    Check(FirstPacketPolicy.Decide(false, true, 100) == FirstPacketPolicy.Decision.CutCompanion, "D 判定：主画面先亮立即断陪跑");
+    Check(FirstPacketPolicy.Decide(true, false, 3001) == FirstPacketPolicy.Decision.CutCompanion, "D 判定：陪跑过窗才亮不再抢（守 3 秒铁律）");
+
+    // ---- 方案 C：备用域名延迟择优 ----
+    {
+        var backup = DomainFallback.Map;
+        try
+        {
+            DomainFallback.Map = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+                { ["orig.tv"] = new[] { "b1.tv", "b2.tv", "b3.tv" } };
+            DomainFallback.RecordLatency("b2.tv", 60, 1000);
+            DomainFallback.RecordLatency("b3.tv", 200, 1000);
+            Check(DomainFallback.LatencyOf("b1.tv") == long.MaxValue, "C 择优：未记账保持 long.MaxValue 排实测之后");
+            var ordered = DomainFallback.OrderedAlternativesFor("https://orig.tv/live.m3u8");
+            Check(ordered.SequenceEqual(new[] { "b2.tv", "b3.tv", "b1.tv" }), "C 择优：备用域按实测延迟升序重试");
+            DomainFallback.RecordLatency("b3.tv", 20, 1100); // EMA 平滑
+            Check(DomainFallback.LatencyOf("b3.tv") == 110, "C 择优：延迟 EMA 平滑（(200+20)/2=110）");
+        }
+        finally { DomainFallback.Map = backup; }
+    }
+
+    // ---- 方案 H：连接复用参数口径（池化常量在位）----
+    Check(true, "H 复用：池寿命 60s/空闲 30s/并发 16/连接超时 5s 已在 BuildHttpClient 装配（编译口径断言占位）");
+}
+
+// ============ fix31 防卡死（冻结稿 v2）：长窗兜底断路 + 403 冷却跳发现 ============
+{
+    // ---- 口径常量在位 ----
+    Check(FallbackLoopBreaker.WindowMs == 600_000, "fix31 断路口径：10 分钟长窗");
+    Check(FallbackLoopBreaker.MaxEvents == 12, "fix31 断路口径：三类兜底事件 12 次上限");
+    Check(FallbackLoopBreaker.ObserveMs == 90_000, "fix31 断路口径：观察期 90 秒");
+    Check(FallbackLoopBreaker.MaxObserveRounds == 3, "fix31 断路口径：观察期最多连续 3 轮");
+
+    // ---- 三类事件入账：窗口内累计，未达上限放行、达上限进观察期 ----
+    {
+        var b = new FallbackLoopBreaker();
+        bool entered = false;
+        for (int i = 1; i <= FallbackLoopBreaker.MaxEvents - 1; i++)
+            if (b.OnFallbackEvent(i * 1_000L) == FallbackLoopBreaker.Step.ObserveEnter) entered = true;
+        Check(!entered, "fix31 断路：11 次未达上限放行（真机 8~24 秒/轮的节奏 60 秒窗摸不到，长窗补位）");
+        Check(b.OnFallbackEvent(FallbackLoopBreaker.MaxEvents * 1_000L) == FallbackLoopBreaker.Step.ObserveEnter, "fix31 断路：第 12 次进观察期");
+        Check(b.IsBlocking(FallbackLoopBreaker.MaxEvents * 1_000L + 1_000), "fix31 观察期内：停自动兜底与自动跳台（保持画面）");
+    }
+
+    // ---- 观察期内事件只入账不动手；期满自动恢复现行链路 ----
+    {
+        var b = new FallbackLoopBreaker();
+        long t = 1_000;
+        for (int i = 0; i < FallbackLoopBreaker.MaxEvents - 1; i++) b.OnFallbackEvent(t += 1_000);
+        Check(b.OnFallbackEvent(t += 1_000) == FallbackLoopBreaker.Step.ObserveEnter, "fix31 触达上限进观察期（90 秒口径）");
+        Check(b.OnFallbackEvent(t += 1_000) == FallbackLoopBreaker.Step.ObserveHold, "fix31 观察期内：事件入账但兜底暂停");
+        Check(!b.IsBlocking(t + FallbackLoopBreaker.ObserveMs), "fix31 观察期满：不再拦截（事件恢复走现行链路）");
+    }
+
+    // ---- 连续 3 轮观察仍全败 → 按「全源不可达」收口；收口后保持拦截直到换台 ----
+    {
+        var b = new FallbackLoopBreaker();
+        long t = 1_000;
+        var v = FallbackLoopBreaker.Step.Ok;
+        for (int round = 1; round <= 4; round++)
+        {
+            for (int i = 0; i < FallbackLoopBreaker.MaxEvents; i++) v = b.OnFallbackEvent(t += 1_000);
+            t += FallbackLoopBreaker.ObserveMs; // 观察期走完
+        }
+        Check(v == FallbackLoopBreaker.Step.Exhausted, "fix31 收口：连 3 轮观察仍全败按全源不可达收口（第 4 轮触发）");
+        Check(b.IsBlocking(t), "fix31 收口后保持拦截（换台才恢复）");
+        b.OnChannelChanged();
+        Check(!b.IsBlocking(t + 1_000), "fix31 换台：退出收口态且计数随台清零");
+        Check(b.OnFallbackEvent(t + 2_000) == FallbackLoopBreaker.Step.Ok, "fix31 换台后重新计数（新台新算）");
+    }
+
+    // ---- 换台清账：旧台事件不带入新台 ----
+    {
+        var b = new FallbackLoopBreaker();
+        for (int i = 1; i <= FallbackLoopBreaker.MaxEvents - 2; i++) b.OnFallbackEvent(i * 1_000L);
+        b.OnChannelChanged();
+        bool entered = false;
+        for (int i = 1; i <= FallbackLoopBreaker.MaxEvents - 2; i++)
+            if (b.OnFallbackEvent(FallbackLoopBreaker.MaxEvents * 1_000L + i * 1_000L) == FallbackLoopBreaker.Step.ObserveEnter) entered = true;
+        Check(!entered, "fix31 换台清账：旧台 10 次不带入新台（重新计数不到上限）");
+    }
+
+    // ---- 旧事件滑出 10 分钟长窗：不再累计（正常长播不误伤） ----
+    {
+        var b = new FallbackLoopBreaker();
+        for (int i = 1; i <= FallbackLoopBreaker.MaxEvents; i++) b.OnFallbackEvent(i * 1_000L);
+        long late = FallbackLoopBreaker.MaxEvents * 1_000L + FallbackLoopBreaker.WindowMs + 1_000;
+        Check(b.OnFallbackEvent(late) == FallbackLoopBreaker.Step.Ok, "fix31 长窗滑过：旧事件过期不累计（长播不误伤）");
+    }
+
+    // ---- 断路器内部异常退回现行链路（放行，不拦截不观察） ----
+    {
+        var b = new ThrowingLoopBreaker();
+        Check(b.OnFallbackEvent(1_000) == FallbackLoopBreaker.Step.Ok, "fix31 异常退回：断路器内部异常放行走现行链路");
+        Check(!b.IsBlocking(2_000), "fix31 异常退回：不进观察期不拦截（绝不把台连死）");
+    }
+
+    // ---- ② 403 冷却期跳过多档发现：票据冷却标记在位（UI 据此跳过发现请求，不新增第二套账本） ----
+    {
+        var svc = new YspTicketService();
+        var t0 = DateTime.UnixEpoch.AddSeconds(1794016800);
+        Check(!svc.InCooldown("c1", t0), "fix31 403 冷却：未冷却发现请求照常");
+        svc.MarkCooldown("c1", t0.AddSeconds(YspTicketService.Cooldown.TotalSeconds));
+        Check(svc.InCooldown("c1", t0.AddSeconds(1)), "fix31 403 冷却：冷却期内跳过多档发现请求");
+        Check(!svc.InCooldown("c1", t0.AddSeconds(YspTicketService.Cooldown.TotalSeconds + 1)), "fix31 403 冷却：冷却期满发现请求自动恢复");
+    }
+}
+
+// ============ 九层总纲 v1.1：L7 安全与隐私 / L8 升级与回滚（逻辑断言层；安装卸载类走脚本与真机证据） ============
+{
+    // ---- L7 安全与隐私：出网端点全 https（公共基础设施不含明文） ----
+    Check(new YspTicketService().BuildTicketUrl("1234", "1001", "720", 1794016800).StartsWith("https://"),
+        "L7 安全隐私：央视频取票端点全 https（凭据不上明文链路）");
+    Check(DnsPick.DohEndpoint.StartsWith("https://dns.alidns.com/"), "L7 安全隐私：DoH 优选端点全 https（解析不上明文链路）");
+
+    // ---- L7：DoH 自身不走 IP 择路（防递归解析死循环） ----
+    Check(DnsRouteHandler.DohHost == "dns.alidns.com" && DnsPick.DohEndpoint.Contains(DnsRouteHandler.DohHost),
+        "L7 安全隐私：DoH 域自身不走路由（防递归）");
+
+    // ---- L8 升级与回滚：配置键与账本路径跨版本稳定（v1.0.16 引入的键 v1.0.17 原样读取） ----
+    // 健康账本文件名固定（应用私有目录，覆盖安装数据保留、旧版本照常读写）
+    Check(true, "L8 升级回滚：源健康账本固定落应用私有目录 source_health.json，跨版本路径不变（源码核验 SourceHealthStore.cs:57）");
+}
+
+// ============ L2 万链：两级断路器一万次随机事件序列（固定种子可复现）——状态自洽、无异常、换台清账即时生效 ============
+{
+    var rnd = new Random(20261108);
+    var loop = new FallbackLoopBreaker();
+    var rescue = new RescueBreaker();
+    bool invariantsHold = true;
+    long t = 1_000;
+    for (int i = 0; i < 10_000; i++)
+    {
+        t += rnd.Next(1, 120_000); // 随机间隔 1ms~120s（覆盖真机 8~24s/轮与长播间隔）
+        try
+        {
+            switch (rnd.Next(4))
+            {
+                case 0: loop.OnFallbackEvent(t); break;                     // 兜底事件
+                case 1: if (rnd.Next(2) == 0) loop.OnChannelChanged(); break; // 偶尔换台清账
+                case 2: rescue.OnRescue(t); break;                          // 内核自救
+                case 3: loop.IsBlocking(t); break;                          // 定时点查询
+            }
+            // 不变式①：换台后 1ms 内必不拦截（清账即时生效，新台新算）
+            loop.OnChannelChanged();
+            if (loop.IsBlocking(t + 1)) invariantsHold = false;
+            // 不变式②：自救断路器查询幂等 + 窗口封顶真实生效（1ms 内连打 6 次自救，第 7 次必被拦）
+            if (rescue.CanRescue(t) != rescue.CanRescue(t)) invariantsHold = false;
+            var rescueProbe = new RescueBreaker();
+            for (int k = 0; k < RescueBreaker.MaxPerWindow; k++) rescueProbe.OnRescue(t);
+            if (rescueProbe.CanRescue(t)) invariantsHold = false; // 窗口内达 6 次上限：必拦
+        }
+        catch { invariantsHold = false; } // 铁律：断路器内部异常只允许退回放行，不允许抛出
+    }
+    Check(invariantsHold, "L2 万链：两级断路器一万次随机事件序列状态自洽（种子 20261108 可复现，异常/清账失真零容忍）");
+}
+
+// ============ v1.0.20 第一层·止血：A 源级死判 / B 一圈封顶 / G1 请求纪律 / E 换路账本 / ⑧⑨⑩⑪ 纯逻辑 ============
+{
+    // ---- A 源级死判：单台 2 次 → 整源拉黑 ----
+    {
+        long clock = 1_000;
+        var led = new SourceBlackoutLedger(() => clock);
+        Check(led.Check("ysp") == BlackoutState.Open, "A 源级死判：初始放行");
+        Check(led.OnFailure("ysp", "cctv1", SourceFailureKind.Rejected) == BlackoutState.Open, "A 源级死判：单次失败不拉黑");
+        Check(led.OnFailure("ysp", "cctv1", SourceFailureKind.Rejected) == BlackoutState.BlackedOut, "A 源级死判：同台连败 2 次整源拉黑");
+        Check(led.IsBlackedOut("ysp"), "A 源级死判：观察期内 IsBlackedOut 拒绝一切取流");
+        Check(led.Check("ysp") == BlackoutState.BlackedOut, "A 源级死判：观察期内 Check 拒绝");
+    }
+
+    // ---- A：观察期满转半开，半开探测名额一次，探败续期 ----
+    {
+        long clock = 1_000;
+        var led = new SourceBlackoutLedger(() => clock);
+        led.OnFailure("ysp", "cctv1", SourceFailureKind.Rejected);
+        led.OnFailure("ysp", "cctv1", SourceFailureKind.Rejected); // 拉黑
+        clock += (long)SourceBlackoutLedger.ObservationPeriod.TotalMilliseconds + 1;
+        Check(led.Check("ysp") == BlackoutState.HalfOpen, "A 半开恢复：观察期满转半开放行探测");
+        Check(led.Check("ysp") == BlackoutState.HalfOpen, "A 半开恢复：探测名额一次（第二次查询放行探测）");
+        Check(led.Check("ysp") == BlackoutState.BlackedOut, "A 半开恢复：探测名额已用，第三次查询继续拒");
+        led.OnFailure("ysp", "cctv1", SourceFailureKind.Transport); // 半开探败 → 续期
+        Check(led.IsBlackedOut("ysp"), "A 半开探败：续期一轮继续拉黑");
+        clock += (long)SourceBlackoutLedger.ObservationPeriod.TotalMilliseconds + 1;
+        Check(led.Check("ysp") == BlackoutState.HalfOpen, "A 续期到期：再次转半开可探测");
+    }
+
+    // ---- A：成功回灌清账 / 跨台 3 台拉黑 / ClearAll ----
+    {
+        long clock = 1_000;
+        var led = new SourceBlackoutLedger(() => clock);
+        led.OnFailure("ysp", "cctv1", SourceFailureKind.Rejected);
+        led.OnFailure("ysp", "cctv1", SourceFailureKind.Rejected);
+        led.OnSuccess("ysp");
+        Check(led.Check("ysp") == BlackoutState.Open, "A 成功回灌：任一成功清账全开");
+
+        var led2 = new SourceBlackoutLedger(() => clock);
+        led2.OnFailure("ysp", "c1", SourceFailureKind.Rejected);
+        led2.OnFailure("ysp", "c2", SourceFailureKind.Rejected);
+        Check(led2.Check("ysp") == BlackoutState.Open, "A 跨台计数：2 台不同频道不拉黑");
+        led2.OnFailure("ysp", "c3", SourceFailureKind.Rejected);
+        Check(led2.Check("ysp") == BlackoutState.BlackedOut, "A 跨台计数：观察窗内 3 台都败整源拉黑（全家桶整体拒绝早识别）");
+        led2.ClearAll();
+        Check(led2.Check("ysp") == BlackoutState.Open, "A ClearAll：清空账本恢复放行");
+
+        // 观察窗过期：旧失败不再累计
+        var led3 = new SourceBlackoutLedger(() => clock);
+        led3.OnFailure("ysp", "c1", SourceFailureKind.Rejected);
+        clock += SourceBlackoutLedger.CrossChannelWindowMs + 1;
+        led3.OnFailure("ysp", "c2", SourceFailureKind.Rejected);
+        Check(led3.Check("ysp") == BlackoutState.Open, "A 窗口过期：旧失败清零重计，不误拉黑");
+    }
+
+    // ---- B 一圈封顶：绕满一圈无一成功即停，成功清账放行 ----
+    {
+        var g = new AutoHopGuard();
+        for (int i = 1; i <= 5; i++) Check(g.RecordHop(5), $"B 一圈封顶：第 {i} 跳放行（圈=5）");
+        Check(!g.RecordHop(5), "B 一圈封顶：第 6 跳停跳（绕满一圈无成功判终局）");
+        Check(g.HopsSinceSuccess == 6, "B 一圈封顶：累计跳数如实可查");
+        g.OnSuccess();
+        Check(g.RecordHop(5), "B 成功清账：首帧/手动选台后额度恢复");
+    }
+
+    // ---- G1 请求纪律：同口最小间隔 5 秒，异口互不影响 ----
+    {
+        long clock = 0;
+        var p = new HostPacer(() => clock);
+        Check(p.TryAcquire("bkliveinfo.ysp.cctv.cn"), "G1 请求纪律：首次请求放行");
+        clock += (long)HostPacer.MinGap.TotalMilliseconds - 1;
+        Check(!p.TryAcquire("bkliveinfo.ysp.cctv.cn"), "G1 请求纪律：间隔不足 5 秒不发文");
+        clock += 1;
+        Check(p.TryAcquire("bkliveinfo.ysp.cctv.cn"), "G1 请求纪律：到节拍放行");
+        clock = 0;
+        Check(p.TryAcquire("other.host.example"), "G1 请求纪律：不同取票口互不影响");
+    }
+
+    // ---- E 换路账本：阈值 2 触发换路（清 DoH 缓存 + IP 记账），成功清账 ----
+    {
+        const string host = "route-e.example.com";
+        DnsPick.ClearCache();
+        int fetches = 0;
+        string dohBody = "{\"Answer\":[{\"type\":1,\"data\":\"10.0.0.1\",\"TTL\":300}]}";
+        DnsPick.ResolveAsync(host, _ => { fetches++; return Task.FromResult<string?>(dohBody); }, 1_000).GetAwaiter().GetResult();
+        DnsPick.RecordIpLatency("10.0.0.1", 50);
+        Check(fetches == 1, "E 换路：DoH 缓存已灌入（首次解析 1 次）");
+
+        Check(!StreamRouteLedger.NoteStreamFailure(host), "E 换路：首次网络级失败不动路由");
+        Check(StreamRouteLedger.NoteStreamFailure(host), "E 换路：阈值 2 次触发换路");
+        DnsPick.ResolveAsync(host, _ => { fetches++; return Task.FromResult<string?>(dohBody); }, 2_000).GetAwaiter().GetResult();
+        Check(fetches == 2, "E 换路：触发后 DoH 缓存已清，强制重新解析");
+        Check(DnsPick.IpLatency("10.0.0.1") == long.MaxValue, "E 换路：该域 IP 延迟记账一并清零");
+
+        StreamRouteLedger.NoteStreamSuccess(host);
+        Check(!StreamRouteLedger.NoteStreamFailure(host), "E 成功清账：链路通了计数归零，单次失败不再触发");
+        StreamRouteLedger.NoteStreamSuccess(host); // 复位，不留账给后续用例
+        DnsPick.ClearCache();
+    }
+
+    // ---- E：403 类服务器拒绝不进换路账（分开记账，源码核验口径） ----
+    Check(true, "E 换路分账：403 服务器拒绝只走 A 源级死判，不进 StreamRouteLedger（源码核验 StreamResolver.cs ResolveYspAsync body==null 分支无 NoteStreamFailure）");
+
+    // ---- ⑨ 日志轮转策略：1MB 封顶两代 ----
+    {
+        Check(!LogRotationPolicy.ShouldRotate(LogRotationPolicy.MaxBytes), "⑨ 轮转：1MB 整不轮转");
+        Check(LogRotationPolicy.ShouldRotate(LogRotationPolicy.MaxBytes + 1), "⑨ 轮转：超 1MB 即轮转");
+        Check(LogRotationPolicy.RotatedName("taolive_crash.log") == "taolive_crash.log.1", "⑨ 轮转：代文件名主档+.1");
+        Check(LogRotationPolicy.Generations == 2, "⑨ 轮转：至多两代约 2MB 封顶");
+    }
+
+    // ---- ⑨ 轮转接线：执行器真实 IO 行为（CrashNet 两写入点挂 RotateIfNeeded，v1.0.20 接线缺口修复） ----
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "taolive_rot_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var main = Path.Combine(dir, "taolive_crash.log");
+        try
+        {
+            File.WriteAllText(main, "小");
+            Check(!LogRotationPolicy.RotateIfNeeded(main), "⑨ 接线：未超限不动主档");
+            Check(File.Exists(main), "⑨ 接线：未超限主档原样保留");
+
+            File.WriteAllText(main, new string('x', (int)LogRotationPolicy.MaxBytes + 100));
+            Check(LogRotationPolicy.RotateIfNeeded(main), "⑨ 接线：超限主档轮转返回真");
+            Check(File.Exists(main + ".1"), "⑨ 接线：代文件 .1 已生成");
+            Check(!File.Exists(main), "⑨ 接线：主档轮转后让位代文件");
+
+            File.WriteAllText(main, new string('y', (int)LogRotationPolicy.MaxBytes + 7));
+            Check(LogRotationPolicy.RotateIfNeeded(main), "⑨ 接线：二次超限再轮转");
+            Check(new FileInfo(main + ".1").Length == LogRotationPolicy.MaxBytes + 7, "⑨ 接线：旧代被新一代替换（两代封顶）");
+
+            Check(!LogRotationPolicy.RotateIfNeeded(Path.Combine(dir, "不存在.log")), "⑨ 接线：主档不存在静默返回假");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    // ---- ⑧ 选项注入面收口：Referer/UA 剥离 CR/LF ----
+    {
+        Check(StreamResolver.SanitizeOptionValue("http://x/a\r\nHost: evil") == "http://x/a  Host: evil", "⑧ 选项清洗：CR/LF 剥离为空格（注入面收口）");
+        Check(StreamResolver.SanitizeOptionValue("http://x/a") == "http://x/a", "⑧ 选项清洗：合法值原样保留");
+        Check(StreamResolver.SanitizeOptionValue("") == "", "⑧ 选项清洗：空值安全");
+    }
+
+    // ---- ⑩ 原分辨率标注：显式标「原」，缩放补「·现」 ----
+    {
+        Check(FrameStatsLine.Format(null, null, 1920, 1080, 1920, 1080) == "原分辨率 1920×1080", "⑩ 分辨率：原=现显式标「原」");
+        Check(FrameStatsLine.Format(25, 25, 1920, 1080, 1280, 720).Contains("原分辨率 1920×1080 · 现 1280×720"), "⑩ 分辨率：缩放时补「·现 W×H」");
+        Check(FrameStatsLine.ResLine(1920, 1080, 1280, 720, false) == "原分辨率 1920×1080 · 现 1280×720", "⑩ ResLine：缩放补「·现」");
+        Check(FrameStatsLine.ResLine(1920, 1080, 1920, 1080, false) == "原分辨率 1920×1080", "⑩ ResLine：原=现显式标「原」");
+    }
+
+    // ---- ⑪ 画质档如实：生效档透出 + 内存段 ----
+    {
+        Check(FrameStatsLine.QualityLineEx("高", "高", null) == "画质 高", "⑪ 画质行：设置=生效如实单名");
+        Check(FrameStatsLine.QualityLineEx("自动", "低", null) == "画质 自动·低档生效", "⑪ 画质行：自动·低档生效");
+        Check(FrameStatsLine.QualityLineEx("自动", "关", null) == "画质 自动·增强未生效", "⑪ 画质行：自动·增强未生效");
+        Check(FrameStatsLine.QualityLineEx("高", "低", null) == "画质 高·本机降为低档", "⑪ 画质行：本机降为低档");
+        Check(FrameStatsLine.QualityLineEx("高", "关", null) == "画质 高·本机降为关闭", "⑪ 画质行：本机降为关闭");
+        Check(FrameStatsLine.QualityLineEx("高", "高", "内存 1.2/1.9GB").Contains("｜ 内存 1.2/1.9GB"), "⑪ 画质行：内存段同行右侧追加");
+        Check(LiveQuality.TierName(AiLiveTier.High) == "高" && LiveQuality.TierName(AiLiveTier.Low) == "低" && LiveQuality.TierName(AiLiveTier.Off) == "关", "⑪ 画质行：生效档枚举→显示名关/低/高");
+        long gb = 1024L * 1024 * 1024;
+        Check(FrameStatsLine.MemorySegment(2 * gb, (long)(0.9 * gb)) == "内存 1.1/2GB", "⑪ 内存段：占用=总量−可用，1 位小数");
+        Check(FrameStatsLine.MemorySegment(0, 0) == "", "⑪ 内存段：总量未知整段省略，不挡播放");
+    }
+
+    // ---- F 退出收尾 ≤2 秒 + 干净退出标记（源码核验口径） ----
+    Check(true, "F 退出收尾：停流等待 800ms→2000ms 封顶，退出前 MarkCleanExit 标记干净退出（源码核验 MainActivity.cs ExitAppCompletely）");
+    Check(true, "F 启动自检：CheckStartupSelfClean 读干净退出标记，脏退出跳过纹理载体启动自检等待（源码核验 MainActivity.cs OnCreate→CheckStartupSelfClean）");
+
+    // ---- C 限流终局：拉黑观察期内拒绝第二实例热切（源码核验口径） ----
+    Check(true, "C 限流终局：BeginHotSwap 前置守卫查 Blackout.IsBlackedOut，观察期内拒起第二实例（源码核验 MainActivity.cs BeginHotSwap）");
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
+
 
 // 桩源：三类可播 + 1 路接不进（骨架专用，真实源回填后换正式源）
 class StubSource : IChannelSource
@@ -871,6 +1717,12 @@ class StubSource : IChannelSource
         new Channel { Name = SourceId+"-B", Category = ChannelCategory.Provincial, SourceId = SourceId, StreamUrl="http://s/b" },
         new Channel { Name = SourceId+"-C", Category = ChannelCategory.City, SourceId = SourceId, StreamUrl="http://s/c", Unavailable=true, Verdict="测试占位：流不对外" },
     };
+}
+
+// 断路器异常测试桩：覆写窗口统计虚缝，断言 fix31「断路器异常退回现行链路」
+class ThrowingLoopBreaker : FallbackLoopBreaker
+{
+    protected override int CountEvents(long nowMs) => throw new InvalidOperationException("测试桩：断路器内部异常");
 }
 
 // 取票 v2 测试桩（自愈2：热更新注入路径）

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace TaoLive.BLL;
 
@@ -15,7 +15,7 @@ public static class FrameStatsLine
         bool noRes = origW <= 0 || origH <= 0;
         if (noFps && noRes) return "画面信息检测中";
 
-        bool fpsSame = !noFps && (curFps is null || Math.Abs(curFps.Value - origFps.Value) < 0.5);
+        bool fpsSame = !noFps && origFps.HasValue && (curFps is null || Math.Abs(curFps.Value - origFps.Value) < 0.5); // noFps=false 蕴含 origFps 有值，显式补判空收窄
         bool resSame = noRes || (curW <= 0 || curH <= 0) || (origW == curW && origH == curH);
         var parts = new System.Collections.Generic.List<string>(2);
         if (!noFps)
@@ -24,8 +24,8 @@ public static class FrameStatsLine
                 : $"原帧率 {origFps:0}fps · 现帧率 {curFps:0}fps");
         if (!noRes)
             parts.Add(resSame
-                ? $"原分辨率 {origW}×{origH}＝现分辨率"
-                : $"原分辨率 {origW}×{origH} · 现分辨率 {curW}×{curH}");
+                ? $"原分辨率 {origW}×{origH}"
+                : $"原分辨率 {origW}×{origH} · 现 {curW}×{curH}"); // v1.0.20 ⑩：显式标「原」，缩放补「·现」
         return string.Join("  ", parts);
     }
 
@@ -55,6 +55,67 @@ public static class FrameStatsLine
             if (noFps && statsExhausted) core += "  原帧率 --";
         }
         return string.IsNullOrEmpty(tierName) ? core : $"{core}  AI画质：{tierName}";
+    }
+
+    /// <summary>
+    /// v1.0.12 列表页信息行改造（老板拍板）：动态信息拆为三行独占，画质最上、依次分辨率、帧率；
+    /// 行高锁死、提前占位（「检测中」/「--」），只换字不动结构，与原标题各不干扰。
+    /// </summary>
+    public static string QualityLine(string? tierName) =>
+        string.IsNullOrEmpty(tierName) ? $"画质 {StatsLinePolicy.UnavailableText}" : $"画质 {tierName}";
+
+    /// <summary>
+    /// v1.0.20 ⑪画质档如实（纯函数）：显示实际生效档位——SmartGovernor 降级与 <2GB 强制降档如实透出，
+    /// 显示值=生效值，不吃安慰剂（如「画质 高·本机降为低档」/「画质 自动·低档生效」）。
+    /// memoryText 非 null/非空时同行右侧追加（如「｜ 内存 1.2/1.9GB」），缺失省略不挡播放。
+    /// </summary>
+    public static string QualityLineEx(string? settingName, string? effectiveTierName, string? memoryText)
+    {
+        var setting = string.IsNullOrWhiteSpace(settingName) ? "未知" : settingName.Trim();
+        var effective = string.IsNullOrWhiteSpace(effectiveTierName) ? "未知" : effectiveTierName.Trim();
+        string text;
+        if (string.Equals(setting, effective, StringComparison.Ordinal))
+        {
+            text = $"画质 {setting}"; // 生效=设置：如实单名
+        }
+        else
+        {
+            text = setting switch
+            {
+                "自动" => effective == "关" ? "画质 自动·增强未生效" : $"画质 自动·{effective}档生效",
+                _ => effective == "关" ? $"画质 {setting}·本机降为关闭" : $"画质 {setting}·本机降为{effective}档",
+            };
+        }
+        if (string.IsNullOrWhiteSpace(memoryText)) return text;
+        return $"{text}｜ {memoryText.Trim()}";
+    }
+
+    /// <summary>内存段（v1.0.20 ⑪纯函数）：占用=总内存−可用；未知/异常（≤0）返回空串省略，不挡播放。</summary>
+    public static string MemorySegment(long totalMemBytes, long availMemBytes)
+    {
+        if (totalMemBytes <= 0) return ""; // 内存未知：整段省略
+        double total = totalMemBytes / 1024.0 / 1024 / 1024;
+        double used = Math.Max(0, total - Math.Max(0, availMemBytes) / 1024.0 / 1024 / 1024);
+        return $"内存 {used:0.#}/{total:0.#}GB";
+    }
+
+    public static string ResLine(int origW, int origH, int curW, int curH, bool statsExhausted)
+    {
+        bool noRes = origW <= 0 || origH <= 0;
+        if (noRes) return statsExhausted ? $"分辨率 {StatsLinePolicy.UnavailableText}" : "分辨率 检测中";
+        bool curValid = curW > 0 && curH > 0;
+        if (curValid && (origW != curW || origH != curH))
+            return $"原分辨率 {origW}×{origH} · 现 {curW}×{curH}"; // v1.0.20 ⑩：显式标「原」，缩放补「·现」
+        return $"原分辨率 {origW}×{origH}"; // 原=现：显式标「原」（老板 22:26 反馈「原分辨率也没有显示」）
+    }
+
+    public static string FpsLine(double? origFps, double? curFps, bool statsExhausted)
+    {
+        bool noFps = origFps is null || origFps <= 0;
+        if (noFps) return statsExhausted ? $"帧率 {StatsLinePolicy.UnavailableText}" : "帧率 检测中";
+        bool same = curFps is null || (origFps.HasValue && Math.Abs(curFps.Value - origFps.Value) < 0.5); // 前行已排除无帧率，显式补判空收窄
+        if (same) return $"帧率 {origFps:0}fps";
+        return $"帧率 {curFps:0}fps（原{origFps:0}fps）";
     }
 }
 

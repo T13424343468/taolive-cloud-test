@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using Android.Content;
 
@@ -19,6 +19,9 @@ public static class CarrierPolicy
     static ISharedPreferences Prefs(Context c) =>
         c.GetSharedPreferences(PrefName, FileCreationMode.Private)!;
 
+    /// <summary>取偏好编辑器（可能未就绪返回 null，调用方自行降级）。</summary>
+    static ISharedPreferencesEditor? Edit(Context c) => Prefs(c).Edit();
+
     /// <summary>启动时决定载体：纹理可用返回 true；上一次纹理启动没活到首帧则回退表面视图。</summary>
     public static bool ResolveStartupCarrier(Context c)
     {
@@ -27,7 +30,8 @@ public static class CarrierPolicy
         if (p.GetInt("attempt", 0) == 1)
         {
             // 上一次纹理启动没活到首帧：判定不兼容，永久回退
-            p.Edit()!.PutInt("mode", 0).PutInt("attempt", 0).Apply();
+            var e = Edit(c);
+            if (e != null) { e.PutInt("mode", 0); e.PutInt("attempt", 0); e.Apply(); } // 逐条写：链式返回可空不续点，编辑器未就绪则保留判定下次重试
             try
             {
                 File.AppendAllText(NoticePath(c),
@@ -39,17 +43,24 @@ public static class CarrierPolicy
         return true;
     }
 
-    public static void MarkAttempt(Context c) =>
-        Prefs(c).Edit()!.PutInt("attempt", 1).Apply();
+    public static void MarkAttempt(Context c)
+    {
+        var e = Edit(c);
+        if (e != null) { e.PutInt("attempt", 1); e.Apply(); } // 逐条写，编辑器未就绪则跳过本次下次重试
+    }
 
     /// <summary>首帧落地（或正常退后台）= 载体兼容，清标记。</summary>
-    public static void MarkOk(Context c) =>
-        Prefs(c).Edit()!.PutInt("attempt", 0).PutInt("ok", 1).Apply();
+    public static void MarkOk(Context c)
+    {
+        var e = Edit(c);
+        if (e != null) { e.PutInt("attempt", 0); e.PutInt("ok", 1); e.Apply(); } // 逐条写，编辑器未就绪则跳过本次下次重试
+    }
 
     /// <summary>纹理接线当场报错：永久回退，并把原因写进日志。</summary>
     public static void DisableTexture(Context c, string reason)
     {
-        Prefs(c).Edit()!.PutInt("mode", 0).PutInt("attempt", 0).Apply();
+        var e = Edit(c);
+        if (e != null) { e.PutInt("mode", 0); e.PutInt("attempt", 0); e.Apply(); } // 逐条写：链式返回可空不续点，编辑器未就绪则保留判定下次重试
         try
         {
             File.AppendAllText(NoticePath(c),

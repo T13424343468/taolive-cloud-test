@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Text;
 
 namespace TaoLive.BLL;
@@ -180,6 +180,7 @@ public static class YspCkey
 public class YspTicketService
 {
     private sealed class Ticket { public string PlayUrl = ""; public long FetchedAt; }
+    private readonly object _lock = new();
     private readonly Dictionary<string, Ticket> _cache = new();
     private readonly Dictionary<string, DateTime> _cooldownUntil = new();
     public static readonly TimeSpan RenewInterval = TimeSpan.FromMinutes(5);
@@ -201,30 +202,62 @@ public class YspTicketService
     }
 
     /// <summary>是否允许本次取票（缓存窗口判断；纯 epoch 比较，避免 DateTime Kind 歧义）。</summary>
-    public bool ShouldFetch(string channelId, long nowEpoch) =>
-        !_cache.TryGetValue(channelId, out var t) || nowEpoch - t.FetchedAt >= (long)RenewInterval.TotalSeconds;
+    public bool ShouldFetch(string channelId, long nowEpoch)
+    {
+        lock (_lock)
+        {
+            return !_cache.TryGetValue(channelId, out var t)
+                || nowEpoch - t.FetchedAt >= (long)RenewInterval.TotalSeconds;
+        }
+    }
 
     /// <summary>缓存窗口内直接复用真实 playurl（预连接/快速切台零等待）。</summary>
     public bool TryGet(string channelId, long nowEpoch, out string? playUrl)
     {
         playUrl = null;
-        return _cache.TryGetValue(channelId, out var t)
-            && nowEpoch - t.FetchedAt < (long)RenewInterval.TotalSeconds
-            && !string.IsNullOrEmpty(t.PlayUrl)
-            && (playUrl = t.PlayUrl) != null;
+        lock (_lock)
+        {
+            return _cache.TryGetValue(channelId, out var t)
+                && nowEpoch - t.FetchedAt < (long)RenewInterval.TotalSeconds
+                && !string.IsNullOrEmpty(t.PlayUrl)
+                && (playUrl = t.PlayUrl) != null;
+        }
     }
 
-    public void MarkFetched(string channelId, long nowEpoch, string playUrl) =>
-        _cache[channelId] = new Ticket { PlayUrl = playUrl, FetchedAt = nowEpoch };
+    public void MarkFetched(string channelId, long nowEpoch, string playUrl)
+    {
+        lock (_lock)
+        {
+            _cache[channelId] = new Ticket { PlayUrl = playUrl, FetchedAt = nowEpoch };
+        }
+    }
 
-    public void MarkCooldown(string channelId, DateTime until) => _cooldownUntil[channelId] = until;
-    public bool InCooldown(string channelId, DateTime now) =>
-        _cooldownUntil.TryGetValue(channelId, out var u) && now < u;
+    public void MarkCooldown(string channelId, DateTime until)
+    {
+        lock (_lock) { _cooldownUntil[channelId] = until; }
+    }
+
+    public bool InCooldown(string channelId, DateTime now)
+    {
+        lock (_lock)
+        {
+            return _cooldownUntil.TryGetValue(channelId, out var u) && now < u;
+        }
+    }
 
     /// <summary>自愈6/8：清空全部票据缓存（可疑状态重置，静默，随后自然重取）。</summary>
     public void ClearAll()
     {
-        _cache.Clear();
-        _cooldownUntil.Clear();
+        lock (_lock)
+        {
+            _cache.Clear();
+            _cooldownUntil.Clear();
+        }
+    }
+
+    /// <summary>fix23：单频道票据作废（失败链路退场；冷却不动，避免取票风暴）。</summary>
+    public void InvalidateChannel(string channelId)
+    {
+        lock (_lock) { _cache.Remove(channelId); }
     }
 }

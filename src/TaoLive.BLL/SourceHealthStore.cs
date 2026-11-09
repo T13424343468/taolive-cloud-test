@@ -10,7 +10,8 @@ namespace TaoLive.BLL;
 // 「按这个改」：预检确认可用的源连同验证时间落盘本地，重启仍在；换台优先直连已验证源；
 // 账本随预检循环与播放实测持续回写，连续失败自动淘汰；与卡死自救共用同一份账。
 
-/// <summary>持久化条目：键 = SourceId:EpgKey，时间 = Unix 毫秒（跨启动可比）。</summary>
+/// <summary>持久化条目：键 = SourceId:EpgKey，时间 = Unix 毫秒（跨启动可比）。
+/// v1.0.16 方案 A：新增评分记账四项（旧账无字段按缺省反序列化，向后兼容）。</summary>
 public class SourceHealthRecord
 {
     public string K { get; set; } = "";
@@ -18,6 +19,10 @@ public class SourceHealthRecord
     public string EpgKey { get; set; } = "";
     public string State { get; set; } = "";   // Alive / Dead
     public long UtcMs { get; set; }           // 最近核验时间（Unix 毫秒）
+    public int FirstDelayMs { get; set; }     // v1.0.16：延迟 EMA（0=未知）
+    public double StallRate { get; set; }     // v1.0.16：卡顿率 0–1
+    public int SuccessStreak { get; set; }    // v1.0.16：连续成功次数
+    public long LastUsedMs { get; set; }      // v1.0.16：最近被选去播放时刻（0=从未）
 }
 
 /// <summary>
@@ -78,12 +83,17 @@ public class SourceHealthStore
                     EpgKey = r.EpgKey,
                     State = r.State == "Alive" ? ChannelHealth.Alive : ChannelHealth.Dead,
                     CheckedAtMs = r.UtcMs, // 统一 Unix 毫秒时间基，跨启动可比
+                    FirstDelayMs = r.FirstDelayMs,
+                    StallRate = r.StallRate,
+                    SuccessStreak = r.SuccessStreak,
+                    LastUsedMs = r.LastUsedMs,
                 });
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // 账本损坏不致命：当无账处理，预检循环很快重建
+            // 账本损坏不致命：当无账处理，预检循环很快重建——但必须落日志（【八】全量异常落日志）
+            BllLog.Warn("SourceHealthStore", $"源健康账载入失败（当无账处理，文件 {Path.GetFileName(_path)}）", ex);
         }
     }
 
@@ -96,9 +106,16 @@ public class SourceHealthStore
             if (_flushTimer != null) return;
             _flushTimer = new System.Threading.Timer(_ =>
             {
-                FlushNow();
-                lock (_gate) _flushTimer?.Dispose();
-                lock (_gate) _flushTimer = null;
+                bool fire;
+                lock (_gate)
+                {
+                    // 定时器触发即回收自身：无论是否到点落盘，下次脏标记都能重新排程，绝不丢盘
+                    _flushTimer?.Dispose();
+                    _flushTimer = null;
+                    fire = _dirty;
+                    _dirty = false;
+                }
+                if (fire) FlushNow();
             }, null, FlushDebounceMs, Timeout.Infinite);
         }
     }
@@ -109,6 +126,8 @@ public class SourceHealthStore
         SourceHealthRecord[] snapshot;
         lock (_gate)
         {
+            _flushTimer?.Dispose(); // 外部落盘后回收定时器，杜绝后续写丢盘（与 VariantTableStore 同口径）
+            _flushTimer = null;
             _dirty = false;
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             snapshot = _owner
@@ -119,6 +138,10 @@ public class SourceHealthStore
                     EpgKey = kv.Value.EpgKey,
                     State = kv.Value.State == ChannelHealth.Alive ? "Alive" : "Dead",
                     UtcMs = kv.Value.CheckedAtMs,
+                    FirstDelayMs = kv.Value.FirstDelayMs,
+                    StallRate = kv.Value.StallRate,
+                    SuccessStreak = kv.Value.SuccessStreak,
+                    LastUsedMs = kv.Value.LastUsedMs,
                 })
                 .Where(r => r.State == "Alive" ? now - r.UtcMs <= AliveTtlMs : now - r.UtcMs <= DeadTtlMs)
                 .ToArray();
@@ -131,9 +154,10 @@ public class SourceHealthStore
             if (File.Exists(_path)) File.Delete(_path);
             File.Move(tmp, _path);
         }
-        catch
+        catch (Exception ex)
         {
-            // 落盘失败静默：下轮脏标记再试，绝不影响播放
+            // 落盘失败静默：下轮脏标记再试，绝不影响播放——但异常必须落日志（【八】全量异常落日志）
+            BllLog.Warn("SourceHealthStore", $"源健康账落盘失败（下轮脏标记再试，文件 {Path.GetFileName(_path)}）", ex);
         }
     }
 }

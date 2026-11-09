@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0-android</TargetFramework>
@@ -7,15 +7,15 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>com.taolive.tv</ApplicationId>
-    <ApplicationVersion>11</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.10</ApplicationDisplayVersion>
+    <ApplicationVersion>21</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.20</ApplicationDisplayVersion>
     <ApplicationTitle>道映</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体 -->
     <RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers>
     <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>
     <AssemblyName>TaoLive.UI.Android.Tv</AssemblyName>
-    <AndroidResgenFile>Resources\Resource.designer.cs</AndroidResgenFile>
+    <!-- Resource.designer.cs 由现行 SDK 自动发现，弃用的 AndroidResgenFile 属性已移除 -->
     <!-- 签名链纪律：道系安卓实包统一 C1 证书链（2026-11-07 总监抽查回灌，勿改回树内旧钥/默认随机钥） -->
     <AndroidKeyStore>True</AndroidKeyStore>
     <AndroidSigningKeyStore>..\..\keystore\debug.keystore</AndroidSigningKeyStore>
@@ -33,10 +33,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <AndroidNativeLibrary Include="lib\arm64-v8a\libvlc.so" />
-    <AndroidNativeLibrary Include="lib\arm64-v8a\libc++_shared.so" />
-    <AndroidNativeLibrary Include="lib\armeabi-v7a\libvlc.so" />
-    <AndroidNativeLibrary Include="lib\armeabi-v7a\libc++_shared.so" />
+    <!-- lib/*.so 由 SDK 默认通配纳入打包，显式重复声明会产生 XA4301；此处仅声明打包范围归口 -->
+    <AndroidNativeLibrary Remove="lib\**\*.so" />
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libvlc.so;lib\arm64-v8a\libc++_shared.so;lib\armeabi-v7a\libvlc.so;lib\armeabi-v7a\libc++_shared.so" />
   </ItemGroup>
 
   <ItemGroup>

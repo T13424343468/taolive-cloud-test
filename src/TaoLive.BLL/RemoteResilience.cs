@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
@@ -73,9 +73,10 @@ public static class ScriptAdapter
                     return FallbackNotice(rule);
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 failed = rule;
+                BllLog.Warn("ScriptAdapter", $"适配规则应用异常（层 {rule.Layer}，match={rule.MatchHost}）——按规则失败处理，回落原生路径", ex);
                 return FallbackNotice(rule);
             }
         }
@@ -120,7 +121,7 @@ public sealed class RemoteConfigDoc
             doc = parsed;
             return true;
         }
-        catch { return false; }
+        catch (Exception ex) { BllLog.Warn("RemoteConfigDoc", "热更配置解析失败——判损坏走本地缓存", ex); return false; }
     }
 }
 
@@ -157,11 +158,11 @@ public class RemoteConfigFetcher
     {
         string? body = null;
         try { body = await _download(url); }
-        catch { body = null; }
+        catch (Exception ex) { body = null; BllLog.Warn("RemoteConfigFetcher", $"热更新拉取失败 url={BllLog.MaskUrl(url)}——读本地缓存续跑", ex); }
         if (!string.IsNullOrWhiteSpace(body) && RemoteConfigDoc.TryParse(body, out var fresh))
         {
             Current = fresh;
-            try { _writeCache(url, body); } catch { /* 缓存写失败不影响本次应用 */ }
+            try { _writeCache(url, body); } catch (Exception ex) { BllLog.Warn("RemoteConfigFetcher", $"热更新缓存写失败 url={BllLog.MaskUrl(url)}——不影响本次应用", ex); }
             return FetchOutcome.Fresh;
         }
         var cached = _readCache(url);
@@ -175,13 +176,29 @@ public class RemoteConfigFetcher
 }
 
 /// <summary>
-/// 自愈5·DNS/接口失败重试备用域名：主域请求失败 → 备用域列表按序重试一次。
+/// 自愈5·DNS/接口失败重试备用域名：主域请求失败 → 备用域列表按实测延迟升序重试（v1.0.16 方案 C：
+/// 从「固定按序」升级为「延迟记账择优」，未记账的按原顺序，记账的排前面）。
 /// 备用域表由热更新 L1 数据下发（RemoteConfigDoc.BackupDomains），也可本地内置；不硬编码机型。
 /// </summary>
 public static class DomainFallback
 {
     /// <summary>主域（小写 host）→ 备用域列表。热更新成功时覆盖，失败保留现有表继续跑。</summary>
     public static Dictionary<string, string[]> Map { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Ms, long AtMs)> _latency = new();
+
+    /// <summary>备用域连接延迟记账（EMA，α=0.5）：重试成功顺路记录，下轮择优排前。</summary>
+    public static void RecordLatency(string host, long ms, long nowMs)
+    {
+        if (string.IsNullOrEmpty(host) || ms < 0) return;
+        _latency[host] = _latency.TryGetValue(host, out var prev)
+            ? ((prev.Ms + Math.Max(0, ms)) / 2, nowMs)
+            : (Math.Max(0, ms), nowMs);
+    }
+
+    /// <summary>备用域实测延迟（无记录 long.MaxValue=未测，保持原序）。</summary>
+    public static long LatencyOf(string host) =>
+        _latency.TryGetValue(host, out var v) ? v.Ms : long.MaxValue;
 
     /// <summary>取 URL 的备用域列表（无表或无匹配返回空）。</summary>
     public static string[] AlternativesFor(string url)
@@ -192,8 +209,12 @@ public static class DomainFallback
             var host = new Uri(url).Host;
             return Map.TryGetValue(host, out var alts) ? alts : Array.Empty<string>();
         }
-        catch { return Array.Empty<string>(); }
+        catch (Exception ex) { BllLog.Warn("DomainFallback", $"备用域匹配异常 url={BllLog.MaskUrl(url)}——返回空候选", ex); return Array.Empty<string>(); }
     }
+
+    /// <summary>v1.0.16 方案 C：备用域按实测延迟升序（未测的保持表序，稳定排序不折腾）。</summary>
+    public static string[] OrderedAlternativesFor(string url) =>
+        AlternativesFor(url).OrderBy(LatencyOf).ToArray();
 
     /// <summary>把 URL 的 host 换成备用域（path/query 原样保留）。</summary>
     public static string WithHost(string url, string newHost) => new UriBuilder(new Uri(url)) { Host = newHost }.Uri.ToString();
@@ -252,7 +273,7 @@ public static class TicketAlgorithms
                 var url = algo.Build(channelId, epochSeconds, guid);
                 if (!string.IsNullOrEmpty(url)) result.Add(url);
             }
-            catch { /* 单版本异常跳过，不拖垮整体 */ }
+            catch (Exception ex) { BllLog.Warn("TicketAlgorithms", $"取票算法版本 {algo.Version} 异常（频道 {channelId}）——单版本跳过，不拖垮整体", ex); }
         }
         return result;
     }
@@ -305,7 +326,7 @@ public class SnapshotStore
             }
             _write(MainKey, content);
         }
-        catch { /* 存储异常不拖垮保存流程，主档为准 */ }
+        catch (Exception ex) { BllLog.Warn("SnapshotStore", "配置快照保存异常——不拖垮保存流程，主档为准", ex); }
     }
 
     private static string SnapshotKey(int index) => $"cfg:snap{index}";

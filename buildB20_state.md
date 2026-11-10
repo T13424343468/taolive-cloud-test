@@ -310,3 +310,8 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - 签名与验签：publish 后按 v21 收口同款 apksigner 补签（debug.keystore 同源、alias 同款），三重验签 apksigner/aapt2/unzip，证书指纹与 v21 c18030d3… 同源核对
 - 产物：dist/phone/TaoLive-64位.zip（内套 com.taolive.phone-Signed.apk + SHA256SUMS），备份 /root/workspace/存档/TaoLive/<时间戳>-phone/
 - 全测：cd tests/TaoLive.Tests && /root/workspace/.local/dotnet9/dotnet run -v q --nologo（428 PASS 基线只增不减）
+
+## 07:50 后台支援·源早间复测（22 挂链源）
+- 21/22 全活（清单 200+首分片 200，双 UA）；湖南 token 型源跨夜 >13 小时仍活，时效风险暂缓但真机验收仍先疑源腐化
+- 宁夏卫视（120.76.248.139/bfgd）：25 秒超时三轮 1 过，间歇抖动，较昨日「8s 偏紧偶发」劣化——验收若黑先疑源侧，必要时后台补找备用源
+- 结果档：verify_tool/morning_recheck_1111.json（脚本 morning_recheck_1111.py，含唯一 URL 数防闭包错校验）

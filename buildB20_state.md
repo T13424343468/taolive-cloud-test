@@ -282,3 +282,9 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - v23 树上已补：[退避]网络级失败不入账、探测 200 恢复、[ConnectRetry]回前台网络未就绪——够第 4 条 A 侧定音。
 - 建议出包前再补 3 行纯打点（零行为变化）：冻结期跳过记「[退避] {SourceId} 冻结中，本轮跳过（剩余 X 分钟）」；取票冷却跳过记「[取票] {EpgKey} 冷却中跳过」；resolved=null 记「[ConnectFailure][ResolvedNull] {台名}」。
 - 依据：boss 23:04 照片有 4 条静默重取流打点但无一条连接失败/退避 → 定音手段靠这些路径补齐。
+
+## 00:37 巡检快照（后台支援线）
+- 分身 daoying_phone_release 收到 NEW_TASK 已续跑；四树移植已固化（commit 2f682d2，15643 行）
+- 已在位：TaoAI BLL 9 类、libtaoai.so arm64、三模型、Phone 工程全树
+- 待做：AiBufferPool 缓冲池、播放页砍件（倍速/数字换台 OSD/进度条拖预览/横滑快进退）、列表页筛选框、编译全绿、全测、出包 TaoLive-64位.zip
+- 巡检提示：MainActivity.Player.cs 仍含进度条/拖预览代码（砍件未做）；MainActivity.Home.cs 未见直播频道列表接入——移植版"主页"还是 TaoPlay 点播主页，直播频道页与筛选框是必须新建的块

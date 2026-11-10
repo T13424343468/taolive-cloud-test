@@ -6,7 +6,8 @@
 - 步骤账：
   - [x] 家底盘查：TaoPlay 快照 32528（phone 工程 7.5k 行 + TaoAI BLL 1.2k 行 + native/taoai arm64 libtaoai.so + Assets/taoai 三模型）全在位；构建链 dotnet9 + jdk17 + android-sdk 在位
   - [x] 移植 TaoPlay Model/DAL/BLL/Phone 四树进道映树（保持 AllPlayer.* 命名空间，最小改动）——commit 2f682d2（00:42 固化，15643 行）
-  - [~] TaoAI BLL 类移植已到位（9 类，AllPlayer.BLL/TaoAI/）；直播缓冲池 AiBufferPool 新落码待做
+  - [x] TaoAI BLL 类移植已到位（9 类，AllPlayer.BLL/TaoAI/）
+  - [x] 直播缓冲池 AiBufferPool 落码（07:35，07:10 前台亲自接管；纯逻辑线程安全：初始目标15s(钳10-20)、60s封顶越线触发后持续直出+换台Reset恢复、速率EWMA降档建议、过热/低电直出；逻辑全测 428 PASS/0 FAIL 零错零警，commit 固化）
   - [ ] 播放页适配（沿用+砍件）与列表页筛选框
   - [ ] 编译全绿（arm64）→ 全测 → 出包 TaoLive-64位.zip → 备份 → 汇报
 - 断点纪律：每完成一步在此记账；/tmp 不可存成果
@@ -288,3 +289,24 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - 已在位：TaoAI BLL 9 类、libtaoai.so arm64、三模型、Phone 工程全树
 - 待做：AiBufferPool 缓冲池、播放页砍件（倍速/数字换台 OSD/进度条拖预览/横滑快进退）、列表页筛选框、编译全绿、全测、出包 TaoLive-64位.zip
 - 巡检提示：MainActivity.Player.cs 仍含进度条/拖预览代码（砍件未做）；MainActivity.Home.cs 未见直播频道列表接入——移植版"主页"还是 TaoPlay 点播主页，直播频道页与筛选框是必须新建的块
+
+## 07:40 后台支援·手机版加速包（快照 32528 对照 + 64 位配方预写）
+### 播放页功能对照清单（MainActivity.Player.cs 1435 行 → 道映手机版处置）
+- 手势层与单击呼出（55-73，控制 UI 恒在手势层之上）：沿用
+- 手势区（724-780）：左滑上下=亮度（750-757）、右滑上下=音量（759-767）沿用；横滑快进（777 OnSeekChunkAware）砍
+- 中央播放浮钮（127、974-998 统一状态刷）：沿用
+- 底部控制条（191：上一集/播放暂停/下一集/倍速四钮）：上一集/下一集改绑「上台/下台」直播切台；播放暂停沿用；倍速砍
+- 控制条自动收（999，默认 1.2s）：沿用
+- 画中画（612-640 EnterPictureInPictureMode + 按片源宽高比窗口；更多菜单入口 1073）：沿用
+- 锁定（683-722：手势/呼出全失效、解锁键亮 2.5s、返回两次确认防误退）：沿用
+- 倍速（301 记忆倍速、938 长按 3x、1035-1052 对话框、1170 文案）：整套砍
+- 进度条/拖动预览（151、OnSeekChunkAware 全链）：整套砍（直播实时直出）
+- 物理音量键（782-784 交系统默认）：沿用
+- 更多对话框（1067-1096）：按直播口径裁剪，倍速项除名
+- 再次提醒（00:37 快照已记）：MainActivity.Home.cs 仍是 TaoPlay 点播主页——直播频道列表页 + 顶部筛选框须新建，不能在 Home 上小改
+### 64 位出包配方（预写，落码完成即用）
+- publish：/root/workspace/.local/dotnet9/dotnet publish src/TaoLive.UI.Android.Phone/TaoLive.UI.Android.Phone.csproj -f net9.0-android -c Release -p:RunAOTCompilation=false -p:AndroidLinkMode=None -p:AndroidSdkDirectory=/root/workspace/.local/android-sdk -p:JavaSdkDirectory=/root/workspace/.local/jdk/jdk-17.0.21.0.2+1 -p:RuntimeIdentifier=android-arm64（csproj 已内置 arm64 与 ApplicationId com.taolive.phone；64 位直接用现成内核，不带 UseMonoRuntime/UseInterpreter）
+- 出包前定版项：Phone csproj ApplicationVersion=1 / ApplicationDisplayVersion=1.0.0 未定版，需前台定版后再 publish（清单 Properties/AndroidManifest.xml 为空壳，版本全由 csproj 注入）
+- 签名与验签：publish 后按 v21 收口同款 apksigner 补签（debug.keystore 同源、alias 同款），三重验签 apksigner/aapt2/unzip，证书指纹与 v21 c18030d3… 同源核对
+- 产物：dist/phone/TaoLive-64位.zip（内套 com.taolive.phone-Signed.apk + SHA256SUMS），备份 /root/workspace/存档/TaoLive/<时间戳>-phone/
+- 全测：cd tests/TaoLive.Tests && /root/workspace/.local/dotnet9/dotnet run -v q --nologo（428 PASS 基线只增不减）

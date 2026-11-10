@@ -8,11 +8,107 @@
     ".NETCoreApp,Version=v9.0": {
       "TaoLive.Tests/1.0.0": {
         "dependencies": {
+          "AllPlayer.BLL": "1.0.0",
           "TaoLive.BLL": "1.0.0",
           "TaoLive.Model": "1.0.0"
         },
         "runtime": {
           "TaoLive.Tests.dll": {}
+        }
+      },
+      "Mono.Nat/3.0.0": {
+        "runtime": {
+          "lib/netstandard2.1/Mono.Nat.dll": {
+            "assemblyVersion": "3.0.0.0",
+            "fileVersion": "3.0.0.0"
+          }
+        }
+      },
+      "MonoTorrent/3.0.0": {
+        "dependencies": {
+          "Mono.Nat": "3.0.0"
+        },
+        "runtime": {
+          "lib/net6.0/MonoTorrent.BEncoding.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.Client.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.Connections.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.Dht.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.Factories.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.Messages.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.PiecePicking.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.PieceWriter.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.PortForwarding.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.Trackers.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          },
+          "lib/net6.0/MonoTorrent.dll": {
+            "assemblyVersion": "2.0.0.0",
+            "fileVersion": "3.0.0.0"
+          }
+        }
+      },
+      "System.Text.Json/8.0.5": {},
+      "AllPlayer.BLL/1.0.0": {
+        "dependencies": {
+          "AllPlayer.DAL": "1.0.0",
+          "AllPlayer.Model": "1.0.0",
+          "MonoTorrent": "3.0.0"
+        },
+        "runtime": {
+          "AllPlayer.BLL.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "AllPlayer.DAL/1.0.0": {
+        "dependencies": {
+          "AllPlayer.Model": "1.0.0"
+        },
+        "runtime": {
+          "AllPlayer.DAL.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "AllPlayer.Model/1.0.0": {
+        "dependencies": {
+          "System.Text.Json": "8.0.5"
+        },
+        "runtime": {
+          "AllPlayer.Model.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
         }
       },
       "TaoLive.BLL/1.0.0": {
@@ -38,6 +134,42 @@
   },
   "libraries": {
     "TaoLive.Tests/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Mono.Nat/3.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-LgRC8/8plJfvr1nCPmyHNIwP4fs346doMA/UVDZvFN0RfGJdyD2uS7Dl1AydxjVLrIvad8ghozI0vYFWcfPeYQ==",
+      "path": "mono.nat/3.0.0",
+      "hashPath": "mono.nat.3.0.0.nupkg.sha512"
+    },
+    "MonoTorrent/3.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-n2MVs54cPxES7hlmZ0C1stbT18wqcXgXTljbeo47VbWf4dIGWP/8rxVJ6st0V4FjP1kCaADCY0evFSPF6Ohc9w==",
+      "path": "monotorrent/3.0.0",
+      "hashPath": "monotorrent.3.0.0.nupkg.sha512"
+    },
+    "System.Text.Json/8.0.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-0f1B50Ss7rqxXiaBJyzUu9bWFOO2/zSlifZ/UNMdiIpDYe4cY4LQQicP4nirK1OS31I43rn062UIJ1Q9bpmHpg==",
+      "path": "system.text.json/8.0.5",
+      "hashPath": "system.text.json.8.0.5.nupkg.sha512"
+    },
+    "AllPlayer.BLL/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "AllPlayer.DAL/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "AllPlayer.Model/1.0.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

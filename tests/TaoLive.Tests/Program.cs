@@ -1,4 +1,5 @@
 using System.Linq;
+using AllPlayer.BLL;
 using TaoLive.BLL;
 using TaoLive.Model;
 
@@ -660,16 +661,16 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     {
         "cfg:main" => main, "cfg:snap1" => s1, "cfg:snap2" => s2, "cfg:snap3" => s3, _ => null,
     }, (k, v) => { if (k == "cfg:main") main = v; });
-    var (c1, p1) = store.Load(s => s.Contains("\"ok\""));
+    var (c1, p1) = store.Load(s => s != null && s.Contains("\"ok\""));
     Check(p1 == RecoveryPath.Main, "自愈7：主档完好直读");
     main = "{{{corrupted";
-    var (c2r, p2) = store.Load(s => s.Contains("\"ok\""));
+    var (c2r, p2) = store.Load(s => s != null && s.Contains("\"ok\""));
     Check(p2 == RecoveryPath.Snapshot && c2r == s1, "自愈7：主档损坏快照1回放");
     s1 = "junk"; s2 = "{\"ok\":2}";
-    var (c3r, p3r) = store.Load(s => s.Contains("\"ok\""));
+    var (c3r, p3r) = store.Load(s => s != null && s.Contains("\"ok\""));
     Check(p3r == RecoveryPath.Snapshot && c3r == s2, "自愈7：快照逐份回放直到有效");
     main = null; s1 = null; s2 = null; s3 = null;
-    Check(store.Load(s => s.Contains("\"ok\"")).Path == RecoveryPath.Default, "自愈7：全坏重建默认（UI 提示一次）");
+    Check((store.Load(s => s != null && s.Contains("\"ok\""))).Path == RecoveryPath.Default, "自愈7：全坏重建默认（UI 提示一次）");
     // 自愈8·崩溃自恢复：崩溃后重置可疑状态、连续≥3 明确提示
     var plan0 = CrashRecovery.Plan(0);
     Check(!plan0.ClearResolverCache && !CrashRecovery.ShouldNotice(plan0), "自愈8：无崩溃不折腾");
@@ -1136,10 +1137,90 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     }
 
 
+// ===== AI 直播缓冲池（老板 11-11 00:08 口径）：初始 10–20s / 60s 封顶 / 三道保险 =====
+var aiClock = 0.0;
+double AiClock() { return aiClock; }
+var pool = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 15.0, clockSeconds: AiClock);
+
+// 1 初始缓冲未攒够不放行
+Check(!pool.IsInitialBufferReady(), "AI池:初始未攒够不放行");
+
+// 2 攒到目标 15 秒即放行（10–20 区间）
+for (int i = 0; i < 3; i++) pool.EnqueueSegment(i, 5.0);
+Check(pool.LagSeconds() == 15.0, "AI池:入队累计15s");
+aiClock += 1.0;
+pool.ReportProcessed(0, 5.0, 1.0); pool.ReportProcessed(1, 5.0, 1.0); pool.ReportProcessed(2, 5.0, 1.0);
+Check(pool.IsInitialBufferReady(), "AI池:加工完15s放行播放");
+
+// 3 加工速度快于实时：不降档
+pool.ReportProcessed(3, 5.0, 2.0); // 2.5x
+var d3 = pool.EnqueueSegment(3, 5.0);
+Check(!d3.SuggestDowngrade, "AI池:2.5x不降档");
+
+// 4 加工慢于实时且有积压：建议降档（保险①）
+var slowPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+slowPool.EnqueueSegment(0, 5.0);
+aiClock += 10.0;
+slowPool.ReportProcessed(0, 5.0, 10.0); // 0.5x
+var d4 = slowPool.EnqueueSegment(1, 5.0);
+Check(d4.SuggestDowngrade, "AI池:0.5x建议降档");
+
+// 5 落后 60 秒封顶强制直出（保险③），回落 45 秒以下恢复加工
+var lagPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+AiIngestDecision dl = lagPool.EnqueueSegment(-1, 0.0);
+for (int i = 0; i < 12; i++) dl = lagPool.EnqueueSegment(i, 5.0); // 60s 全入队
+for (int i = 0; i < 12; i++) lagPool.ReportProcessed(i, 5.0, 0.5); // 全加工完，速率 10x
+Check(dl!.Action == AllPlayer.BLL.AiIngestAction.Process, "AI池:60s整未越线");
+dl = lagPool.EnqueueSegment(12, 5.0); // 65s 越线
+Check(dl.Action == AllPlayer.BLL.AiIngestAction.DirectPlay && dl.Reason == AllPlayer.BLL.AiBypassReason.LagCap, "AI池:65s强制直出(60s封顶)");
+Check(lagPool.IsInitialBufferReady(), "AI池:直出态恒放行");
+// 直出即时播放，lag 缩回：再入 4 片全直出 → lag=65-25=40 <45 恢复
+for (int i = 13; i < 17; i++) dl = lagPool.EnqueueSegment(i, 5.0);
+Check(dl.Reason == AllPlayer.BLL.AiBypassReason.LagCap, "AI池:恢复前仍直出");
+dl = lagPool.EnqueueSegment(17, 5.0);
+Check(dl.Reason == AllPlayer.BLL.AiBypassReason.LagCap, "AI池:封顶后持续直出延迟锁定");
+lagPool.ReportPlayed(17, 45.0); // 播放确认追平（模拟快进/追平）
+lagPool.EnqueueSegment(17, 0.0);
+lagPool.Reset();               // 换台清池
+dl = lagPool.EnqueueSegment(18, 5.0);
+Check(dl.Action == AllPlayer.BLL.AiIngestAction.Process && dl.Reason == AllPlayer.BLL.AiBypassReason.None, "AI池:复位后恢复加工");
+
+// 6 过热退直出（保险②），解除后恢复
+var thPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+thPool.SetThermalGuard(overheating: true, lowBattery: false);
+var d6 = thPool.EnqueueSegment(0, 5.0);
+Check(d6.Action == AllPlayer.BLL.AiIngestAction.DirectPlay && d6.Reason == AllPlayer.BLL.AiBypassReason.Thermal, "AI池:过热退原画质直出");
+Check(thPool.IsInitialBufferReady(), "AI池:过热态放行");
+thPool.SetThermalGuard(false, false);
+d6 = thPool.EnqueueSegment(1, 5.0);
+Check(d6.Action == AllPlayer.BLL.AiIngestAction.Process, "AI池:退热恢复加工");
+
+// 7 低电退直出
+var lbPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+lbPool.SetThermalGuard(false, lowBattery: true);
+var d7 = lbPool.EnqueueSegment(0, 5.0);
+Check(d7.Action == AllPlayer.BLL.AiIngestAction.DirectPlay && d7.Reason == AllPlayer.BLL.AiBypassReason.LowBattery, "AI池:低电退直出");
+
+// 8 初始目标钳制 10–20
+var aiClampMin = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 5.0);
+var aiClampMax = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 99.0);
+for (int i = 0; i < 2; i++) aiClampMin.EnqueueSegment(i, 5.0); aiClampMin.ReportProcessed(0, 5.0, 0.1); aiClampMin.ReportProcessed(1, 5.0, 0.1);
+Check(aiClampMin.IsInitialBufferReady(), "AI池:5s钳到10s下限(10s放行)");
+for (int i = 0; i < 2; i++) aiClampMax.EnqueueSegment(i, 5.0); aiClampMax.ReportProcessed(0, 5.0, 0.1); aiClampMax.ReportProcessed(1, 5.0, 0.1);
+Check(!aiClampMax.IsInitialBufferReady(), "AI池:99s钳到20s上限(10s不放行)");
+
+// 9 并发 smoke：三线程同时入队不炸账
+var cp = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 15.0, maxLagSeconds: 10000.0, clockSeconds: AiClock);
+Parallel.For(0, 300, i => cp.EnqueueSegment(i, 1.0));
+Check(cp.LagSeconds() == 300.0, "AI池:300并发入队账目平");
+
+// 10 播放确认推进滞后回落
+cp.ReportPlayed(0, 100.0);
+Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 
-// 桩源：三类可播 + 1 路接不进（骨架专用，真实源回填后换正式源）
 class StubSource : IChannelSource
 {
     public string SourceId { get; }
@@ -1172,3 +1253,5 @@ class StubLane : IStreamLane
     };
     public Task<string?> FetchAsync(Channel ch) => Task.FromResult<string?>($"http://{LaneId}/stream.m3u8");
 }
+
+// 桩源：三类可播 + 1 路接不进（骨架专用，真实源回填后换正式源）

@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\TaoLive.Model\TaoLive.Model.csproj" />
     <ProjectReference Include="..\..\src\TaoLive.BLL\TaoLive.BLL.csproj" />
+    <ProjectReference Include="..\..\src\AllPlayer.BLL\AllPlayer.BLL.csproj" />
   </ItemGroup>
 
 </Project>

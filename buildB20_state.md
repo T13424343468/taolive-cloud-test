@@ -5,8 +5,8 @@
 - 口径：AI 实时优化主线（分片到手即加工、加工完放行；初始缓冲 10–20s；落后上限 60s；三道保险=降档/过热低电直出/60s 强制直出）；素材/模型/图标/链路全沿用 TaoPlay，只做直播分片与缓冲池适配；播放页沿用 TaoPlay 手机版（砍倍速/数字换台 OSD/进度条拖动预览横滑快进退）；列表页顶部筛选框（数字+台名模糊组合）
 - 步骤账：
   - [x] 家底盘查：TaoPlay 快照 32528（phone 工程 7.5k 行 + TaoAI BLL 1.2k 行 + native/taoai arm64 libtaoai.so + Assets/taoai 三模型）全在位；构建链 dotnet9 + jdk17 + android-sdk 在位
-  - [ ] 移植 TaoPlay Model/DAL/BLL/Phone 四树进道映树（保持 AllPlayer.* 命名空间，最小改动）
-  - [ ] TaoAI BLL 类移植 + 直播缓冲池新落码（AiBufferPool：初始缓冲/落后上限/三道保险，纯逻辑可测）
+  - [x] 移植 TaoPlay Model/DAL/BLL/Phone 四树进道映树（保持 AllPlayer.* 命名空间，最小改动）——commit 2f682d2（00:42 固化，15643 行）
+  - [~] TaoAI BLL 类移植已到位（9 类，AllPlayer.BLL/TaoAI/）；直播缓冲池 AiBufferPool 新落码待做
   - [ ] 播放页适配（沿用+砍件）与列表页筛选框
   - [ ] 编译全绿（arm64）→ 全测 → 出包 TaoLive-64位.zip → 备份 → 汇报
 - 断点纪律：每完成一步在此记账；/tmp 不可存成果

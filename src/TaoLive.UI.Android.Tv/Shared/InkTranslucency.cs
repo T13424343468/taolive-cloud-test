@@ -95,4 +95,18 @@ public static class InkTranslucency
         d.SetCornerRadius(4f * 0); // 直角细边框，水墨风
         return d;
     }
+
+    /// <summary>
+    /// 危险项聚焦效果层（v22 第 10/11 项，老板 20:32 拍板）：朱砂细边框+朱砂极淡底。
+    /// 朱砂取列表页强调色 #8A5C3D（与 TaoPalette 水墨 Accent/当前台高亮同源），
+    /// 参数与 FocusDrawable 同构，替代旧弹窗私设的 #8A3B34 套色。
+    /// </summary>
+    public static GradientDrawable AccentFocusDrawable()
+    {
+        var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
+        d.SetColor(Color.Argb(FocusFillAlpha, AccentR, AccentG, AccentB));
+        d.SetStroke(1, Color.Argb(FocusStrokeAlpha, AccentR, AccentG, AccentB));
+        d.SetCornerRadius(4f * 0); // 直角细边框，水墨风
+        return d;
+    }
 }

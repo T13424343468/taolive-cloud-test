@@ -323,10 +323,22 @@ public class StreamResolver
     // ---- 公共 -----------------------------------------------------------------------
 
     /// <summary>
-    /// 直连流轻探（v1.0.8 预检握手）：只取极小头数据（Range 0–2047，几 KB 级）验证可达性，
-    /// 不建立视频传输。2xx/3xx 视为可达；4xx/5xx/超时/异常视为不可达。
+    /// v23 修法 B·探活分级：拉黑账只认服务器明确拒绝（403/429），
+    /// 网络级失败（超时/异常/断网/其他状态码）一律 Unreachable，不回灌整源冻结——
+    /// 切后台回前台的网络冷启动不再把好源拉黑十分钟。
     /// </summary>
-    public async Task<bool> ProbeReachableAsync(string url, string? referer, string? ua)
+    public enum ProbeVerdict
+    {
+        Reachable = 0,    // 探通（2xx/3xx）
+        Rejected = 1,     // 服务器明确拒绝（403/429），唯一可入拉黑账的失败
+        Unreachable = 2,  // 网络级失败（超时/异常/断网/非 403/429 状态码）
+    }
+
+    /// <summary>
+    /// 直连流轻探分级版（v23 修法 B）：同 ProbeReachableAsync 的探法（Range 0–2047 几 KB 级），
+    /// 但把「探不通」的原因分开——403/429=Rejected，其余=Unreachable。
+    /// </summary>
+    public async Task<ProbeVerdict> ProbeUrlVerdictAsync(string url, string? referer, string? ua)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 2047);
@@ -335,12 +347,23 @@ public class StreamResolver
         try
         {
             using var resp = await ProbeHttp.SendAsync(req);
-            return (int)resp.StatusCode < 400;
+            int code = (int)resp.StatusCode;
+            if (code < 400) return ProbeVerdict.Reachable;
+            return code == 403 || code == 429 ? ProbeVerdict.Rejected : ProbeVerdict.Unreachable;
         }
-        catch { return false; }
+        catch { return ProbeVerdict.Unreachable; }
     }
 
-    private static async Task<string?> HttpGetStringAsync(string url, string? referer, string? ua)
+    /// <summary>直连流轻探（v1.0.8 预检握手）：只取极小头数据（Range 0–2047，几 KB 级）验证可达性，
+    /// 不建立视频传输。2xx/3xx 视为可达；4xx/5xx/超时/异常视为不可达。</summary>
+    public async Task<bool> ProbeReachableAsync(string url, string? referer, string? ua)
+        => await ProbeUrlVerdictAsync(url, referer, ua) == ProbeVerdict.Reachable;
+
+    /// <summary>
+    /// v23 修法 B·取文本分级：换票/清单请求把「服务器明确拒绝（403/429）」与网络级失败分开回报，
+    /// 供调用方决定是否入拉黑账（网络级失败绝不回灌）。
+    /// </summary>
+    public static async Task<(string? Body, bool Rejected)> HttpGetStringClassifiedAsync(string url, string? referer, string? ua)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         if (!string.IsNullOrEmpty(referer)) req.Headers.TryAddWithoutValidation("Referer", referer);
@@ -348,10 +371,17 @@ public class StreamResolver
         try
         {
             using var resp = await Http.SendAsync(req);
-            if (!resp.IsSuccessStatusCode) return null;
-            return await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+                return (null, (int)resp.StatusCode is 403 or 429);
+            return (await resp.Content.ReadAsStringAsync(), false);
         }
-        catch { return null; }
+        catch { return (null, false); }
+    }
+
+    private static async Task<string?> HttpGetStringAsync(string url, string? referer, string? ua)
+    {
+        var (body, _) = await HttpGetStringClassifiedAsync(url, referer, ua);
+        return body;
     }
 
     private static string RandomToken()

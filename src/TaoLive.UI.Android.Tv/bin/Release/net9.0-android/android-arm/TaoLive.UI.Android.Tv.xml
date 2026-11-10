@@ -4,16 +4,18 @@
         <name>TaoLive.UI.Android.Tv</name>
     </assembly>
     <members>
-        <member name="T:TaoLive.UI.Android.Tv.BootReceiver">
+        <member name="T:TaoLive.UI.Android.Tv.WarmupBootReceiver">
             <summary>
-            开机自启（设置页开关，默认关）：BOOT_COMPLETED 拉起后台预热保活服务（细案 §二：只拉服务不弹界面）。
+            开机自启（设置页开关，v22 第 15 项：安装默认开启；老用户已保存的设置不受影响）：
+            BOOT_COMPLETED 拉起后台预热保活服务（细案 §二：只拉服务不弹界面）。
             已知限制（真机实测定）：Android 3.1+ 停止状态拦截——首次开机自启生效前需手动启动过一次；
-            部分国产 ROM 默认拦第三方自启，TCL 雷鸟 ROM 行为待 50V8G 实测。
+            部分国产 ROM 默认拦第三方自启，TCL 雷鸟 ROM 行为待 50V8G 实测（设置页自启行长按可跳系统自启管理放行）。
             道映不声明 HOME/桌面身份：TCL 安装校验链会拒装声明 MAIN+HOME 的第三方包。
+            v22 第 3 项：类名与接收器名对齐为 WarmupBootReceiver（原 BootReceiver 名实不符，清单残留死条目）。
             </summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.SettingsStore">
-            <summary>设置持久化（A⑥接真值：SharedPreferences 与主界面同一份 taolive_prefs）。</summary>
+            <summary>设置持久化（A⑥接真值：SharedPreferences 与主界面同一份 taolive_prefs；v22 第 15 项：新装默认开）。</summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.MainActivity">
             <summary>
@@ -47,6 +49,10 @@
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ProbeChannelAsync(TaoLive.Model.Channel)">
             <summary>预检轻探（v1.0.8）：换票成功即服务器可达；直连源只取几 KB 头数据验证，不建视频传输。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ProbeChannelVerdictAsync(TaoLive.Model.Channel)">
+            <summary>v23 修法 B：探测结论分级——Reachable=通；Rejected=服务器明确拒绝（唯一入拉黑账）；
+            Unreachable=网络级失败（换票失败/超时/断网/非 403/429），不回灌整源冻结。</summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.PrefetchNeighbors(TaoLive.Model.Channel)">
             <summary>预连接：把相邻两路的可播地址提前换好放进缓存，换台零等待。</summary>
         </member>
@@ -77,11 +83,20 @@
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ToggleWarmup">
             <summary>A⑥：后台预热开关（关=保活服务退出+调度空转，功能不残废）。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.OpenAutostartSystemPage">
+            <summary>v22 第 7 项：跳系统自启管理——三级降级：应用详情页 → 应用列表 → 文字指引，绝不硬撑。</summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ToggleAutostart">
             <summary>A⑥：开机自启开关（Android 3.1+ 首次自启须先开过一次 App；TCL ROM 以实测为准）。</summary>
         </member>
         <member name="P:TaoLive.UI.Android.Tv.MainActivity.EffectiveTier">
             <summary>A⑩：实际生效档（自动档临时调节含在内；手动档=天花板）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.RefreshStatsLine">
+            <summary>
+            v22 第 9 项：画面信息短格式两行——「帧率:x fps&gt;y fps  分辨率:1080P&gt;2K」+「画质:高:生效」。
+            一律真实画面真实数据：测量缺失显「检测中」、到限显「--」；行高由装配时固定，跳变只换文字不换高度。
+            </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.OnAutoTierChanged(TaoLive.BLL.AiLiveTier,System.Boolean)">
             <summary>A⑩/A⑤：自动档变化后统一动作——重挂滤镜、调档打点、信息行（档位变化优先级，走单写入口）。</summary>
@@ -90,25 +105,16 @@
             <summary>A 类第13项·播放选源：健康账已验证优先（零新增请求）；无验证时多来源竞速（4 秒预算，退避期跳过，胜者回写）。</summary>
         </member>
         <member name="F:TaoLive.UI.Android.Tv.MainActivity.QualityFilterKeysForLog">
-            <summary>画质滤镜键集合（A⑤起播打点摘选用）。</summary>
+            <summary>画质滤镜键集合（A⑤起播打点摘选用；v22 定项：参数名修正后同步 sharpen-sigma/brightness）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.StartLoadingDots(TaoLive.Model.Channel)">
             <summary>亮牌期间的呼吸点动画：正在连接 → 正在连接· → ·· → ···，让「还没死机」一眼可见。</summary>
-        </member>
-        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ListGroupKeys">
-            <summary>⑪全部可收放分组键：收藏组（有收藏时）+ 非空分类 + 无信号组（有判死台时）。</summary>
-        </member>
-        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ToggleAllGroups">
-            <summary>⑪一键切换：全开→全部收起；有任何折叠→全部展开（含无信号组），重建列表。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.CurrentFocusKey">
             <summary>当前焦点行锚点键（⑪全局焦点锚定）：分类行取分类键，频道行取 C:频道号。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.JumpCategory(System.Int32)">
             <summary>⑥左右键分类间跳转（v1.0.9 用户 10:04 拍板）：从当前行沿方向找最近分类头，焦点落到分类头上。</summary>
-        </member>
-        <member name="M:TaoLive.UI.Android.Tv.MainActivity.AiTierRowLabel">
-            <summary>画质增强档位行文案（确认键循环 关→低→高→关，实时档口径）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.StyleTabs">
             <summary>五标签行着色：当前标签朱砂底浅字，其余极淡底。</summary>
@@ -126,13 +132,24 @@
             <summary>预检状态实时刷新：换行数据通知重绘（滚动位置尽量保留）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.RefreshEpg(TaoLive.Model.Channel)">
-            <summary>换台即刷新：后台拉官方节目单，有数据才亮底部节目区；失败/映射外/无数据静默隐藏。</summary>
+            <summary>换台即刷新：先清空+隐藏旧节目单条（v22 第 1 项：换台先清场，旧条绝不残留），
+            后台拉官方节目单，有数据才亮底部节目区并按 7 秒计时收起（v22 第 12 项）；失败/映射外/无数据静默隐藏。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ShowEpgBar">
+            <summary>v22 第 12 项：节目单条亮出并按 7 秒无操作计时自动收起（换台刷新即重计）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.SuppressEpgForDrawer">
+            <summary>v22 第 13 项：抽屉打开先收节目单条（隐藏+停计时），节目单条压在抽屉下且不叠字。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.ShowExitConfirmDialog">
             <summary>
             退出确认弹窗（v1.0.9 用户拍板）：水墨深色面板，确认键=退出、返回键=取消继续播放。
             确认后：先停播放（音频、取流、看门狗全停）→ FinishAndRemoveTask → 结束进程，
             不留后台声音、不留半死播放内核；重新打开即冷启动（开机默认台/收藏首位照旧）。
+            v22 第 11 项改版（老板 20:28/20:32 拍板）：全屏自管浮层——窗底透明+半透明水墨面板（与列表页同源，
+            不再露 ROM 钢蓝灰）；「退出」=朱砂细边框+朱砂极淡底（强调色 #8A5C3D，与列表页 Accent 同源），
+            「取消」=纸白细边框+极淡底；常驻=水墨深底+次色字；字体统一 TextPrimary/TextSecondary+可读性阴影；
+            焦点导航、默认焦点落「取消」、返回键=继续看，全不动。
             </summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.MainActivity.DialogActionPeer">
@@ -162,6 +179,15 @@
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.OnKeyUp(Android.Views.Keycode,Android.Views.KeyEvent)">
             <summary>设置键 4077 单击（未长按）：呼出/收起软件设置面板（底部透明面板）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.ResumeReconnectAsync(TaoLive.Model.Channel)">
+            <summary>
+            v23 修法 A：回前台重接前先探网络就绪——未就绪 500ms×6≈3 秒步进等待（ResumeNetWaitPolicy），
+            超时照常 Play 绝不无限等；等待期间用户切台即让位。打点 [ConnectRetry] 真机可验收。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.NetworkReady">
+            <summary>v23 修法 A：当前默认网络是否就绪（有活动网络且具备 Internet 能力）；探测能力不可用时不挡重接。</summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.Shared.CarrierPolicy">
             <summary>
@@ -257,6 +283,13 @@
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.FocusDrawable">
             <summary>焦点/确认效果层：极淡底 + 细边框（统一一套，全局复用）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.InkTranslucency.AccentFocusDrawable">
+            <summary>
+            危险项聚焦效果层（v22 第 10/11 项，老板 20:32 拍板）：朱砂细边框+朱砂极淡底。
+            朱砂取列表页强调色 #8A5C3D（与 TaoPalette 水墨 Accent/当前台高亮同源），
+            参数与 FocusDrawable 同构，替代旧弹窗私设的 #8A3B34 套色。
+            </summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.Shared.LiveSurfaceView">
             <summary>

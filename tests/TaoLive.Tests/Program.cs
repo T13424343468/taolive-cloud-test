@@ -190,6 +190,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     cat.RegisterSource(new XatvSource());
     cat.RegisterSource(new NmtvSource());
     cat.RegisterSource(new GxtvSource());
+    cat.RegisterSource(new CityCandidatesSource()); // v22 第 16 项：地方台 18 路候选源挂链
     cat.Rebuild();
     var cctv = cat.Groups.First(g => g.Category == ChannelCategory.Cctv).Channels.Count;
     var cgtn = cat.Groups.First(g => g.Category == ChannelCategory.Cgtn).Channels.Count;
@@ -197,8 +198,16 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     var city = cat.Groups.First(g => g.Category == ChannelCategory.City).Channels.Count;
     Check(cctv == 21, $"央视 21 路（实际 {cctv}）");
     Check(cgtn == 6, $"CGTN 6 路（实际 {cgtn}）");
-    Check(prov == 31 + 4 + 7 + 8, $"省台=央视频31+浙江4+贵州7+内蒙古8（实际 {prov}）");
-    Check(city == 4 + 2 + 7, $"城市台 西安4+内蒙古2（呼和浩特/包头）+广西7（实际 {city}）");
+    Check(prov == 31 + 4 + 7 + 8 + 2, $"省台=央视频31+浙江4+贵州7+内蒙古8+城市候选2省经济（实际 {prov}）");
+    Check(city == 4 + 2 + 7 + 13, $"城市台 西安4+内蒙古2+广西7+候选13城市/县级台（实际 {city}）");
+    Check(cat.All.Count == 97 + 15, $"v22 第 16 项：原 97 路挂链后总台数 112（实际 {cat.All.Count}）");
+    Check(cat.All.Where(c => c.SourceId == "citycdn").All(c => !string.IsNullOrEmpty(c.StreamUrl) && string.IsNullOrEmpty(c.EpgKey)),
+        "v22 第 16 项：城市候选 15 路全带直连地址、EPG 留空不硬造");
+    Check(ChannelLogoMap.Count == 78, $"v22 第 16 项：台标映射 63+15 枚（实际 {ChannelLogoMap.Count}）");
+    Check(ChannelLogoMap.ResourceName("七台河新闻综合") == "logo_qitaihe_xwzh"
+        && ChannelLogoMap.ResourceName("甘肃经济") == "logo_gansu_jj"
+        && ChannelLogoMap.ResourceName("福建经济") == "logo_fujian_jj"
+        && ChannelLogoMap.ResourceName("不存在的台") is null, "v22 第 16 项：新台标映射按台名精确命中、映射外回退 null");
     var special = cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels.Count;
     Check(special == cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels
         .Count(c => c.SourceId == "yangshipin") + 2, $"专项含 gxtv 重流 CETV-2/4（实际 {special}）");
@@ -256,10 +265,13 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(LiveQuality.OptionsFor(AiLiveTier.Off).Count == 0, "关档无滤镜参数");
     var lowOpts = LiveQuality.OptionsFor(AiLiveTier.Low);
     Check(lowOpts.Any(o => o.Key == "video-filter" && o.Value == "sharpen"), "低档=锐化滤镜");
-    Check(lowOpts.Any(o => o.Key == "sharpen-amplitude"), "低档带锐化幅度");
+    Check(lowOpts.Any(o => o.Key == "sharpen-sigma" && o.Value == "0.8"), "低档带锐化幅度（v22：LibVLC 参数名 sharpen-sigma）");
+    Check(!lowOpts.Any(o => o.Key == "sharpen-amplitude"), "v22 定项：旧参数名 sharpen-amplitude 绝迹");
     var highOpts = LiveQuality.OptionsFor(AiLiveTier.High);
     Check(highOpts.Any(o => o.Key == "video-filter" && o.Value.Contains("sharpen") && o.Value.Contains("adjust")), "高档=锐化+画面微调组合");
     Check(highOpts.Any(o => o.Key == "contrast") && highOpts.Any(o => o.Key == "saturation"), "高档带对比/饱和微调");
+    Check(highOpts.Any(o => o.Key == "brightness" && o.Value == "0.02"), "v22 定项：gamma 超域修正改 brightness 微调（值域 -1~1）");
+    Check(!highOpts.Any(o => o.Key == "gamma"), "v22 定项：gamma 参数绝迹");
     Check(!highOpts.Count(o => o.Key == "video-filter").Equals(2), "video-filter 单条不重复（避免同名覆盖）");
 }
 
@@ -808,7 +820,7 @@ Check(StatsLinePolicy.NextDelayMs(0) == 500 && StatsLinePolicy.NextDelayMs(9) ==
 Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: false).Contains("检测中"), "⑤重试期内维持「检测中」");
 Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: true).Contains("--") && !FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, true).Contains("检测中"), "⑤到限显「--」不留「检测中」");
 Check(FrameStatsLine.FormatEx(null, null, 1920, 1080, 1920, 1080, null, true).Contains("原帧率 --"), "⑤部分缺失到限：缺失项显「--」");
-Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("AI画质：自动"), "⑤并显 AI 档位（口径同【二】全中文）");
+Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("画质增强：自动"), "⑤并显画质增强档位（v22 定项：显示名改画质增强）");
 
 // ⑥换台提速：先连最快出画面档，亮后无感升高档，失败留在当前档
 var tiers = new List<(int Height, long Bandwidth)> { (1080, 8_000_000), (720, 3_000_000), (480, 1_500_000) };
@@ -847,6 +859,18 @@ Check(fold.IsCollapsed("央视"), "⑪单组点收原逻辑不变");
 fold.ToggleGroup("央视");
 Check(!fold.IsCollapsed("央视"), "⑪单组再点恢复展开");
 
+// ---- v23 修复批（六条一批修完）：折叠整行退场后 BLL 纯逻辑保留；⑨B 介入升级阶梯；回前台网络等待步进 ----
+Check(ListFoldController.ToggleLabel(0) == "全部收起" && ListFoldController.ToggleLabel(1) == "全部展开",
+    "v23①折叠交互整行退场：ListFoldController 纯逻辑保留（UI 行已清，列表默认铺开）");
+Check(StallRescue.EarlyRescueEscalateAt == 3,
+    "v23⑤⑨B 静默重取流连续介入升级线=3 次（时钟微动假活不再无限循环介入）");
+Check(StallRescue.EarlyRescueResetMs == 30_000,
+    "v23⑤介入计数清零窗口=30 秒持续走钟（微动不清零，升级阶梯不被绕过）");
+Check(ResumeNetWaitPolicy.StepMs == 500 && ResumeNetWaitPolicy.MaxSteps == 6,
+    "v23④回前台网络就绪等待步进 500ms×6≈3 秒封顶（常数收口可调）");
+Check(ResumeNetWaitPolicy.ShouldWait(0) && !ResumeNetWaitPolicy.ShouldWait(ResumeNetWaitPolicy.MaxSteps),
+    "v23④等待步进封顶：超时照常发起重接，绝不无限等");
+
 // ⑫连接失败矩阵：失败分类枚举逐类归因；限流冷却退避
 Check(ConnectFailure.Classify("getaddrinfo ENOTFOUND x") == ConnectFailureKind.DnsFailure, "⑫DNS 解析失败单列");
 Check(ConnectFailure.Classify("connection timed out") == ConnectFailureKind.ConnectTimeout, "⑫连接超时单列");
@@ -875,9 +899,9 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
         && DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, false) == DrawerSupport.Tab.Local,
         "B·标签循环：收藏→全部、收藏反向→地方台");
 
-    // 全部标签：画质行首行 + 收藏成组置顶（按收藏序）+ 无信号分组置底
-    var all = DrawerSupport.BuildRows(DrawerSupport.Tab.All, chans, favOrder, Dead, "画质增强：低（确认切换）");
-    Check(all[0] is DrawerSupport.DrawerRow.AiTier, "B·抽屉首行常驻画质档位");
+    // 全部标签：收藏成组置顶（按收藏序）+ 无信号分组置底（v22 第 7/15 项：画质档位行撤出列表页）
+    var all = DrawerSupport.BuildRows(DrawerSupport.Tab.All, chans, favOrder, Dead);
+    Check(all.All(r => r is DrawerSupport.DrawerRow.Channel or DrawerSupport.DrawerRow.Group), "v22 第 7 项：画质档位行撤出，抽屉只剩频道/分组行");
     Check(all.OfType<DrawerSupport.DrawerRow.Group>().Any(g => g.Label == "★ 收藏"), "B·收藏成组置顶");
     Check(all.Select((r, i) => (r, i)).Where(x => x.r is DrawerSupport.DrawerRow.Channel)
             .Select(x => ((DrawerSupport.DrawerRow.Channel)x.r).Data.Number).SequenceEqual(new[] { 3, 2, 1, 3 }),/* 无信号组置底后复列 */
@@ -885,15 +909,79 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     Check(all.OfType<DrawerSupport.DrawerRow.Group>().Any(g => g.Label.Contains("无信号")), "B·全部标签无信号分组置底");
 
     // 分类标签过滤：央视只留 CCTV1（且无收藏组——收藏里没有央视台）
-    var cctv = DrawerSupport.BuildRows(DrawerSupport.Tab.Cctv, chans, favOrder, Dead, "画质增强：低（确认切换）");
+    var cctv = DrawerSupport.BuildRows(DrawerSupport.Tab.Cctv, chans, favOrder, Dead);
     Check(cctv.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 1 }),
         "B·央视标签过滤只留央视台");
     Check(!cctv.OfType<DrawerSupport.DrawerRow.Group>().Any(g => g.Label == "★ 收藏"), "B·标签内无收藏台则无收藏组");
 
+    // v22 第 7 项：央视=央视/CGTN/专项并集；地方台=城市台/自有源收窄，不再兜非央视非卫视杂烩
+    var wide = new List<Channel>
+    {
+        new() { Name="CCTV1", Number=1, Category=ChannelCategory.Cctv, StreamUrl="http://t/1" },
+        new() { Name="CGTN纪录", Number=2, Category=ChannelCategory.Cgtn, StreamUrl="http://t/2" },
+        new() { Name="风云剧场", Number=3, Category=ChannelCategory.Special, StreamUrl="http://t/3" },
+        new() { Name="WS1", Number=4, Category=ChannelCategory.Provincial, StreamUrl="http://t/4" },
+        new() { Name="CS1", Number=5, Category=ChannelCategory.City, StreamUrl="http://t/5" },
+        new() { Name="自录1", Number=6, Category=ChannelCategory.UserSource, StreamUrl="http://t/6" },
+    };
+    var cctvWide = DrawerSupport.BuildRows(DrawerSupport.Tab.Cctv, wide, new List<int>(), Dead);
+    Check(cctvWide.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 1, 2, 3 }),
+        "v22 第 7 项：央视标签含 CGTN 与专项频道");
+    var localWide = DrawerSupport.BuildRows(DrawerSupport.Tab.Local, wide, new List<int>(), Dead);
+    Check(localWide.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 5, 6 }),
+        "v22 第 7 项：地方台标签只收城市台与自有源");
+    var satWide = DrawerSupport.BuildRows(DrawerSupport.Tab.Satellite, wide, new List<int>(), Dead);
+    Check(satWide.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 4 }),
+        "v22 第 7 项：卫视标签只收省台");
+
+    // v22 第 6/15 项：空态两条——收藏空/分类空如实告知，不白屏
+    var emptyLocal = DrawerSupport.BuildRows(DrawerSupport.Tab.Local, wide.Where(c => c.Number == 4).ToList(), new List<int>(), Dead);
+    Check(emptyLocal.Count == 1 && emptyLocal[0] is DrawerSupport.DrawerRow.Note n1 && n1.Text == "该分类暂无频道",
+        "v22 第 6/15 项：分类装配后无频道补空态行");
+    var emptyFav = DrawerSupport.BuildRows(DrawerSupport.Tab.Favorite, chans, new List<int>(), Dead);
+    Check(emptyFav.Count == 1 && emptyFav[0] is DrawerSupport.DrawerRow.Note n2 && n2.Text.Contains("收藏夹是空的"),
+        "v22 第 6/15 项：收藏空态给指引不白屏");
+
     // 收藏标签：按收藏排序铺开
-    var favRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Favorite, chans, favOrder, Dead, "画质增强：低（确认切换）");
+    var favRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Favorite, chans, favOrder, Dead);
     Check(favRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 3, 2 }),
         "B·收藏标签按收藏排序铺开");
+
+    // v22 第 9 项：画面信息短格式——帧率+分辨率一行、画质一行；同值只显一档、变化显 a>b、缺失/到限口径
+    Check(FrameStatsLine.FpsSegment(null, null, false) == "帧率:检测中", "v22 第 9 项：帧率缺失未到限显检测中");
+    Check(FrameStatsLine.FpsSegment(null, null, true) == "帧率:--", "v22 第 9 项：帧率缺失到限显 --");
+    Check(FrameStatsLine.FpsSegment(25, null, false) == "帧率:25fps", "v22 第 9 项：现值未测同值单显");
+    Check(FrameStatsLine.FpsSegment(25, 25.2, false) == "帧率:25fps", "v22 第 9 项：帧率小幅波动按同值");
+    Check(FrameStatsLine.FpsSegment(25, 30, false) == "帧率:25fps>30fps", "v22 第 9 项：帧率变化显原>现");
+    Check(FrameStatsLine.ResSegment(0, 0, 0, 0, true) == "分辨率:--", "v22 第 9 项：分辨率缺失到限显 --");
+    Check(FrameStatsLine.ResSegment(1920, 1080, 1920, 1080, false) == "分辨率:1080P", "v22 第 9 项：同档并入档位文案");
+    Check(FrameStatsLine.ResSegment(1920, 1080, 2560, 1440, false) == "分辨率:1080P>2K", "v22 第 9 项：分辨率变化显 1080P>2K");
+    Check(FrameStatsLine.ResSegment(1280, 720, 640, 360, false) == "分辨率:720P", "v22 第 9 项：≤1280 同归 720P 只显一档");
+    Check(FrameStatsLine.TierSegment("高", true) == "画质:高:生效", "v22 第 9 项：画质档生效口径");
+    Check(FrameStatsLine.TierSegment("低", false) == "画质:低:未生效", "v22 第 9 项：临时降档如实显未生效");
+    Check(FrameStatsLine.TierSegment("关", true) == "画质:关", "v22 第 9 项：关档只显关");
+
+    // v22 第 16 项：18 路挂链后抽屉分类过滤对账——地方台含 13 城市候选，卫视含甘肃/福建经济
+    {
+        var cat2 = new ChannelCatalog(new FavoriteStore());
+        cat2.RegisterSource(new YangshipinSource());
+        cat2.RegisterSource(new CztvSource());
+        cat2.RegisterSource(new GzstvSource());
+        cat2.RegisterSource(new XatvSource());
+        cat2.RegisterSource(new NmtvSource());
+        cat2.RegisterSource(new GxtvSource());
+        cat2.RegisterSource(new CityCandidatesSource());
+        cat2.Rebuild();
+        var favReal = new List<int>();
+        var localRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Local, cat2.All, favReal, c => ChannelHealth.Alive);
+        var localNums = localRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).ToList();
+        Check(localNums.Count == 26, $"v22 第 16 项：地方台=原 13 城市+候选 13（实际 {localNums.Count}）");
+        Check(localNums.All(n => cat2.ByNumber(n)!.Category is ChannelCategory.City or ChannelCategory.UserSource),
+            "v22 第 16 项：地方台标签只含城市台/自有源");
+        var satRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Satellite, cat2.All, favReal, c => ChannelHealth.Alive);
+        var satNames = satRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Name).ToList();
+        Check(satNames.Contains("甘肃经济") && satNames.Contains("福建经济"), "v22 第 16 项：卫视标签含甘肃/福建经济");
+    }
 
     // 节目单格式化 + 限流提示
     var start = new DateTime(2026, 11, 10, 20, 0, 0);
@@ -902,8 +990,12 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     Check(DrawerSupport.Clock(start) == "20:00", "B·节目时刻 HH:mm 格式");
     Check(DrawerSupport.NowLabel(line, start.AddMinutes(15)).StartsWith("20:00 – 20:45 · 还剩 30 分钟"),
         "B·当前节目带剩余分钟");
-    Check(DrawerSupport.RateLimitHint("CCTV1").Contains("CCTV1") && DrawerSupport.RateLimitHint("CCTV1").Contains("限流"),
+    Check(DrawerSupport.RateLimitHint("CCTV1", 90_000).Contains("CCTV1") && DrawerSupport.RateLimitHint("CCTV1", 90_000).Contains("限流"),
         "B·限流提示点名台号与原因");
+    Check(DrawerSupport.RateLimitHint("CCTV1", 90_000).Contains("约 2 分钟后自动重试"),
+        "v22 第 2 项：限流提示按退避账剩余分钟给预期");
+    Check(DrawerSupport.RateLimitHint("CCTV1", 0).Contains("即将自动重试") && !DrawerSupport.RateLimitHint("CCTV1", 0).Contains("约 1 分钟"),
+        "v22 第 2 项：退避期外不再写死一分钟");
 }
 
 // ---- A 类 v21 新增断言 ----
@@ -918,10 +1010,10 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     Check(merged.Contains(":network-caching=1200"), "P1合并：无关键保留");
     // 同键以新值为准；空现有表全按新表；无等号条目保留；前导冒号解析
     var merged2 = MediaOptionMerge.Merge(
-        new List<string> { ":video-filter=sharpen", ":sharpen-amplitude=0.8" },
+        new List<string> { ":video-filter=sharpen", ":sharpen-sigma=0.8" },
         new List<(string, string)> { ("video-filter", "sharpen,adjust"), ("contrast", "1.08") });
     Check(merged2.Contains(":video-filter=sharpen,adjust"), "P1合并：同键新值胜");
-    Check(merged2.Contains(":sharpen-amplitude=0.8"), "P1合并：未给键沿用旧值");
+    Check(merged2.Contains(":sharpen-sigma=0.8"), "P1合并：未给键沿用旧值");
     Check(merged2.Contains(":contrast=1.08"), "P1合并：新键追加");
     var merged3 = MediaOptionMerge.Merge(new List<string>(), new List<(string, string)> { ("a", "1") });
     Check(merged3.Count == 1 && merged3[0] == ":a=1", "P1合并：空表现场全补");

@@ -54,7 +54,50 @@ public static class FrameStatsLine
             // 部分缺失到限：缺失项也显「--」不静默
             if (noFps && statsExhausted) core += "  原帧率 --";
         }
-        return string.IsNullOrEmpty(tierName) ? core : $"{core}  AI画质：{tierName}";
+        return string.IsNullOrEmpty(tierName) ? core : $"{core}  画质增强：{tierName}";
+    }
+
+    // ---- v22 第 9 项：抽屉画面信息改短格式（老板 20:09 令、20:36 加严拍板）----
+    // 帧率与分辨率一行、画质独占一行；一律真实画面真实数据，测量缺失显「检测中」、到限显「--」，绝不编数。
+    // 两行固定行高提前占位（UI 层一次量足），数值跳变只换文字不换高度。
+
+    /// <summary>帧率段：同值只显「帧率:25fps」，变化显「帧率:25fps&gt;30fps」（原&gt;现，实测值口径）。</summary>
+    public static string FpsSegment(double? origFps, double? curFps, bool statsExhausted)
+    {
+        if (origFps is null || origFps <= 0)
+            return statsExhausted ? "帧率:--" : "帧率:检测中";
+        bool same = curFps is null || Math.Abs(curFps.Value - origFps.Value) < 0.5;
+        return same ? $"帧率:{origFps:0}fps" : $"帧率:{origFps:0}fps>{curFps:0}fps";
+    }
+
+    /// <summary>分辨率档位（按宽度向上归档，与 TaoPlay 口径一致）：≤1280=720P、≤1920=1080P、≤2560=2K、≤4096=4K、其余 8K。</summary>
+    public static string ResBucket(int w)
+    {
+        if (w <= 0) return "";
+        if (w <= 1280) return "720P";
+        if (w <= 1920) return "1080P";
+        if (w <= 2560) return "2K";
+        if (w <= 4096) return "4K";
+        return "8K";
+    }
+
+    /// <summary>分辨率段：同档只显一档（宽高并入档位文案），变化显「分辨率:1080P&gt;2K」。</summary>
+    public static string ResSegment(int origW, int origH, int curW, int curH, bool statsExhausted)
+    {
+        if (origW <= 0 || origH <= 0)
+            return statsExhausted ? "分辨率:--" : "分辨率:检测中";
+        bool curValid = curW > 0 && curH > 0;
+        var orig = ResBucket(origW);
+        if (!curValid) return $"分辨率:{orig}";
+        var cur = ResBucket(curW);
+        return cur == orig ? $"分辨率:{orig}" : $"分辨率:{orig}>{cur}";
+    }
+
+    /// <summary>画质段（v22 第 9/17 项口径）：实际档与设置档一致显「生效」，临时降档如实显「未生效」；关档只显「关」。</summary>
+    public static string TierSegment(string? tierName, bool effective)
+    {
+        if (string.IsNullOrEmpty(tierName) || tierName == "关") return "画质:关";
+        return $"画质:{tierName}:{(effective ? "生效" : "未生效")}";
     }
 }
 

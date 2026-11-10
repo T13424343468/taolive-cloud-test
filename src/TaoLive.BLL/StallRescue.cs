@@ -21,6 +21,17 @@ public static class StallRescue
     public const int KernelRestartAt = 3;
 
     /// <summary>
+    /// v23 第 5 条·⑨B 提前介入连续无效升级线：静默重取流连续介入满 N 次仍未止住停滞
+    /// （时钟微动「假活」循环介入的老实锤），第 N 次起不再静默重取流，升级走分级自救阶梯
+    /// （静默重取流→降清晰度→软重启内核）。
+    /// </summary>
+    public const int EarlyRescueEscalateAt = 3;
+
+    /// <summary>介入计数清零窗口（毫秒）：时钟恢复（持续走钟）满此时长才清连续介入计数——
+    /// 时钟微动的「假活」不清零，防止循环静默重取流永远升不了级。</summary>
+    public const int EarlyRescueResetMs = 30_000;
+
+    /// <summary>
     /// stallIndex：本台会话内第几次卡死（0 起）。hasLowerQuality：是否还有可降档。
     /// 无可降档时第 2 级直接并入重取流，绝不空转一档。
     /// </summary>

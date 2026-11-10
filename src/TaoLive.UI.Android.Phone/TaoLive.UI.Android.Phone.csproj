@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationId>com.taolive.phone</ApplicationId>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.0</ApplicationDisplayVersion>
+    <ApplicationTitle>道映</ApplicationTitle>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <AndroidEnableAot>false</AndroidEnableAot>
+    <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+    <RootNamespace>TaoLive.UI.Android.Phone</RootNamespace>
+    <AssemblyName>TaoLive.UI.Android.Phone</AssemblyName>
+    <!-- 签名链纪律：道系安卓实包统一 C1 证书链（与电视版同源 debug.keystore） -->
+    <AndroidKeyStore>True</AndroidKeyStore>
+    <AndroidSigningKeyStore>..\..\keystore\debug.keystore</AndroidSigningKeyStore>
+    <AndroidSigningKeyStorePass>android</AndroidSigningKeyStorePass>
+    <AndroidSigningStorePass>android</AndroidSigningStorePass>
+    <AndroidSigningKeyAlias>androiddebugkey</AndroidSigningKeyAlias>
+    <AndroidSigningKeyPass>android</AndroidSigningKeyPass>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AllPlayer.Model\AllPlayer.Model.csproj" />
+    <ProjectReference Include="..\AllPlayer.DAL\AllPlayer.DAL.csproj" />
+    <ProjectReference Include="..\AllPlayer.BLL\AllPlayer.BLL.csproj" />
+    <ProjectReference Include="..\TaoLive.Model\TaoLive.Model.csproj" />
+    <ProjectReference Include="..\TaoLive.BLL\TaoLive.BLL.csproj" />
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" />
+    <Compile Include="..\AllPlayer.UI.Android.Shared\VideoHost.cs" Link="Shared\VideoHost.cs" />
+    <Compile Include="..\AllPlayer.UI.Android.Shared\VideoCarrier.cs" Link="Shared\VideoCarrier.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libvlc.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libc++_shared.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+    <!-- TaoPlay AI 画质推理内核（ncnn CPU, 自编译 libtaoai.so, 64 位沿用） -->
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libtaoai.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+  </ItemGroup>
+
+</Project>

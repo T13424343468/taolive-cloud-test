@@ -57,6 +57,8 @@ public class LiveVideoHost : IDisposable
     private int _statsRetries;                              // ⑤已重试次数
     public bool StatsExhausted => _statsRetries >= StatsLinePolicy.MaxRetries; // ⑤到限仍无数据显「--」
     private bool _earlyRescueUsed;           // ⑨B本轮卡顿已提前介入（水位低先动，不等6秒）
+    private int _earlyRescueStreak;          // v23 第 5 条：⑨B静默重取流连续介入次数（连续满 EarlyRescueEscalateAt 升级自救阶梯）
+    private long _lastEarlyRescueMs;         // v23 第 5 条：最近一次⑨B介入时刻（持续走钟 EarlyRescueResetMs 才清计数，假活不清零）
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
     private long _lastDeescalateMs;           // ⑩水位追回：降档节流（30 秒最多降一档）
@@ -195,6 +197,7 @@ public class LiveVideoHost : IDisposable
             _earlyRescueUsed = false; // ⑨B时钟在走：本轮提前介入额度恢复
             if (_frameShown) return;
             _frameShown = true;
+            _earlyRescueStreak = 0; // v23 第 5 条：首帧清零（真首帧才算，微动不清）
             StartStatsRetry(); // ⑤首帧后再解析轨道：起播后每500ms重试至多10次，后台不阻塞
             FrameShown?.Invoke();
         };
@@ -230,12 +233,27 @@ public class LiveVideoHost : IDisposable
         long age = Environment.TickCount64 - last;
         if (!PlaybackWatchdog.IsStalled(_frameShown, last, Environment.TickCount64))
         {
-            // ⑨B缓冲水位低提前介入：时钟 2.5 秒没走就先静默重取流（先出画面口径），不等 6 秒卡死；
-            // 每轮卡顿只提前介入一次，重置额度靠 TimeChanged 恢复
+            // v23 第 5 条：时钟恢复（持续走钟满 EarlyRescueResetMs）才清连续介入计数；
+            // 时钟微动的「假活」不产生持续走钟窗口，计数保留，升级阶梯不会被绕过
+            if (age < 1500 && _earlyRescueStreak > 0 &&
+                Environment.TickCount64 - _lastEarlyRescueMs >= StallRescue.EarlyRescueResetMs)
+                _earlyRescueStreak = 0; // 真恢复：连续介入计数清零
+            // ⑨B缓冲水位低提前介入：时钟 4 秒没走就先静默重取流（先出画面口径），不等 6 秒卡死；
+            // 每轮卡顿只提前介入一次，重置额度靠 TimeChanged 恢复；
+            // v23 第 5 条：连续介入满 EarlyRescueEscalateAt 次无效→不再静默重取流，升级走分级自救阶梯
             if (age >= EarlyRescueMs && !_earlyRescueUsed && !_kernelRebuilding)
             {
                 _earlyRescueUsed = true;
-                try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入：时钟 {age}ms 未走，静默重取流"); } catch { }
+                _earlyRescueStreak++;
+                _lastEarlyRescueMs = Environment.TickCount64;
+                try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入（连续第 {_earlyRescueStreak} 次）：时钟 {age}ms 未走，静默重取流"); } catch { }
+                if (_earlyRescueStreak >= StallRescue.EarlyRescueEscalateAt)
+                {
+                    _earlyRescueStreak = 0;
+                    try { CrashNet.Record($"[LiveVideoHost] ⑨B 连续 {StallRescue.EarlyRescueEscalateAt} 次介入无效，升级分级自救阶梯（v23 第 5 条）"); } catch { }
+                    HandleStall(); // 静默重取流→降清晰度→软重启内核，阶梯行进
+                    return;
+                }
                 _ = SilentRefreshAsync();
             }
             ObserveBufferWatermark(age); // ⑩水位实接：默认贴边、抖动攒水位、平稳追回，动作变化落日志
@@ -360,6 +378,8 @@ public class LiveVideoHost : IDisposable
         _exhaustedNotified = false;
         _cachingIndex = 0;
         _stallCount = 0;      // ⑫：换台自救行进清零，分级从静默重取流重新走
+        _earlyRescueStreak = 0; // v23 第 5 条：换台清零连续介入计数
+        _lastEarlyRescueMs = 0;
         _measuredFps = null;  // ④：换台重新实测
         _fpsLastDisplayed = 0;
         _fpsLastMs = 0;

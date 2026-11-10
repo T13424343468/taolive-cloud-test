@@ -51,15 +51,15 @@ public static class LiveQuality
         AiLiveTier.Low => new List<(string Key, string Value)>
         {
             ("video-filter", "sharpen"),
-            ("sharpen-amplitude", "0.8"),
+            ("sharpen-sigma", "0.8"), // v22 定项：LibVLC 锐化参数名为 sharpen-sigma（合法域 0~2），原 sharpen-amplitude 从未生效
         },
         AiLiveTier.High => new List<(string Key, string Value)>
         {
             ("video-filter", "sharpen,adjust"),
-            ("sharpen-amplitude", "0.8"),
+            ("sharpen-sigma", "0.8"), // v22 定项：同上，参数名修正
             ("contrast", "1.08"),
             ("saturation", "1.12"),
-            ("gamma", "1.02"),
+            ("brightness", "0.02"), // v22 定项：原 gamma=1.02 超 adjust gamma 值域(0~1)被钳制，改为 brightness 微调（合法域 -1~1）
         },
         _ => new List<(string Key, string Value)>(),
     };

@@ -23,7 +23,7 @@ public static class TaoPalette
 /// <summary>应用设置。</summary>
 public class AppSettings
 {
-    public bool AutoStartOnBoot { get; set; } = false;   // 开机自启：默认关，真机实测定
+    public bool AutoStartOnBoot { get; set; } = true;    // v22 定项：安装默认开启（新装/无设置文件默认 true；已保存的设置不受影响）
     public int ShortcutKeySlotA { get; set; } = -1;      // A 档快捷键绑定的频道号（-1 未绑）
     public int ShortcutKeySlotB { get; set; } = -1;
     public int ShortcutKeySlotC { get; set; } = -1;

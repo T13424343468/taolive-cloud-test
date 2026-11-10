@@ -37,6 +37,14 @@ public static class ChannelLogoMap
         ["新疆卫视"] = "logo_xinjiang_ws",
         ["CETV1"] = "logo_cetv1", ["钱江都市"] = "logo_qianjiang_dushi",
         ["经济生活"] = "logo_jingji_shenghuo", ["教科影视"] = "logo_jiaoke_yingshi",
+        // v22 第 16 项：地方台 15 路水墨文字台标（频道简称+水墨底，与整体风格一致；官方 logo 后续可换）
+        ["七台河新闻综合"] = "logo_qitaihe_xwzh", ["万荣综合"] = "logo_wanrong",
+        ["上虞新闻综合"] = "logo_shangyu", ["东丰综合"] = "logo_dongfeng",
+        ["东莞新闻综合"] = "logo_dongguan", ["乐至综合"] = "logo_lezhi",
+        ["伊犁经济法制"] = "logo_yili", ["清河经济综艺"] = "logo_qinghe",
+        ["烟台经济科技"] = "logo_yantai", ["苏州社会经济"] = "logo_suzhou",
+        ["东阳影视生活"] = "logo_dongyang", ["南宁影视娱乐"] = "logo_nanning",
+        ["哈尔滨影视"] = "logo_haerbin", ["甘肃经济"] = "logo_gansu_jj", ["福建经济"] = "logo_fujian_jj",
     };
 
     /// <summary>台名（内部已做去空格）→ 资源名；无内置台标返回 null。</summary>

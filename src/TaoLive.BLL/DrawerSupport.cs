@@ -29,29 +29,29 @@ public static class DrawerSupport
         return all[i];
     }
 
-    /// <summary>频道行：归属台；分组行：标题。</summary>
+    /// <summary>频道行：归属台；分组行：标题；空态行：无频道时的提示文案（不占焦点）。</summary>
     public abstract record DrawerRow
     {
         public sealed record Channel(Model.Channel Data) : DrawerRow;
         public sealed record Group(string Label) : DrawerRow;
-        public sealed record AiTier(string Label) : DrawerRow;
+        public sealed record Note(string Text) : DrawerRow;
     }
 
     /// <summary>
-    /// 抽屉行装配（v4 口径移植）：
-    /// - 首行常驻画质增强档位行（确认键循环 关→低→高→关）；
+    /// 抽屉行装配（v4 口径移植，v22 第 7/8/15 项定稿）：
+    /// - 画质增强档位行撤出列表页（设置页保留唯一入口，操作按钮不占频道列表）；
     /// - 收藏标签：收藏排序结果顺次铺开；
     /// - 全部/央视/卫视/地方台：收藏成组置顶（按收藏排序），其余频道按台单顺序铺开；
-    /// - 全部标签收口补「无信号」分组（只能看不能切）。
+    /// - 全部标签收口补「无信号」分组（只能看不能切）；
+    /// - 标签行装配后无任何频道行 → 补空态行（v22 第 6/15 项：收藏空/分类空如实告知，不白屏）。
     /// </summary>
     public static List<DrawerRow> BuildRows(
         Tab tab,
         IReadOnlyList<Model.Channel> channels,
         IReadOnlyList<int> favoriteOrder,
-        Func<Model.Channel, ChannelHealth> health,
-        string aiTierLabel)
+        Func<Model.Channel, ChannelHealth> health)
     {
-        var rows = new List<DrawerRow> { new DrawerRow.AiTier(aiTierLabel) };
+        var rows = new List<DrawerRow>();
         var favOrdered = favoriteOrder
             .Select(n => channels.FirstOrDefault(c => c.Number == n))
             .Where(c => c is not null).Select(c => c!).ToList();
@@ -59,9 +59,11 @@ public static class DrawerSupport
         IEnumerable<Model.Channel> baseList = tab switch
         {
             Tab.All => channels,
-            Tab.Cctv => channels.Where(c => c.Category == Model.ChannelCategory.Cctv),
+            // v22 第 7 项（老板 20:04 拍板）：CGTN 并回「央视」（同为国家级），专项（风云/第一/怀旧剧场、CETV、国学）随拍板并入央视口径；
+            Tab.Cctv => channels.Where(c => c.Category is Model.ChannelCategory.Cctv or Model.ChannelCategory.Cgtn or Model.ChannelCategory.Special),
             Tab.Satellite => channels.Where(c => c.Category == Model.ChannelCategory.Provincial),
-            Tab.Local => channels.Where(c => c.Category is Model.ChannelCategory.City or Model.ChannelCategory.Special or Model.ChannelCategory.Cgtn or Model.ChannelCategory.UserSource),
+            // v22 第 7 项：「地方台」只放真城市台（City/自有源），不再兜「非央视非卫视」杂烩；空态走第 6/15 项
+            Tab.Local => channels.Where(c => c.Category is Model.ChannelCategory.City or Model.ChannelCategory.UserSource),
             Tab.Favorite => favOrdered,
             _ => channels,
         };
@@ -70,6 +72,8 @@ public static class DrawerSupport
         if (tab == Tab.Favorite)
         {
             foreach (var c in favOrdered) rows.Add(new DrawerRow.Channel(c));
+            if (favOrdered.Count == 0)
+                rows.Add(new DrawerRow.Note("收藏夹是空的，对着频道按确认可收藏")); // v22 第 6/15 项
             return rows;
         }
 
@@ -95,6 +99,10 @@ public static class DrawerSupport
                 foreach (var c in off) rows.Add(new DrawerRow.Channel(c));
             }
         }
+
+        // v22 第 6/15 项：装配完没有任何频道行（只有可能的分组行也没有）→ 空态提示
+        if (!rows.Any(r => r is DrawerRow.Channel))
+            rows.Add(new DrawerRow.Note("该分类暂无频道"));
         return rows;
     }
 
@@ -108,7 +116,12 @@ public static class DrawerSupport
     public static string NowLabel(EpgLine now, DateTime at) =>
         $"{Clock(now.Start)} – {Clock(now.End)} · 还剩 {Math.Max(0, (int)Math.Round((now.End - at).TotalMinutes))} 分钟";
 
-    /// <summary>IP 限流/风控类失败的用户提示（第 3 项）：给原因给预期，不笼统。</summary>
-    public static string RateLimitHint(string channelName) =>
-        $"{channelName} 取流被限流，约 1 分钟后自动重试，先看别的台也行";
+    /// <summary>IP 限流/风控类失败的用户提示（第 3 项）：给原因给预期，不笼统。
+    /// v22 第 2 项：时长接退避账——剩余 ≤0 显「即将自动重试」，否则按分钟给预期（纯函数可测）。</summary>
+    public static string RateLimitHint(string channelName, long remainingMs)
+    {
+        var min = remainingMs > 0 ? (int)Math.Ceiling(remainingMs / 60000.0) : 0;
+        var when = min > 0 ? $"约 {min} 分钟后自动重试" : "即将自动重试";
+        return $"{channelName} 取流被限流，{when}，先看别的台也行";
+    }
 }

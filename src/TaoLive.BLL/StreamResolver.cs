@@ -26,6 +26,8 @@ public class ResolvedStream
 public class StreamResolver
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    /// <summary>A类第11项·超时分级：探活轻探收紧到 4 秒（换票/清单维持 10 秒），快失败快转向。</summary>
+    private static readonly HttpClient ProbeHttp = new() { Timeout = TimeSpan.FromSeconds(4) };
     private static readonly Regex M3u8Regex = new(
         "https?://[^\"\\\\\\s]+\\.m3u8[^\"\\\\\\s]*", RegexOptions.Compiled);
 
@@ -112,15 +114,33 @@ public class StreamResolver
 
     // ---- 通用：短效缓存包装（60 秒；预连接/快速切台命中即起播） ------------------
 
+    /// <summary>A 类第6项·预热落盘注入（长效源起播零探测；票据短效源不落盘）。</summary>
+    public WarmupStore? WarmupDisk { get; set; }
+
+    /// <summary>票据短效源（落了必过期，误导起播）：央视频 5 分钟票、gzstv 腾讯云分钟级票，不落盘。</summary>
+    private static bool IsShortTicketSource(string sourceId) => sourceId is "yangshipin" or "gzstv";
+
     private async Task<string?> ResolveCachedAsync(Channel ch, Func<Channel, Task<string?>> fetch, bool force = false)
     {
         var key = CacheKey(ch);
         if (!force && _cache.TryGetValue(key, out var hit) &&
             DateTimeOffset.UtcNow.ToUnixTimeSeconds() - hit.FetchedAt < (long)ShortCache.TotalSeconds)
             return hit.Url;
+        // A 类第6项·落盘读回：长效源保鲜期内直接用落盘 URL（起播第一帧加速，零网络探测）；
+        // 校验失败由重连现场重取——落盘只加速，绝不把旧清单当唯一路径
+        if (!force && WarmupDisk != null && !IsShortTicketSource(ch.SourceId))
+        {
+            var disk = WarmupDisk.Get($"stream:{key}", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            if (disk != null) return disk;
+        }
         var url = await fetch(ch);
         if (!string.IsNullOrEmpty(url))
+        {
             _cache[key] = new CachedUrl { Url = url, FetchedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
+            WarmupDisk?.Put($"stream:{key}", url,
+                WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
         return url;
     }
 
@@ -314,7 +334,7 @@ public class StreamResolver
         if (!string.IsNullOrEmpty(ua)) req.Headers.TryAddWithoutValidation("User-Agent", ua);
         try
         {
-            using var resp = await Http.SendAsync(req);
+            using var resp = await ProbeHttp.SendAsync(req);
             return (int)resp.StatusCode < 400;
         }
         catch { return false; }

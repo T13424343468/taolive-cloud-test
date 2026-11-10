@@ -29,21 +29,20 @@ public static class LiveQuality
     {
         const long MB = 1024L * 1024;
         bool memAtLeast(long mb) => totalMemBytes >= mb * MB;
-        switch ((setting ?? "auto").Trim().ToLowerInvariant())
+        // A类第8项：32 位机软解负担封顶——高档一律压到低档（Off 尊重用户、auto 内存地板保留，
+        // 封顶=天花板下沉，不是地板抬高：auto <2GB 仍为关）
+        AiLiveTier tier = (setting ?? "auto").Trim().ToLowerInvariant() switch
         {
-            case "off":
-                return AiLiveTier.Off;
-            case "low":
-                return AiLiveTier.Low;
-            case "high":
-                return memAtLeast(2000) ? AiLiveTier.High : AiLiveTier.Low; // <2GB 带不动高档，降级不硬开
-            case "smart": // 旧版智能档值 → 自动档口径（v1.0.10 统一命名）
-            default: // auto 及未知值
-                if (totalMemBytes <= 0) return AiLiveTier.Off;
-                if (memAtLeast(3000)) return AiLiveTier.High;
-                if (memAtLeast(2000)) return AiLiveTier.Low;
-                return AiLiveTier.Off;
-        }
+            "off" => AiLiveTier.Off,
+            "low" => AiLiveTier.Low,
+            "high" => memAtLeast(2000) ? AiLiveTier.High : AiLiveTier.Low, // <2GB 带不动高档，降级不硬开
+            _ => // auto / 旧版 smart / 未知值
+                totalMemBytes <= 0 ? AiLiveTier.Off
+                : memAtLeast(3000) ? AiLiveTier.High
+                : memAtLeast(2000) ? AiLiveTier.Low
+                : AiLiveTier.Off,
+        };
+        return abi32 && tier == AiLiveTier.High ? AiLiveTier.Low : tier;
     }
 
     /// <summary>档位 → 播放器画质滤镜参数（键值对；Off 返回空，纯原画直出）。</summary>
@@ -76,4 +75,12 @@ public static class LiveQuality
             "high" => "高",
             _ => "自动", // auto / 旧版 smart / 未知值
         };
+
+    /// <summary>实际生效档 → 界面显示名（A 类第5项·信息行显实际档口径：显示在跑的，不是选的）。</summary>
+    public static string TierName(AiLiveTier tier) => tier switch
+    {
+        AiLiveTier.Off => "关",
+        AiLiveTier.Low => "低",
+        _ => "高",
+    };
 }

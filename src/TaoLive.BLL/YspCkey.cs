@@ -188,7 +188,7 @@ public class YspTicketService
     private readonly string _guid;
     public const string ClientUserAgent = "Mozilla/5.0 (Linux; Android 12; TCL 50V8G) AppleWebKit/537.36 TaoLive/1.0";
 
-    public YspTicketService() => _guid = Guid.NewGuid().ToString("N");
+    public YspTicketService() => _guid = DeviceIdentity.GetGuid(); // A类第7项：身份持久化，重启不翻新
 
     public string BuildTicketUrl(string cnlid, string livepid, string defn, long tsUnix)
     {

@@ -36,6 +36,9 @@ public class LiveVideoHost : IDisposable
     private MediaPlayer? _player;
     private IVideoCarrierView? _videoCarrier;
     private string? _currentUrl;
+    /// <summary>A类第9项：水位低预防介入阈值（老板拍板 2.5s→4s，减少取票频率；判死线 6s 与巡检 2s 不动）。</summary>
+    public const int EarlyRescueMs = 4000;
+
     private List<string> _currentOptions = new();
     private int _retriesLeft;
     private bool _userStopped;
@@ -88,6 +91,47 @@ public class LiveVideoHost : IDisposable
             }
         }
         return (_origFps, _measuredFps, _origW, _origH, _origW, _origH);
+    }
+
+    /// <summary>画质滤镜的键集合（A⑩重挂滤镜时先摘旧键再并新键）。</summary>
+    private static readonly string[] QualityFilterKeys = { "video-filter", "sharpen-amplitude", "contrast", "saturation", "gamma" };
+
+    /// <summary>
+    /// A 类第10项·档位变化后重挂滤镜：先摘掉旧画质键，并上新档滤镜（缺键才补同款合并），静默快速重接。
+    /// 未在播（无播放器/已手动停）只记账不重接，下次起播自然带新档。
+    /// </summary>
+    public void ApplyQualityTier(IReadOnlyList<(string Key, string Value)> filterOptions)
+    {
+        var stripped = _currentOptions.Where(o =>
+        {
+            var body = o.StartsWith(':') ? o[1..] : o;
+            var eq = body.IndexOf('=');
+            var key = eq < 0 ? body : body[..eq];
+            return !QualityFilterKeys.Contains(key);
+        }).ToList();
+        _currentOptions = MergeOptions(stripped, filterOptions);
+        if (_player != null && !_userStopped && _currentUrl != null) StartInternal(silent: true);
+    }
+
+    /// <summary>
+    /// A 类第10项·喂给调速器的实测快照：现帧率、累计掉帧占比（丢帧/(丢帧+显示帧)）、播放时钟是否停滞。
+    /// 无媒体统计（未出首帧/统计缺失）时返回 stalled=true 前的保守值：调用方自行只在出过首帧后喂。
+    /// </summary>
+    public (double? Fps, double DroppedRate, bool Stalled) SnapshotGovernorStats()
+    {
+        var media = _currentMedia;
+        var fps = _measuredFps;
+        double droppedRate = 0;
+        bool stalled;
+        if (media != null)
+        {
+            var st = media.Statistics;
+            long total = (long)st.DisplayedPictures + st.LostPictures;
+            if (total > 0) droppedRate = (double)st.LostPictures / total;
+            stalled = st.DisplayedPictures > 0 && (fps is null || fps <= 0); // 出过帧但现在测不出帧率=停滞
+        }
+        else stalled = true;
+        return (fps, droppedRate, stalled);
     }
 
     /// <summary>
@@ -188,7 +232,7 @@ public class LiveVideoHost : IDisposable
         {
             // ⑨B缓冲水位低提前介入：时钟 2.5 秒没走就先静默重取流（先出画面口径），不等 6 秒卡死；
             // 每轮卡顿只提前介入一次，重置额度靠 TimeChanged 恢复
-            if (age >= 2500 && !_earlyRescueUsed && !_kernelRebuilding)
+            if (age >= EarlyRescueMs && !_earlyRescueUsed && !_kernelRebuilding)
             {
                 _earlyRescueUsed = true;
                 try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入：时钟 {age}ms 未走，静默重取流"); } catch { }
@@ -291,8 +335,10 @@ public class LiveVideoHost : IDisposable
                 if (fresh?.Url != null && fresh.Url != _currentUrl)
                 {
                     _currentUrl = fresh.Url;
+                    // A 类 P1·缺键才补：静默重取给出的选项并入现有表（同键以新值为准，未给的键沿用旧表），
+                    // 整表覆盖会丢掉 Play 时注入的 Referer/UA 请求头——第二实例被 CDN 拒的实锤根因
                     if (fresh.Options != null)
-                        _currentOptions = fresh.Options.Select(o => $":{o.Key}={o.Value}").ToList();
+                        _currentOptions = MergeOptions(_currentOptions, fresh.Options);
                 }
             }
             catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 静默重取流换源失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址快速重接）"); }
@@ -404,8 +450,9 @@ public class LiveVideoHost : IDisposable
                     if (fresh?.Url != null && fresh.Url != _currentUrl)
                     {
                         _currentUrl = fresh.Url;
+                        // A 类 P1·缺键才补：同上，重连换票绝不整表覆盖丢请求头
                         if (fresh.Options != null)
-                            _currentOptions = fresh.Options.Select(o => $":{o.Key}={o.Value}").ToList();
+                            _currentOptions = MergeOptions(_currentOptions, fresh.Options);
                     }
                 }
                 catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 重连换票失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址重试）"); }
@@ -458,6 +505,10 @@ public class LiveVideoHost : IDisposable
 
     /// <summary>【十二】失败归因（ConnectFailure 分类口径）：逐类落日志，不笼统「连接失败」。</summary>
     internal static string FailureKind(Exception ex) => ConnectFailure.Classify(ex.ToString()).ToString();
+
+    /// <summary>A 类 P1·选项合并（缺键才补）：实现收敛在 BLL（MediaOptionMerge），宿主层薄委托。</summary>
+    internal static List<string> MergeOptions(IReadOnlyList<string> existing, IReadOnlyList<(string Key, string Value)> fresh)
+        => MediaOptionMerge.Merge(existing, fresh);
 
     /// <summary>【八】脱敏源地址：只留协议+主机，路径与查询串不落日志。</summary>
     private static string MaskUrl(string? url)

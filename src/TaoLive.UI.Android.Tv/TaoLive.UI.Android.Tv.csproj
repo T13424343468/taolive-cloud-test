@@ -11,8 +11,9 @@
     <ApplicationDisplayVersion>1.1</ApplicationDisplayVersion>
     <ApplicationTitle>TaoLive</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
-    <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体 -->
-    <RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers>
+    <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体。
+         v28 瘦身：收窄为仅 android-arm——此前双 ABI 列表使构建把整套 arm64-v8a 库（libvlc 43MB+libassemblies blob 22MB+mono/AOT 运行时，约 66MB 死重）打进 32 位包，87MB→20MB 出头 -->
+    <RuntimeIdentifiers>android-arm</RuntimeIdentifiers>
     <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>
     <AssemblyName>TaoLive.UI.Android.Tv</AssemblyName>
     <AndroidResgenFile>Resources\Resource.designer.cs</AndroidResgenFile>

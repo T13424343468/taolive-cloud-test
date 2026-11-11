@@ -128,8 +128,7 @@ public class SourceHealthStore
             var json = JsonSerializer.Serialize(snapshot);
             var tmp = _path + ".tmp";
             File.WriteAllText(tmp, json);
-            if (File.Exists(_path)) File.Delete(_path);
-            File.Move(tmp, _path);
+            File.Move(tmp, _path, overwrite: true); // 原子替换一步到位（v28：消除 Delete→Move 之间文件不存在的读空窗口）
         }
         catch
         {

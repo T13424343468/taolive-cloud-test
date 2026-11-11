@@ -115,6 +115,7 @@ public class MainActivity : Activity
     private Channel? _playSource;
     // v1.0.10 第①项：源健康账本地存储（应用私有目录，跨启动保留已验证源）
     private SourceHealthStore? _healthStore;
+    private Task? _healthLoadTask; // v28 读盘优化：健康账后台灌回任务（落盘须等灌回，防空账覆盖旧账）
     private readonly SourceBackoffLedger _backoff = new(); // A⑬/A⑥：同一本 403 退避账（竞速与预热共用）
     private readonly Dictionary<string, long> _nextProbeAtMs = new(); // A⑥：每台下次到期时刻（TickCount64）
     private volatile bool _foregroundBusy; // A⑥ PauseGate：前台换台/连接期间预热让路
@@ -195,7 +196,8 @@ public class MainActivity : Activity
         DeviceIdentity.Attach(FilesDir!.AbsolutePath);
         // A 类第6项：预热落盘层（/files/warmup/，与 source_health.json 并列）——长效源起播零网络探测
         _resolver.WarmupDisk = new WarmupStore(System.IO.Path.Combine(FilesDir!.AbsolutePath, "warmup"));
-        _resolver.WarmupDisk.Load();
+        // v28 读盘优化：预热缓存灌回改后台预载（两本账内部均有锁/并发字典，与首播并发访问无竞态；损坏文件按无缓存处理口径不变）
+        Task.Run(_resolver.WarmupDisk.Load);
         // A 类第6项：App 打开即拉起后台预热服务（同进程共享同一预热引擎，绝不起第二份）
         try
         {
@@ -204,9 +206,9 @@ public class MainActivity : Activity
             else if (_warmupEnabled) StartService(svc);
         }
         catch (Exception svcEx) { CrashNet.Record($"[Warmup] 保活服务拉起失败（功能不残废）：{svcEx.Message}"); }
-        _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
-        _healthStore.Load();
-        _precheck.AttachHealthStore(_healthStore);
+        var healthStore = _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
+        // v28 读盘优化：健康账读盘改后台；账本灌回完成才挂预检（共账切换）、才进预检循环（顺序依赖）
+        _healthLoadTask = Task.Run(healthStore.Load);
         _precheck.StateChanged += (key, state) => _ui.Post(() =>
         {
             RefreshListStatuses();
@@ -225,7 +227,14 @@ public class MainActivity : Activity
             // 全列表 83 路 × 600ms ≈ 50 秒/轮 + 轮间歇 20 秒 ≈ 1~1.5 分钟一轮（限速防判异常流量）；
             // 票据静默续期：每 4 分钟为当前台换新票
             _precheckCts = new System.Threading.CancellationTokenSource();
-            _ = Task.Run(() => PrecheckLoopAsync(_precheckCts.Token));
+            var precheckCts = _precheckCts;
+            // v28 读盘优化：预检循环由健康账灌回任务串行启动——灌回完成 → 挂账（共账切换）→ 进循环
+            _ = Task.Run(async () =>
+            {
+                await _healthLoadTask!;
+                _precheck.AttachHealthStore(healthStore);
+                await PrecheckLoopAsync(precheckCts.Token);
+            });
             // v1.0.9 第④项：画面信息行实时刷新（2 秒节拍，列表开着才写字；v22 第 9 项改短格式两行）
             _statsTicker = new System.Threading.Timer(_ => _ui.Post(RefreshStatsLine), null, 2000, 2000);
             // A 类第10项：5 秒巡检喂实测——水位偏低提前降档防卡；降档=会话内临时档，平稳 10 分钟自动回位
@@ -2090,8 +2099,13 @@ public class MainActivity : Activity
         if (_carrierTexture && !_frameForCurrentSwitch) CarrierPolicy.MarkOk(this);
         _host.Stop();
         // v1.0.10 第①项：退后台即把源健康账落盘（后台线程，不阻塞界面）
+        // v28 读盘优化：先等灌回再落盘——灌回未完成时落盘会把没读完的旧账覆盖成空账
         var store = _healthStore;
-        if (store != null) Task.Run(store.FlushNow);
+        if (store != null)
+        {
+            var load = _healthLoadTask;
+            Task.Run(async () => { if (load != null) await load; store.FlushNow(); });
+        }
     }
 
     protected override void OnResume()
@@ -2193,6 +2207,8 @@ public class MainActivity : Activity
         _statsTicker = null;
         _governorTicker?.Dispose(); // A⑩调速巡检节拍
         _governorTicker = null;
+        // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘），再落盘
+        _healthLoadTask?.Wait();
         _healthStore?.FlushNow(); // v1.0.10：退出前把源健康账落盘
         _host.Dispose();
         base.OnDestroy();

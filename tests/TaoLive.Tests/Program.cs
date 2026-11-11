@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text.Json;
 using AllPlayer.BLL;
 using TaoLive.BLL;
 using TaoLive.Model;
@@ -419,6 +420,42 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
             retire.ReportSourceResult(retireCh, false, now + i);
         Check(retire.SourceHealthOf(retireCh) == null, $"连挂 {ChannelPrecheck.RetireAfterConsecutiveFails} 次自动淘汰（交回预检重探）");
         Check(retire.BestAliveSource(retireCh, new[] { retireCh }) == null, "淘汰后不再被选源取用");
+
+        // v28 读盘优化：灌回改后台后，Load 与 FlushNow/回写并发——并发字典护体，种子条目不丢不覆盖
+        {
+            var cdir = Path.Combine(Path.GetTempPath(), "taolive_health_c_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(cdir);
+            var seedStore = new SourceHealthStore(cdir);
+            seedStore.Entries["yangshipin:seed"] = new SourceHealthEntry
+            {
+                SourceId = "yangshipin", EpgKey = "seed", State = ChannelHealth.Alive,
+                CheckedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
+            seedStore.FlushNow();
+            var cstore = new SourceHealthStore(cdir);
+            var loadTask = Task.Run(cstore.Load); // 模拟 UI 层后台灌回（产品口径：灌回完成前无回写无落盘，预检循环串行其后）
+            Task.WaitAll(loadTask);
+            var errs = new List<Exception>();
+            var workers = Enumerable.Range(0, 8).Select(i => Task.Run(() =>
+            {
+                try
+                {
+                    for (int k = 0; k < 100; k++)
+                    {
+                        cstore.Entries[$"yangshipin:w{i}-{k}"] = new SourceHealthEntry
+                        {
+                            SourceId = "yangshipin", EpgKey = $"w{i}-{k}", State = ChannelHealth.Alive,
+                            CheckedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        };
+                        cstore.FlushNow();
+                    }
+                }
+                catch (Exception ex) { lock (errs) errs.Add(ex); }
+            })).ToArray();
+            Task.WaitAll(workers);
+            Check(errs.Count == 0, $"v28健康账并发回写+落盘无竞态异常（{errs.Count}笔）");
+            Check(cstore.Entries.ContainsKey("yangshipin:seed"), "v28健康账灌回种子条目保留（不被并发落盘冲掉）");
+        }
     }
     finally
     {
@@ -1178,6 +1215,31 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
         store.Put("u2", "b", 1000, t + 30_000);
         store.Flush(t + 31_000);
         Check(true, "A⑥节流窗口内重复落盘安全");
+        // v28 读盘优化：灌回改后台后，Load 与播放线程 Put/Get 并发——有锁护体，无异常不丢账
+        {
+            var cdir = Path.Combine(Path.GetTempPath(), "taolive_warmup_c_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(cdir);
+            File.WriteAllText(Path.Combine(cdir, "playlist_cache.json"),
+                JsonSerializer.Serialize(new Dictionary<string, WarmupEntry> { ["seed"] = new() { Body = "sb", AtMs = t, FreshnessMs = 3_600_000 } }));
+            var cstore = new WarmupStore(cdir);
+            var loadTask = Task.Run(cstore.Load); // 模拟 UI 层后台灌回
+            var errs = new List<Exception>();
+            var workers = Enumerable.Range(0, 8).Select(i => Task.Run(() =>
+            {
+                try
+                {
+                    for (int k = 0; k < 10; k++) // 共 8×10=80 条 + 种子 1 条 < 容量 128，不触发超限清最旧（该项已有独立断言）
+                    {
+                        cstore.Put($"u{i}-{k}", "b", 3_600_000, t);
+                        cstore.Get("seed", t + 1);
+                    }
+                }
+                catch (Exception ex) { lock (errs) errs.Add(ex); }
+            })).ToArray();
+            Task.WaitAll(new[] { loadTask }.Concat(workers).ToArray());
+            Check(errs.Count == 0, $"v28预热账并发Load+Put/Get无竞态异常（{errs.Count}笔）");
+            Check(cstore.Get("seed", t + 1) == "sb", "v28预热账灌回种子条目保留");
+        }
     }
 
 

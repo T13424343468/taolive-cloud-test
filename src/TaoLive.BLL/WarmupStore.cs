@@ -92,14 +92,13 @@ public class WarmupStore
             body = JsonSerializer.Serialize(_cache);
         }
         if (string.IsNullOrEmpty(_dir)) return;
+        var dst = CachePath(_dir);
         try
         {
             Directory.CreateDirectory(_dir);
             var tmp = CachePath(_dir) + ".tmp";
             File.WriteAllText(tmp, body);
-            var dst = CachePath(_dir);
-            if (File.Exists(dst)) File.Delete(dst);
-            File.Move(tmp, dst);
+            File.Move(tmp, dst, overwrite: true); // 原子替换一步到位（v28：消除 Delete→Move 之间文件不存在的读空窗口）
         }
         catch { /* 落盘失败不挡播放：缓存只加速 */ }
     }

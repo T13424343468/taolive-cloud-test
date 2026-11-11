@@ -380,3 +380,13 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
   3. 新增恢复时拍板项：修法七热备并行取流是否随 r4 进手机版（电视版专属落点，老板未定）
 - 不受 v25 影响的部分：AI ts 接线蓝图（TsRemuxer→AiSegmentRunner，独立子系统）；手机版无后台预热/邻台预取机制，让路修法一~五无手机侧对应物
 - 另：本 worktree HEAD 仍为 cefde77（v24 线），v25 落码与 99 轮核验在别处进行，恢复 r4 时须先确认 BLL 基线已含 v25
+
+## v25 / 1.0.13 落码收口（11-11 13:25，方案 v25 七修法全落）
+- 落码：修法一（首见登记完整口径×jitter、全局让路闸原子占位、邻台预取改入队收死参数口子）、修法二（票账联动顺延不发起、网络变更/时钟跳变清账 receiver）、修法三（屏内先探：列表呼出/滚动停稳触发，≥3s 节流，8 台立刻批，共享闸+票账联动）、修法五（BLL 并发账 ConcurrentDictionary+锁）、修法六（台级表现账 ChannelPaceLedger：EpgKey×SourceId 一格账、窗口 3 门槛 10 封顶、三档钳制、时段系数总闸只降不升、失效台独立档 30min/2h、整表源真聚合 60s TTL）、修法七（HotStandbyKeeper 备援轻校验、帧级切换 LiveVideoHost 独立窗 4 次、热备与预热共账、Play 即停旧代数）
+- 全测全绿：464 PASS / 0 FAIL（442 基线 + 22 v25 新断言）；99 轮源码巡逻清 0（patrol_v25_99.md，每轮=全测 464+锚点 22+指纹比对；修复落码即重建重跑口径 v2）
+- 修复轮：出包编译发现 4 处（HotStandbyKeeper 命名空间、热备签名 nullable 元组、MergeOptions 实参、ConnectivityManager 限定名）+ 清单 versionCode 24 硬编码→25/1.0.13；修复后重建重跑 99 轮清 0
+- 出包：dist/v25/TaoLive-32位.zip（APK+SHA256SUMS+.idsig），versionCode 25 / 1.0.13，v1/v2/v3 全签，证书 c18030d3… 同源
+- APK SHA-256: 5ec5141d7996a0bcd58e4880f15c965d970ad3cfcafb7194484ee843e7572d81
+- zip SHA-256: 0511f244efd9568625fd9c0c1b70c5157fa9252612ccd262b86c5aee2a3e5c3a
+- 备份：/root/workspace/存档/TaoLive/20261111-1325-v1.0.13/
+- 真机验收点：起播后 5 秒起热备校验流（[热备] 打点）、断流帧级切备援（[热备] 主路断到切换 ms）、网络切换清账（[账本] 打点）、列表呼出屏内先探、失效台独立档（[预热] 判死/复测恢复打点）

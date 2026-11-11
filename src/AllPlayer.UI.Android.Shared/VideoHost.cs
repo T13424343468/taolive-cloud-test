@@ -1023,7 +1023,7 @@ namespace AllPlayer.UI.Android.Shared
             try
             {
                 var ctx = _videoCarrier?.HostContext ?? global::Android.App.Application.Context;   // v3.25.21: 载体可空, 兜底应用上下文
-                var session = new global::Android.Media.Session.MediaSession(ctx, "道映");
+                var session = new global::Android.Media.Session.MediaSession(ctx, "TaoLive");
                 session.SetCallback(new MediaButtonCallback(this));
                 session.SetFlags(global::Android.Media.Session.MediaSessionFlags.HandlesMediaButtons
                     | global::Android.Media.Session.MediaSessionFlags.HandlesTransportControls);

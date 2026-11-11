@@ -65,6 +65,10 @@ public class LiveVideoHost : IDisposable
     private bool _rescueThrottleLogged;      // 1.0.12 修正⑤：节流期只记一次日志，防刷屏
     private int _refreshFailures;            // 1.0.12 发现 A：连续换票失败次数（第 2 次起换票委托切备援；成功即清零）
     private bool _inventoryRefetch;          // 1.0.12 发现 B：静默重接补库存档——首帧后已补过一次 3 秒库存
+    private int _inventoryRunning;           // v25 修法五：补库存占位旗标（CAS 语义：仅补库存路径检查与置位；
+                                             // 自救路径不检查不置位，gen 作废天然抢占——不对称互斥，方案修法五 1）
+    private long _hotWindowStartMs;          // v25 修法七 2b：热备切换独立 90 秒窗起点（不占自救 5 秒去重/90 秒窗 2 次）
+    private int _hotWindowCount;             // v25 修法七 2b：独立窗口内已切换次数（封顶 4，防主备乒乓）
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
     /// <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
@@ -216,10 +220,20 @@ public class LiveVideoHost : IDisposable
             _earlyRescueStreak = 0; // v23 第 5 条：首帧清零（真首帧才算，微动不清）
             // 1.0.12 发现 B·静默重接补库存档：首帧出画后静默重接一次，把库存补到 3 秒（先开画后补库存，
             // 换台首帧不慢）；默认「起播即 3 秒」档不需要这步
+            // v25 修法五：补库存 CAS 占位——与 Buffering/看门狗自救并发时，自救不检查不置位（gen 作废天然抢占），
+            // 补库存 CAS 失败=自救已抢跑，本次首帧批次一次性放弃不追补（不把待补标记带回）
             if (InventoryMode == BufferInventory.Mode.SilentRefetch && !_inventoryRefetch)
             {
                 _inventoryRefetch = true;
-                _ = SilentRefreshAsync(announce: false);
+                if (Interlocked.CompareExchange(ref _inventoryRunning, 1, 0) == 0)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await SilentRefreshAsync(announce: false); }
+                        finally { Volatile.Write(ref _inventoryRunning, 0); }
+                    });
+                }
+                // CAS 失败：补库存进行中（自救抢跑），首帧批次丢失不追补（修法五：一次性放弃）
             }
             StartStatsRetry(); // ⑤首帧后再解析轨道：起播后每500ms重试至多10次，后台不阻塞
             FrameShown?.Invoke();
@@ -299,10 +313,20 @@ public class LiveVideoHost : IDisposable
         }
         if (_rescueWindowCount >= StallRescue.RescueCapPerWindow)
         {
+            // v25 真机修复：节流只限「静默重取流」这类取流请求，不挡自救行进——降档与软重启内核
+            // 不消耗取流预算；节流期内连续无效仍按阶梯升级，绝不冻死在「预算用完就没人管」
             if (!_rescueThrottleLogged)
             {
                 _rescueThrottleLogged = true;
-                try { CrashNet.Record($"[LiveVideoHost] ⑨B 介入节流：{StallRescue.RescueWindowMs / 1000} 秒内已达 {StallRescue.RescueCapPerWindow} 次上限，本窗口不再重取流（1.0.12 修正⑤：限频代替拉黑）"); } catch { }
+                try { CrashNet.Record($"[LiveVideoHost] ⑨B 介入节流：{StallRescue.RescueWindowMs / 1000} 秒内已达 {StallRescue.RescueCapPerWindow} 次上限，重取流歇口（节流不挡自救行进）"); } catch { }
+            }
+            _earlyRescueStreak++;
+            _lastEarlyRescueMs = now;
+            if (_earlyRescueStreak >= StallRescue.EarlyRescueEscalateAt)
+            {
+                _earlyRescueStreak = 0;
+                try { CrashNet.Record($"[LiveVideoHost] ⑨B 节流期内连续 {StallRescue.EarlyRescueEscalateAt} 次介入无效，升级分级自救阶梯"); } catch { }
+                HandleStall();
             }
             return;
         }
@@ -340,25 +364,61 @@ public class LiveVideoHost : IDisposable
     }
 
     /// <summary>
+    /// v25 修法七：热备帧级切换入口（UI 注入）。主路断/卡时先问热备——备路就绪即直接换流
+    /// （I 帧边界对齐，画面跳 2–3 秒可接受），把 v24「断流→探测→重连」秒级黑屏压成帧级。
+    /// 切换预算独立（2b）：不占 5 秒去重窗（不同于自救重接，备路是现成流零成本），
+    /// 90 秒窗独立计数上限 4 次，防主备乒乓。打点=主路断到切换发起毫秒数（真机验证口径）。
+    /// </summary>
+    public Func<Task<(string Url, IReadOnlyList<(string Key, string Value)> Options)?>?>? HotStandbySwitch { get; set; }
+
+    private async Task<bool> TryHotStandbyAsync(string via)
+    {
+        if (HotStandbySwitch is null || _userStopped) return false;
+        long brokeAt = Environment.TickCount64;
+        long now = brokeAt;
+        if (now - _hotWindowStartMs > StallRescue.RescueWindowMs)
+        {
+            _hotWindowStartMs = now;
+            _hotWindowCount = 0;
+        }
+        if (_hotWindowCount >= 4) return false; // 修法七 2b：独立窗 4 次，防乒乓
+        var standby = await HotStandbySwitch();
+        if (_userStopped || standby is null) return false;
+        _hotWindowCount++;
+        _currentUrl = standby.Value.Url;
+        // 缺键才补：热备流只带 Referer/UA 两项，并入现有表保住画质滤镜（同 A 类 P1 口径）
+        _currentOptions = MergeOptions(_currentOptions, standby.Value.Options);
+        StartInternal(silent: true); // 定格保帧：同台自救不铺清场遮罩
+        try { CrashNet.Record($"[热备] {via}：帧级切备援发起（主路断到切换 {Environment.TickCount64 - brokeAt}ms，90 秒独立窗第 {_hotWindowCount}/4 次）"); } catch { }
+        return true;
+    }
+
+    /// <summary>
     /// ⑫画面卡住分级快速自救（用户拍板「可以就这么定」）：静默重取流 → 降清晰度 → 软重启播放内核。
     /// 静默级不发状态不占断流重连次数；重取流消费⑬健康表（ReconnectRefresher 内优先取最近验证可用来源）。
+    /// v25 修法七：自救前先问热备——备路就绪即帧级切换，不走重票。
     /// </summary>
-    private void HandleStall()
+    private async void HandleStall()
     {
         if (_kernelRebuilding) return;
-        _stallCount++;
-        var action = StallRescue.Plan(_stallCount - 1, HasLowerQuality?.Invoke() ?? false);
-        switch (action)
+        try
         {
-            case StallRescueAction.RestartKernel:
-                StatusChanged?.Invoke("画面卡住，正在重启播放内核…");
-                RestartKernel();
-                break;
-            default:
-                if (action == StallRescueAction.LowerQuality) LowerQualityRequested?.Invoke();
-                _ = SilentRefreshAsync(announce: true);
-                break;
+            if (await TryHotStandbyAsync("分级自救前主路断")) return; // v25 修法七：热备就绪帧级切换
+            _stallCount++;
+            var action = StallRescue.Plan(_stallCount - 1, HasLowerQuality?.Invoke() ?? false);
+            switch (action)
+            {
+                case StallRescueAction.RestartKernel:
+                    StatusChanged?.Invoke("画面卡住，正在重启播放内核…");
+                    RestartKernel();
+                    break;
+                default:
+                    if (action == StallRescueAction.LowerQuality) LowerQualityRequested?.Invoke();
+                    _ = SilentRefreshAsync(announce: true);
+                    break;
+            }
         }
+        catch (Exception ex) { try { CrashNet.Record($"[LiveVideoHost] 分级自救异常：{ex.Message}"); } catch { } }
     }
 
     /// <summary>
@@ -430,7 +490,9 @@ public class LiveVideoHost : IDisposable
         try
         {
             var fresh = await ReconnectRefresher(attempt);
-            if (fresh?.Url != null) Volatile.Write(ref _refreshFailures, 0);
+            // v25 真机修复：原地址「假成功」不清账——同 URL 返回等于没换票，不清连续失败计数，
+            // 否则 attempt 永远停在同级、备援选择永远轮不到（升级行进只认真换了地址）
+            if (fresh?.Url != null && fresh.Url != _currentUrl) Volatile.Write(ref _refreshFailures, 0);
             else Interlocked.Increment(ref _refreshFailures);
             return fresh;
         }
@@ -461,6 +523,7 @@ public class LiveVideoHost : IDisposable
         _rescueWindowCount = 0;     // 1.0.12 修正⑤：介入节流窗口随换台重开（新台新预算）
         _rescueThrottleLogged = false;
         _refreshFailures = 0;       // 1.0.12 发现 A：连续换票失败计数随换台清零
+        StopExhaustedRecovery();    // v25 真机修复：换台=新台新预算，兜底循环收摊（防旧台兜底叠进新台）
         _inventoryRefetch = false;  // 1.0.12 发现 B：补库存标记随换台重置
         _measuredFps = null;  // ④：换台重新实测
         _fpsLastDisplayed = 0;
@@ -530,11 +593,23 @@ public class LiveVideoHost : IDisposable
     {
         if (_userStopped) return;
         _streamDead = true; // 断流等待期按已死处理（回前台须重播，不能拿死流当活）
+        // v25 修法七：断流先问热备——备路就绪即帧级切换（不等 2/4/6 秒重连），失败继续原阶梯
+        _ = Task.Run(async () =>
+        {
+            if (await TryHotStandbyAsync("VLC 断流")) return;
+            OnStreamErrorFallthrough();
+        });
+    }
+
+    private void OnStreamErrorFallthrough()
+    {
+        if (_userStopped) return;
         if (_retriesLeft <= 0)
         {
             if (_exhaustedNotified) return;
             _exhaustedNotified = true;
-            StatusChanged?.Invoke("信号中断，请稍后重试或换台");
+            StatusChanged?.Invoke("信号中断，正在持续自动重试，也可先换台");
+            StartExhaustedRecovery(); // v25 真机修复：耗尽不躺平——常驻兜底按节奏静默重试直到恢复
             return;
         }
         var delay = (3 - _retriesLeft + 1) * 2; // 2/4/6 秒
@@ -563,12 +638,65 @@ public class LiveVideoHost : IDisposable
         timer.Start();
     }
 
+    private System.Threading.Timer? _exhaustedRecoveryTimer; // v25 真机修复：耗尽后常驻兜底
+    private int _exhaustedCycle;                             // 兜底重试轮次（每 N 轮升一次软重启内核）
+    private int _recoveryBusy;                               // 兜底重试互斥（上轮未完不叠发）
+
+    /// <summary>
+    /// v25 真机修复·耗尽兜底：断流重连阶梯耗尽后原口径永久躺平（首帧已丢、看门狗失明、
+    /// 画面冻死到用户手动切台）。改为常驻慢循环：首次 30 秒后、之后每 60 秒静默重试——
+    /// 重武装快速阶梯（2/4/6 秒换票）并重取流重接；每 3 轮升级一次软重启内核。
+    /// 首帧恢复或用户换台即收摊。
+    /// </summary>
+    private void StartExhaustedRecovery()
+    {
+        if (_exhaustedRecoveryTimer != null) return; // 常驻：已在跑不重复起
+        _exhaustedCycle = 0;
+        _exhaustedRecoveryTimer = new System.Threading.Timer(_ =>
+        {
+            if (_userStopped || _frameShown) { StopExhaustedRecovery(); return; }
+            if (Interlocked.Exchange(ref _recoveryBusy, 1) == 1) return;
+            try
+            {
+                _exhaustedCycle++;
+                bool rebuild = _exhaustedCycle % StallRescue.ExhaustedRebuildEveryCycles == 0;
+                try { CrashNet.Record($"[LiveVideoHost] 耗尽兜底第 {_exhaustedCycle} 轮：{(rebuild ? "软重启内核" : "重取流重接")}（{StallRescue.ExhaustedRecoveryPeriodMs / 1000} 秒节奏）"); } catch { }
+                _retriesLeft = 3;       // 重武装快速阶梯：本轮再失败仍走 2/4/6 秒换票
+                _exhaustedNotified = false;
+                if (rebuild) RestartKernel();
+                else _ = ExhaustedRefreshAsync();
+            }
+            finally { Volatile.Write(ref _recoveryBusy, 0); }
+        }, null, StallRescue.ExhaustedRecoveryFirstDelayMs, StallRescue.ExhaustedRecoveryPeriodMs);
+    }
+
+    private void StopExhaustedRecovery()
+    {
+        _exhaustedRecoveryTimer?.Dispose();
+        _exhaustedRecoveryTimer = null;
+    }
+
+    private async Task ExhaustedRefreshAsync()
+    {
+        long gen = _genCounter.Current; // 期间换台：作废（Play 流程自己接管）
+        var fresh = await RefreshStreamAsync("耗尽兜底");
+        if (_userStopped || _frameShown || !_genCounter.IsCurrent(gen)) return;
+        if (fresh?.Url != null && fresh.Url != _currentUrl)
+        {
+            _currentUrl = fresh.Url;
+            if (fresh.Options != null)
+                _currentOptions = MergeOptions(_currentOptions, fresh.Options); // 缺键才补，同 A 类 P1 口径
+        }
+        StartInternal(silent: true);
+    }
+
     public void Stop()
     {
         _frameShown = false;
         _streamDead = true;
         _userStopped = true;
         _genCounter.NextGeneration(); // 作废未决重连
+        StopExhaustedRecovery(); // v25 真机修复：手动停止即收摊
         _player?.Stop();
     }
 
@@ -593,6 +721,7 @@ public class LiveVideoHost : IDisposable
     {
         _watchdog?.Dispose();
         _watchdog = null;
+        StopExhaustedRecovery(); // v25 真机修复：宿主释放随行收摊
         _statsRetryTimer?.Dispose(); // ⑤重试定时器随宿主释放
         _statsRetryTimer = null;
 

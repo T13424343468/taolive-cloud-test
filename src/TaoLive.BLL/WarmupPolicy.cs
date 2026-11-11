@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace TaoLive.BLL;
@@ -65,13 +66,20 @@ public static class WarmupPolicy
 /// </summary>
 public class SourceBackoffLedger
 {
-    private readonly Dictionary<string, (long UntilMs, int Streak)> _frozen = new(StringComparer.Ordinal);
+    // v25 修法七 3a：热备校验流与稳态循环并发入账，Dictionary 非线程安全 → 改 ConcurrentDictionary
+    private readonly ConcurrentDictionary<string, (long UntilMs, int Streak)> _frozen = new(StringComparer.Ordinal);
 
     /// <summary>记录一次 403：该源冻结一个退避周期。nowMs=TickCount64 基准。</summary>
     public void RecordLimited(string sourceId, long nowMs, SourcePace? pace = null)
     {
         var p = pace ?? WarmupPolicy.PaceOf(sourceId);
-        var streak = _frozen.TryGetValue(sourceId, out var cur) ? cur.Streak + 1 : 1;
+        _frozen.AddOrUpdate(sourceId,
+            _ => (nowMs + BackoffMs(1, p), 1),
+            (_, cur) => (nowMs + BackoffMs(cur.Streak + 1, p), cur.Streak + 1));
+    }
+
+    private static long BackoffMs(int streak, SourcePace p)
+    {
         // 指数：基值 × 4^(streak-1)，封顶 BackoffMaxMs
         long ms = p.BackoffBaseMs;
         for (int i = 1; i < streak; i++)
@@ -79,11 +87,11 @@ public class SourceBackoffLedger
             ms *= 4;
             if (ms >= p.BackoffMaxMs) { ms = p.BackoffMaxMs; break; }
         }
-        _frozen[sourceId] = (nowMs + Math.Min(ms, p.BackoffMaxMs), streak);
+        return Math.Min(ms, p.BackoffMaxMs);
     }
 
     /// <summary>记录一次成功（200）：退避全额恢复。</summary>
-    public void Recover(string sourceId) => _frozen.Remove(sourceId);
+    public bool Recover(string sourceId) => _frozen.TryRemove(sourceId, out _);
 
     /// <summary>源是否处于退避期（竞速跳过/预热挂起的唯一判据）。</summary>
     public bool IsFrozen(string sourceId, long nowMs) =>

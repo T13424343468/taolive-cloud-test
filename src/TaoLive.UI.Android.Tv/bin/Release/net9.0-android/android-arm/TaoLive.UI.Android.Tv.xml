@@ -54,7 +54,13 @@
             Unreachable=网络级失败（换票失败/超时/断网/非 403/429），不回灌整源冻结。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.PrefetchNeighbors(TaoLive.Model.Channel)">
-            <summary>预连接：把相邻两路的可播地址提前换好放进缓存，换台零等待。</summary>
+            <summary>
+            v25 修法一 5：邻台预取改入队——换台瞬间只登记不启动任务；
+            消费在 PrecheckLoop 每轮收尾（PauseGate 空闲 + 让路闸占到才发），不再前台抢流量（死参数口子收掉）。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.DrainPrefetchQueue">
+            <summary>修法一 5：每轮收尾消费一个预取任务——PauseGate 挂起时不动，让路闸未占到时排回队尾（节律不破坏）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.PrecheckLoopAsync(System.Threading.CancellationToken)">
             <summary>
@@ -69,7 +75,18 @@
             </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.RunDueProbesAsync(System.Threading.CancellationToken)">
-            <summary>A⑥单轮：只探「已到期且未退避且前台空闲」的台；首见台登记节拍不立即探（读盘起播口径）。</summary>
+            <summary>
+            A⑥单轮：只探「已到期且未退避且前台空闲」的台；首见台登记节拍不立即探（读盘起播口径）。
+            v25 落码（修法一/二/六）：
+            - 首见登记与到期登记一律 = now + RegisterIntervalMs（档位→时段→jitter 完整口径，1c：jitter 同表分布一致不漂移）；
+            - 全局让路闸（1a）：稳态循环与屏内先探共享，发起前原子占位（MinGap 原值不翻倍），两方同刻先到先探；
+            - 票账联动（2）：探测前查票据退避剩余>0 顺延不发起——退避期弹回不入源账不记失败（失败口径=明确拒绝才计负）；
+            - 失效台独立档（4）：连续 3 轮服务器明确拒绝（403/429）判死移出主循环，独立 30 分钟低频复测，
+              连续 3 轮仍死拉长 2 小时，任一轮恢复（200）立即回归正常档；
+            - 台级账记账（1b/1c）：Reachable 计正；Rejected 计负；Unreachable（网络级）不计负；
+              整表源不做台级三档（节拍按源），时段系数照走（低敏感深夜降功耗）；
+            - 整表源真聚合（nmtv/gxtv）：UI 层仍逐台登记探测，整表抓取在 resolver 源级聚合（60 秒 TTL 内同源只发 1 次）。
+            </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.OpenSystemSettings">
             <summary>
@@ -109,6 +126,15 @@
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.StartLoadingDots(TaoLive.Model.Channel)">
             <summary>亮牌期间的呼吸点动画：正在连接 → 正在连接· → ·· → ···，让「还没死机」一眼可见。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.TriggerScreenPrecheck">
+            <summary>
+            v25 修法三·屏内先探（UI 摸到哪先探到哪，列表呼出/滚动停稳即触发）：
+            - 从第一个可见行向下取「预检状态 Unknown」的前 8 台作为立刻批；同台一次只跑一个探测任务（3b 去重）；
+            - ≥3 秒节流（3b）；跟随预检开关（3a：关=循环与先探同停）；换台/连接中跳过本轮（2a 让路前台）；
+            - 与稳态循环共享同一让路闸（1a），票账联动同口径（退避期弹回不发起、不入账不记失败）；
+            - 记账口径与稳态循环一致：200 计正、明确拒绝计负、网络级失败不计负不入账。
+            </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.CurrentFocusKey">
             <summary>当前焦点行锚点键（⑪全局焦点锚定）：分类行取分类键，频道行取 C:频道号。</summary>
@@ -189,6 +215,13 @@
         <member name="M:TaoLive.UI.Android.Tv.MainActivity.NetworkReady">
             <summary>v23 修法 A：当前默认网络是否就绪（有活动网络且具备 Internet 能力）；探测能力不可用时不挡重接。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.MainActivity.RegisterEnvReceiver">
+            <summary>
+            v25 修法二 2c/2d：网络变更/时钟跳变监听——换 IP 或墙钟跳变后，退避账与票据冷却都是
+            旧环境记的（旧 IP 画像/旧墙钟冻结时刻），新环境不可信：退避账与票账冷却清零，
+            票据缓存保留验证（失败自然重新入账，退避期不把好环境白冻 2 小时）。
+            </summary>
+        </member>
         <member name="T:TaoLive.UI.Android.Tv.Shared.CarrierPolicy">
             <summary>
             画面载体策略（v1.0.7 启动自检）：
@@ -224,6 +257,39 @@
             <summary>
             未捕获异常挂接：Java 侧任何线程（含内核渲染线程）抛出的异常，
             先记日志，再交给系统默认处理器照常弹错，不吞异常。
+            </summary>
+        </member>
+        <member name="T:TaoLive.UI.Android.Tv.Shared.HotStandbyKeeper">
+            <summary>
+            v25 修法七·热备并行取流守护（老板 12:35 令）：
+            - 当前播放台的主源拉流播放的同时，备援候选源悄悄拉一路做校验——仅「清单+单分片头」轻校验
+              （Range 0–2047 几 KB 级，不建视频传输不解码）；不做合成流（相位差/时间戳不齐，已报老板）；
+            - 校验节拍 ≥15 秒（修法七 1a，不设节拍=持续小流量取流喂风控）；主源为央视频时备路校验降为仅清单级
+              （同 IP 不建双会话）；其余源走「清单+单分片头」；
+            - 生命周期随播放会话（1c）：Start 在新台连接完成 5 秒后（避开首帧补库存同刻并发），换台/退出 Stop 即停；
+            - 请求画像与播放链路同口径（1d：referer/ua 透传播放统一头）；开关关系：断流防护默认开，
+              不受预检/预热开关影响，不设独立开关（1e）；日志只在状态变化时记，不按节拍刷屏；
+            - 备路与主路共用同一本退避账（3：不建第二本）；备路被拒 → 退回单路不硬顶，退避恢复自愈重新热备；
+            - 校验结论只进热备状态机（1b：不进台级三档账、不计台级计负；网络级失败不入账）；
+            - 备援候选 URL 与主路完全相同 → 热备无意义不启动（3b 同流去重）；
+            - 主路断 → TrySwitchAsync 帧级切备路（I 帧边界对齐，内容跳 2–3 秒可接受）；
+              本台会话粘住备路不自动回主路（2a，防二次内容跳变），换台/重进台按健康表自然回归。
+            </summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.HotStandbyKeeper.StandbyReady">
+            <summary>备路就绪且校验通过（供 LiveVideoHost 主路断时帧级切换）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.HotStandbyKeeper.Start(System.Int32,TaoLive.Model.Channel,System.String,System.String,System.String)">
+            <summary>连接完成 5 秒后启动校验循环；换台/退出调用 Stop（会话代数作废，校验流即停）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.HotStandbyKeeper.Stop">
+            <summary>换台/退出即停：会话代数作废 + 取消校验循环（修法七 1c，防「画面已切走校验流还在漏跑」）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.HotStandbyKeeper.TrySwitchAsync">
+            <summary>
+            主路断 → 备路可用即返回备路流（帧级切换，画面跳 2–3 秒可接受）。
+            粘住备路（2a）：切换后本台会话热备清零——不再自动回主路，换台/重进台按健康表自然回归。
+            切换预算独立（2b：不占 5 秒去重、90 秒窗 4 次）由 LiveVideoHost 侧计数。
             </summary>
         </member>
         <member name="T:TaoLive.UI.Android.Tv.Shared.InkTranslucency">
@@ -420,10 +486,19 @@
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.StartStatsRetry">
             <summary>⑤首帧后轨道解析重试：每 500ms 一次至多 10 次（StatsLinePolicy 口径），成功即停。</summary>
         </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.HotStandbySwitch">
+            <summary>
+            v25 修法七：热备帧级切换入口（UI 注入）。主路断/卡时先问热备——备路就绪即直接换流
+            （I 帧边界对齐，画面跳 2–3 秒可接受），把 v24「断流→探测→重连」秒级黑屏压成帧级。
+            切换预算独立（2b）：不占 5 秒去重窗（不同于自救重接，备路是现成流零成本），
+            90 秒窗独立计数上限 4 次，防主备乒乓。打点=主路断到切换发起毫秒数（真机验证口径）。
+            </summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.HandleStall">
             <summary>
             ⑫画面卡住分级快速自救（用户拍板「可以就这么定」）：静默重取流 → 降清晰度 → 软重启播放内核。
             静默级不发状态不占断流重连次数；重取流消费⑬健康表（ReconnectRefresher 内优先取最近验证可用来源）。
+            v25 修法七：自救前先问热备——备路就绪即帧级切换，不走重票。
             </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.ObserveBufferWatermark(System.Int64)">
@@ -458,6 +533,14 @@
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.ParseMediaStats(LibVLCSharp.Shared.Media)">
             <summary>解析媒体视频轨道（第④项）：原帧率/原分辨率；无缩放滤镜时现=原，测量缺失显示「检测中」。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.StartExhaustedRecovery">
+            <summary>
+            v25 真机修复·耗尽兜底：断流重连阶梯耗尽后原口径永久躺平（首帧已丢、看门狗失明、
+            画面冻死到用户手动切台）。改为常驻慢循环：首次 30 秒后、之后每 60 秒静默重试——
+            重武装快速阶梯（2/4/6 秒换票）并重取流重接；每 3 轮升级一次软重启内核。
+            首帧恢复或用户换台即收摊。
+            </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.MuteForBackground">
             <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。</summary>

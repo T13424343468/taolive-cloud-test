@@ -49,6 +49,50 @@ public class StreamResolver
     {
         _cache.Clear();
         _ysp.ClearAll();
+        _tableCache.Clear();
+    }
+
+    /// <summary>
+    /// v25 修法二 2c/2d：网络变更（换 IP）/时钟跳变时清退避账——旧账是旧 IP/旧墙钟记的，新环境不可信；
+    /// 票据缓存保留验证，失败自然重新入账。UI 在网络变更/TimeChanged 钩子处调用。
+    /// </summary>
+    public void ClearCooldowns() => _ysp.ClearCooldowns();
+
+    /// <summary>
+    /// v25 修法二 1：票账只读查询口（账本仍是 YspTicketService 单一事实来源，UI 不建第二本）——
+    /// 探测前先查：退避剩余>0 顺延不发起（不入源账、不记失败，退避期弹回不算坏）。
+    /// </summary>
+    public long TicketRemainingCooldownMs(Channel ch) => _ysp.RemainingCooldownMs(ch.EpgKey, DateTime.UtcNow);
+
+    // ---- v25 修法六 1a：整表源真聚合（nmtv/gxtv） --------------------------------
+    // 现状实锤（分析轮 2 漏洞 1）：ResolveNmtvAsync/ResolveGxtvAsync 每台真发整表请求，
+    // 60 秒缓存按「SourceId:EpgKey」键存互不复用。v25 改：整表 JSON 按源级缓存（下表 TTL 内同源只发 1 次），
+    // 同源其余台直接在缓存表内行级匹配——同源到期只探一次整表，结论自然广播全部到期台。
+
+    private sealed class TableSnapshot { public string Body = ""; public long FetchedAtMs; }
+    private readonly ConcurrentDictionary<string, TableSnapshot> _tableCache = new();
+    private readonly SemaphoreSlim _tableGate = new(1, 1); // 同源整表抓取串行（并发到期只发一次）
+
+    private static readonly TimeSpan TableTtl = TimeSpan.FromSeconds(60);
+
+    /// <summary>整表源按源级聚合抓表：TTL 内同源只发 1 次请求，返回缓存的整表 JSON。</summary>
+    private async Task<string?> FetchSourceTableAsync(string sourceId, Func<Task<string?>> fetchRaw)
+    {
+        var nowMs = System.Environment.TickCount64;
+        if (_tableCache.TryGetValue(sourceId, out var snap) && nowMs - snap.FetchedAtMs < TableTtl.TotalMilliseconds)
+            return snap.Body;
+        await _tableGate.WaitAsync();
+        try
+        {
+            nowMs = System.Environment.TickCount64;
+            if (_tableCache.TryGetValue(sourceId, out snap) && nowMs - snap.FetchedAtMs < TableTtl.TotalMilliseconds)
+                return snap.Body; // 双检：并发到期同源只发一次（整表聚合断言）
+            var body = await fetchRaw();
+            if (!string.IsNullOrEmpty(body))
+                _tableCache[sourceId] = new TableSnapshot { Body = body, FetchedAtMs = nowMs };
+            return body;
+        }
+        finally { _tableGate.Release(); }
     }
 
     private sealed class CachedUrl { public string Url = ""; public long FetchedAt; }
@@ -260,8 +304,20 @@ public class StreamResolver
     }
 
     // ---- 内蒙古 nmtv：整表 XXTEA 解密 → 按 title 匹配 streamUrl --------------------
+    // v25 修法六 1a：整表抓取经 FetchSourceTableAsync 源级聚合（TTL 内同源只发 1 次），行级匹配本地完成
 
     private async Task<string?> ResolveNmtvAsync(Channel ch)
+    {
+        var json = await FetchSourceTableAsync("nmtv", FetchNmtvTableRawAsync);
+        if (string.IsNullOrEmpty(json)) return null;
+        try
+        {
+            return NmtvSource.LocateStreamUrl(json, ch.Name);
+        }
+        catch { return null; }
+    }
+
+    private async Task<string?> FetchNmtvTableRawAsync()
     {
         string body;
         using (var req = new HttpRequestMessage(HttpMethod.Get, NmtvSource.ApiBase))
@@ -269,29 +325,32 @@ public class StreamResolver
             req.Headers.TryAddWithoutValidation("Client-Type", NmtvSource.ClientType);
             req.Headers.TryAddWithoutValidation("Referer", NmtvSource.Referer);
             req.Headers.TryAddWithoutValidation("User-Agent", YspTicketService.ClientUserAgent);
-            string nbody;
             try
             {
                 using var resp = await Http.SendAsync(req);
-                nbody = await resp.Content.ReadAsStringAsync();
+                body = await resp.Content.ReadAsStringAsync();
             }
             catch { return null; }
-            body = nbody;
         }
         try
         {
             var raw = System.Convert.FromBase64String(body.Trim().Trim('"'));
-            var json = System.Text.Encoding.UTF8.GetString(NmtvXxtea.Decrypt(raw));
-            // 行级匹配（2026-11-08 修复「包头」取不到流：整表行内 data.streamUrl 位于 title 之前，
-            // 旧「title 向右找首个 m3u8」全行顺位偏差；NmtvSource.LocateStreamUrl 间隙法主口径+兜底）
-            return NmtvSource.LocateStreamUrl(json, ch.Name);
+            return System.Text.Encoding.UTF8.GetString(NmtvXxtea.Decrypt(raw));
         }
         catch { return null; }
     }
 
     // ---- 广西 gxtv：电视频道口径清单直吐（encodeM3u8），60 秒缓存 ----------------
+    // v25 修法六 1a：同 nmtv，整表抓取源级聚合
 
     private async Task<string?> ResolveGxtvAsync(Channel ch)
+    {
+        var json = await FetchSourceTableAsync("gxtv", FetchGxtvTableRawAsync);
+        if (string.IsNullOrEmpty(json)) return null;
+        return GxtvSource.LocateStreamUrl(json, ch.Name);
+    }
+
+    private async Task<string?> FetchGxtvTableRawAsync()
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, GxtvSource.ChannelListApi);
         req.Headers.TryAddWithoutValidation("Referer", GxtvSource.Referer);
@@ -300,14 +359,12 @@ public class StreamResolver
         {
             ["pageNo"] = "1", ["pageSize"] = "1000", ["liveMethod"] = "0",
         });
-        string? json;
         try
         {
             using var resp = await Http.SendAsync(req);
-            json = await resp.Content.ReadAsStringAsync();
+            return await resp.Content.ReadAsStringAsync();
         }
         catch { return null; }
-        return GxtvSource.LocateStreamUrl(json ?? "", ch.Name);
     }
 
     // ---- 江苏 jstv：txSecret 短效 180s，播放时重签 --------------------------------
@@ -358,6 +415,45 @@ public class StreamResolver
     /// 不建立视频传输。2xx/3xx 视为可达；4xx/5xx/超时/异常视为不可达。</summary>
     public async Task<bool> ProbeReachableAsync(string url, string? referer, string? ua)
         => await ProbeUrlVerdictAsync(url, referer, ua) == ProbeVerdict.Reachable;
+
+    /// <summary>
+    /// v25 修法七：热备校验流轻探。segmentLevel=true 时「清单 + 单分片头」（拉清单后取首个分片，
+    /// Range 0–2047 几 KB 级，不建视频传输不解码）；false 时仅清单级（央视频同源备路降档，同 IP 不建双会话）。
+    /// 请求画像与播放链路完全同口径（referer/ua 由调用方透传播放统一头，修法七 1d）。
+    /// 返回 (可达, 是否服务器明确拒绝)——拒绝供共用退避账入账（修法七 1b）。
+    /// </summary>
+    public async Task<(bool Ok, bool Rejected)> ProbeHotStandbyAsync(string url, string? referer, string? ua, bool segmentLevel)
+    {
+        string? manifest;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            if (!string.IsNullOrEmpty(referer)) req.Headers.TryAddWithoutValidation("Referer", referer);
+            if (!string.IsNullOrEmpty(ua)) req.Headers.TryAddWithoutValidation("User-Agent", ua);
+            using var resp = await Http.SendAsync(req);
+            if (!resp.IsSuccessStatusCode)
+                return (false, (int)resp.StatusCode is 403 or 429);
+            manifest = await resp.Content.ReadAsStringAsync();
+        }
+        catch { return (false, false); } // 网络级失败：不入账（修法七 1b）
+        if (!segmentLevel || string.IsNullOrEmpty(manifest)) return (true, false);
+        // 清单 → 首个分片（相对路径转绝对）→ 几 KB 级分片头校验
+        var segMatch = Regex.Match(manifest, "^(?!#)[^\\r\\n]+\\.(?:ts|m4s|mp4)[^\\r\\n]*", RegexOptions.Multiline);
+        if (!segMatch.Success) return (true, false); // 无分片行（主清单/嵌套）：清单级即通过
+        var segUrl = segMatch.Value.Trim();
+        if (!segUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            var baseUri = new Uri(url);
+            segUrl = new Uri(baseUri, segUrl).ToString();
+        }
+        var verdict = await ProbeUrlVerdictAsync(segUrl, referer, ua);
+        return verdict switch
+        {
+            ProbeVerdict.Reachable => (true, false),
+            ProbeVerdict.Rejected => (false, true),
+            _ => (false, false),
+        };
+    }
 
     /// <summary>
     /// v23 修法 B·取文本分级：换票/清单请求把「服务器明确拒绝（403/429）」与网络级失败分开回报，

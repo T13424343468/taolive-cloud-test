@@ -23,7 +23,7 @@ namespace TaoLive.UI.Android.Tv;
 /// 设计基线：单实例 singleTask + onNewIntent（B 档秒开回上次频道）。
 /// </summary>
 [Activity(
-    Label = "道映",
+    Label = "TaoLive",
     MainLauncher = true,
     Exported = true,
     LaunchMode = LaunchMode.SingleTask,
@@ -80,8 +80,8 @@ public class MainActivity : Activity
     private int _loadingSeq;
     private Handler _ui = new Handler(Looper.MainLooper!);
 
-    // 退出确认（v1.0.9 用户拍板）：播放态按返回弹窗二次确认；确认后真完全关闭，
-    // 重开是全新冷启动。弹窗开着时返回键=取消继续播放。
+    // 退出确认（15:01 老板拍板）：播放态按返回弹窗二次确认；确认后退出界面，
+    // 后台保活服务继续跑（进程不结束），重开即热启动。弹窗开着时返回键=取消继续播放。
     private AlertDialog? _exitDialog;
     private bool _resumedOnce;  // 首启 OnResume 与回前台重接的分流（v1.0.9）
 
@@ -118,6 +118,17 @@ public class MainActivity : Activity
     private readonly SourceBackoffLedger _backoff = new(); // A⑬/A⑥：同一本 403 退避账（竞速与预热共用）
     private readonly Dictionary<string, long> _nextProbeAtMs = new(); // A⑥：每台下次到期时刻（TickCount64）
     private volatile bool _foregroundBusy; // A⑥ PauseGate：前台换台/连接期间预热让路
+
+    // ---- v25 落码新增 ----
+    private readonly ChannelPaceLedger _pace = new(); // 修法六：台级表现账+时段系数+全局让路闸（稳态循环与屏内先探共享同一闸）
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Channel> _prefetchQueue = new(); // 修法一 5：邻台预取改入队（PauseGate 空闲才消费，不再前台抢流量）
+    private readonly HashSet<string> _probeInFlight = new(StringComparer.Ordinal); // 屏内先探去重：同台一次只跑一个探测任务
+    private readonly object _probeInFlightLock = new();
+    private readonly Dictionary<string, long> _deadUntilMs = new(StringComparer.Ordinal); // 修法六 4：失效台独立档（判死移出主循环，30 分钟低频复测）
+    private readonly Dictionary<string, int> _deadStreak = new(StringComparer.Ordinal);
+    private long _lastScreenPrecheckMs; // 屏内先探 ≥3 秒节流
+    private HotStandbyKeeper? _hotStandby; // 修法七：热备并行取流（新台连接完成 5 秒后起，换台即停）
+    private BroadcastReceiver? _envReceiver; // 修法二 2c/2d：网络变更/时钟跳变清账（账本不跨 IP/跨墙钟沿用）
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -165,7 +176,16 @@ public class MainActivity : Activity
         _catalog.Rebuild();
         _resolver = new StreamResolver();
         _host = new LiveVideoHost { TotalMemBytes = _totalMem }; // ⑩内存水位自适应口径注入
+        _hotStandby = new HotStandbyKeeper(_resolver, _backoff); // v25 修法七：热备与预热共用同一本退避账（不建第二本）
+        // v25 修法七 2b：热备帧级切换接线——LiveVideoHost 断流/自救前先问热备（独立预算 90 秒窗 4 次）
+        _host.HotStandbySwitch = async () =>
+        {
+            var keeper = _hotStandby;
+            if (keeper is null) return null;
+            return await keeper.TrySwitchAsync();
+        };
         WireHostEvents();
+        RegisterEnvReceiver(); // v25 修法二 2c/2d：网络变更/时钟跳变清账
 
         // 开机预检握手（v1.0.8）：全台按序轻探（取票/头分片，不建视频传输），限速防判异常。
         // 预检后台进行，不阻塞当前频道播放；状态实时刷新进呼出列表。
@@ -460,6 +480,7 @@ public class MainActivity : Activity
     private void Play(Channel? ch)
     {
         if (ch is null) return;
+        _hotStandby?.Stop(); // v25 修法七 1c：换台即停热备（会话代数作废，校验流不再漏跑）
         _foregroundBusy = true; // A⑥ PauseGate：换台/连接期间预热让路
         int seq = ++_playSeq;
         _current = ch;
@@ -558,13 +579,16 @@ public class MainActivity : Activity
             foreach (var (k, v) in LiveQuality.OptionsFor(EffectiveTier)) opts.Add((k, v)); // A⑩：带实际生效档
             // A 类第5项·起播打点：档位/设置值/滤镜参数可对账（AI 生效性核查 §4 判据）；v22 第 18 项：参数整串原样入日志
             var filters = string.Join(";", opts.Where(o => QualityFilterKeysForLog.Contains(o.Key)).Select(o => $"{o.Key}={o.Value}"));
-            CrashNet.Record($"[画质] 起播（{ch.Name}）：档位 {LiveQuality.TierName(EffectiveTier)}（设置值 {LiveQuality.DisplayName(DeviceProfile.AiEnhanceTierSetting)}），滤镜 {(string.IsNullOrEmpty(filters) ? "无" : filters)}");
+            CrashNet.Record($"[画质] 起播（{ch.Name}）：档位 {LiveQuality.TierName(EffectiveTier)}（设置值 {LiveQuality.DisplayName(DeviceProfile.AiEnhanceTierSetting)}，内存 {_totalMem / (1024L * 1024 * 1024)}GB·{(_abi32 ? "32位" : "64位")}），滤镜 {(string.IsNullOrEmpty(filters) ? "无" : filters)}");
             _ui.Post(() =>
             {
                 if (seq != _playSeq) return;
                 _host.Play(resolved.Url, opts);
                 ShowInfoBar($"{ch.Number}  {ch.Name}");
                 RefreshEpg(ch); // B 包第 14 项：进台成功即拉官方节目单（换台即刷新，无数据不显示）
+                // v25 修法七 1c：连接完成 5 秒后（Keeper 内延迟）起热备校验流——备援候选悄悄拉一路轻校验
+                var uaOpt = resolved.Options.FirstOrDefault(o => o.Key == "http-user-agent").Value;
+                _hotStandby?.Start(seq, ch, resolved.Url, ch.Referer, string.IsNullOrEmpty(uaOpt) ? ch.UserAgent : uaOpt);
             });
         });
 
@@ -599,7 +623,10 @@ public class MainActivity : Activity
         return await _resolver.ProbeUrlVerdictAsync(r.Url, ch.Referer, ch.UserAgent);
     }
 
-    /// <summary>预连接：把相邻两路的可播地址提前换好放进缓存，换台零等待。</summary>
+    /// <summary>
+    /// v25 修法一 5：邻台预取改入队——换台瞬间只登记不启动任务；
+    /// 消费在 PrecheckLoop 每轮收尾（PauseGate 空闲 + 让路闸占到才发），不再前台抢流量（死参数口子收掉）。
+    /// </summary>
     private void PrefetchNeighbors(Channel ch)
     {
         var all = _catalog.All;
@@ -617,8 +644,22 @@ public class MainActivity : Activity
         foreach (var nb in new[] { up, down })
         {
             if (nb.Number == ch.Number) continue;
-            Task.Run(async () => { try { await _resolver.ResolvePlayUrlAsync(nb); } catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); } });
+            _prefetchQueue.Enqueue(nb); // 只入队：消费在预热循环收尾（PauseGate 空闲才执行）
         }
+    }
+
+    /// <summary>修法一 5：每轮收尾消费一个预取任务——PauseGate 挂起时不动，让路闸未占到时排回队尾（节律不破坏）。</summary>
+    private void DrainPrefetchQueue()
+    {
+        if (_foregroundBusy) return; // PauseGate 挂起：预取就地等待，下轮再消费
+        if (!_prefetchQueue.TryDequeue(out var nb)) return;
+        var pace = WarmupPolicy.PaceOf(nb.SourceId);
+        if (!_pace.TryAcquireGate(nb.SourceId, System.Environment.TickCount64, pace.MinGapMs))
+        {
+            _prefetchQueue.Enqueue(nb); // 未占到闸：排回队尾
+            return;
+        }
+        Task.Run(async () => { try { await _resolver.ResolvePlayUrlAsync(nb); } catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); } });
     }
 
     // ---- 循环预检（v1.0.8 用户拍板：频率越高越好，以不被判异常流量为前提）----
@@ -646,6 +687,7 @@ public class MainActivity : Activity
             try
             {
                 if (_precheckEnabled) await RunDueProbesAsync(ct);
+                DrainPrefetchQueue(); // v25 修法一 5：预取只在此消费（PauseGate 空闲 + 让路闸占到才发）
                 await Task.Delay(5_000, ct);
             }
             catch (global::System.OperationCanceledException) { return; }
@@ -653,28 +695,54 @@ public class MainActivity : Activity
         }
     }
 
-    /// <summary>A⑥单轮：只探「已到期且未退避且前台空闲」的台；首见台登记节拍不立即探（读盘起播口径）。</summary>
+    /// <summary>
+    /// A⑥单轮：只探「已到期且未退避且前台空闲」的台；首见台登记节拍不立即探（读盘起播口径）。
+    /// v25 落码（修法一/二/六）：
+    /// - 首见登记与到期登记一律 = now + RegisterIntervalMs（档位→时段→jitter 完整口径，1c：jitter 同表分布一致不漂移）；
+    /// - 全局让路闸（1a）：稳态循环与屏内先探共享，发起前原子占位（MinGap 原值不翻倍），两方同刻先到先探；
+    /// - 票账联动（2）：探测前查票据退避剩余>0 顺延不发起——退避期弹回不入源账不记失败（失败口径=明确拒绝才计负）；
+    /// - 失效台独立档（4）：连续 3 轮服务器明确拒绝（403/429）判死移出主循环，独立 30 分钟低频复测，
+    ///   连续 3 轮仍死拉长 2 小时，任一轮恢复（200）立即回归正常档；
+    /// - 台级账记账（1b/1c）：Reachable 计正；Rejected 计负；Unreachable（网络级）不计负；
+    ///   整表源不做台级三档（节拍按源），时段系数照走（低敏感深夜降功耗）；
+    /// - 整表源真聚合（nmtv/gxtv）：UI 层仍逐台登记探测，整表抓取在 resolver 源级聚合（60 秒 TTL 内同源只发 1 次）。
+    /// </summary>
     private async Task RunDueProbesAsync(System.Threading.CancellationToken ct)
     {
         long now = System.Environment.TickCount64;
         if (_foregroundBusy) return; // PauseGate：前台连接优先，预热就地挂起，下轮再看（不消耗到期时间）
+        int localHour = DateTime.Now.Hour; // 设备本地小时（时钟不对系数错位可接受，TimeSkew 已有兜底）
         foreach (var ch in _catalog.All)
         {
             if (ct.IsCancellationRequested) return;
             if (_foregroundBusy) return;
             var key = $"{ch.SourceId}:{ch.EpgKey}";
-            if (!_nextProbeAtMs.TryGetValue(key, out var due))
+            bool batch = WarmupPolicy.IsBatchSource(ch.SourceId);
+            long baseMs = WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs;
+
+            // 修法六 4：失效台独立档——未到复测时刻的判死台不进主循环（到期的台走下方同一探测路径）
+            if (_deadUntilMs.TryGetValue(key, out var deadDue))
             {
-                _nextProbeAtMs[key] = now + WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs;
+                if (now < deadDue) continue;
+            }
+            else if (!_nextProbeAtMs.TryGetValue(key, out var due))
+            {
+                // 修法一 1：首见登记 = now + 保鲜期 × 档位 × 时段 × jitter（EpgKey 稳定哈希，同表分布一致）
+                _nextProbeAtMs[key] = now + _pace.RegisterIntervalMs(ch.EpgKey, ch.SourceId, baseMs, localHour, batch);
                 continue; // 首见只登记，不立即探
             }
-            if (now < due) continue;
-            if (_backoff.IsFrozen(ch.SourceId, now))
+            else if (now < due) continue;
+
+            // 修法二 2：票账联动——票据源退避剩余>0 顺延不发起（退避期弹回不入源账不记失败）
+            if (_resolver.TicketRemainingCooldownMs(ch) > 0)
             {
-                _nextProbeAtMs[key] = now + 60_000; // 退避期：挂起一个短周期后重看（细案：绝不绕闸）
+                _nextProbeAtMs[key] = now + 60_000;
                 continue;
             }
-            _nextProbeAtMs[key] = now + WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs;
+            // 修法一 1a：全局让路闸原子占位（稳态循环与屏内先探共享同一闸；MinGap 原值不翻倍）
+            if (!_pace.TryAcquireGate(ch.SourceId, now, WarmupPolicy.PaceOf(ch.SourceId).MinGapMs))
+                continue; // 未占到闸：登记不推进，下轮再看（不消耗到期时间）
+            _nextProbeAtMs[key] = now + _pace.RegisterIntervalMs(ch.EpgKey, ch.SourceId, baseMs, localHour, batch);
             try
             {
                 // v23 修法 B：探测结论分级——拉黑账只认服务器明确拒绝（403/429），
@@ -686,16 +754,40 @@ public class MainActivity : Activity
                 if (verdict == StreamResolver.ProbeVerdict.Rejected)
                 {
                     _backoff.RecordLimited(ch.SourceId, System.Environment.TickCount64); // 403/429 明确拒绝：照旧入退避账
+                    _pace.Record(ch.EpgKey, ch.SourceId, false); // 修法六 1b：明确拒绝计负
                     CrashNet.Record($"[退避] {ch.SourceId} 入账：冻结 {TimeSpan.FromMilliseconds(_backoff.RemainingMs(ch.SourceId, System.Environment.TickCount64)).TotalMinutes:F0} 分钟（服务器明确拒绝 403/429）");
+                    // 修法六 4：连续 3 轮明确拒绝 → 判死进独立档（复测 30 分钟；再连 3 轮仍死拉长 2 小时）
+                    int streak = _deadStreak.TryGetValue(key, out var s) ? s + 1 : 1;
+                    _deadStreak[key] = streak;
+                    if (streak >= 6)
+                    {
+                        _deadUntilMs[key] = System.Environment.TickCount64 + 7_200_000L; // 连续 6 轮仍死：拉长 2 小时（幂等覆盖）
+                    }
+                    else if (streak >= 3 && !_deadUntilMs.ContainsKey(key))
+                    {
+                        _deadUntilMs[key] = System.Environment.TickCount64 + 1_800_000L;
+                        CrashNet.Record($"[预热] {ch.Name} 连续 {streak} 轮明确拒绝：移出主循环，独立档 30 分钟后复测");
+                    }
                 }
                 else if (!ok)
                 {
+                    _pace.Record(ch.EpgKey, ch.SourceId, true); // 修法六 1b：网络级失败不计负（账本中性）
                     CrashNet.Record($"[退避] {ch.SourceId} 网络级失败：不入拉黑账（v23 修法 B），下轮再探");
                 }
-                else if (_backoff.IsFrozen(ch.SourceId, System.Environment.TickCount64))
+                else
                 {
-                    _backoff.Recover(ch.SourceId);
-                    CrashNet.Record($"[退避] {ch.SourceId} 探测 200：全额恢复，解除冻结");
+                    _pace.Record(ch.EpgKey, ch.SourceId, true); // 修法六 1b：探通计正
+                    if (_backoff.IsFrozen(ch.SourceId, System.Environment.TickCount64))
+                    {
+                        _backoff.Recover(ch.SourceId);
+                        CrashNet.Record($"[退避] {ch.SourceId} 探测 200：全额恢复，解除冻结");
+                    }
+                    // 修法六 4：任一轮恢复立即回归正常档
+                    if (_deadUntilMs.Remove(key))
+                    {
+                        _deadStreak.Remove(key);
+                        CrashNet.Record($"[预热] {ch.Name} 失效台复测恢复（200）：立即回归正常档");
+                    }
                 }
             }
             catch { _precheck.ReportSourceResult(ch, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); }
@@ -875,12 +967,12 @@ public class MainActivity : Activity
         try
         {
             StartActivity(new Intent(global::Android.Provider.Settings.ActionApplicationSettings));
-            FlashInfo("正在打开系统应用列表：找到道映，允许「自启动/后台运行」");
+            FlashInfo("正在打开系统应用列表：找到 TaoLive，允许「自启动/后台运行」");
             CrashNet.Record("[自启] 跳系统应用列表成功（详情页不可用降级）");
             return;
         }
         catch (Exception ex2) { CrashNet.Record($"[自启] 应用列表跳转失败：{ex2.Message}"); }
-        FlashInfo("系统未开放跳转：请到 电视设置 → 应用管理 → 道映，允许自启动");
+        FlashInfo("系统未开放跳转：请到 电视设置 → 应用管理 → TaoLive，允许自启动");
         CrashNet.Record("[自启] 系统页均不可达，退文字指引");
     }
 
@@ -1135,7 +1227,7 @@ public class MainActivity : Activity
         // B 包第 12 项：抽屉头部——标题 + 台数 + 五标签行（当前标签朱砂底高亮，确认/左右键切换）
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         header.SetPadding(DrawerPad, 40, DrawerPad, 8);
-        var title = new TextView(this) { Text = "道映·频道", TextSize = 24 };
+        var title = new TextView(this) { Text = "TaoLive 频道", TextSize = 24 };
         title.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(title);
         header.AddView(title);
@@ -1188,6 +1280,10 @@ public class MainActivity : Activity
         _listView = new ListView(this) { Divider = null };
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _listView.Selector = InkTranslucency.FocusDrawable();
+        _listView.ScrollStateChanged += (_, e) =>
+        {
+            if (e.ScrollState == ScrollState.Idle) TriggerScreenPrecheck(); // v25 修法三：滚动停稳先探屏内
+        };
         var rows = BuildRows();
 
         _adapter = new ChannelAdapter(this, rows, _current, n => _favorites.IsFavorite(n), c => _precheck.Of(c));
@@ -1227,6 +1323,65 @@ public class MainActivity : Activity
         if (curIdx < 0) curIdx = rows.FindIndex(r => r.Channel?.Number == focusNumber);
         if (curIdx >= 0) _listView.SetSelection(curIdx);
         _listView.RequestFocus();
+        TriggerScreenPrecheck(); // v25 修法三：列表呼出即先探屏内（所见先探，未知台不再干等）
+    }
+
+    /// <summary>
+    /// v25 修法三·屏内先探（UI 摸到哪先探到哪，列表呼出/滚动停稳即触发）：
+    /// - 从第一个可见行向下取「预检状态 Unknown」的前 8 台作为立刻批；同台一次只跑一个探测任务（3b 去重）；
+    /// - ≥3 秒节流（3b）；跟随预检开关（3a：关=循环与先探同停）；换台/连接中跳过本轮（2a 让路前台）；
+    /// - 与稳态循环共享同一让路闸（1a），票账联动同口径（退避期弹回不发起、不入账不记失败）；
+    /// - 记账口径与稳态循环一致：200 计正、明确拒绝计负、网络级失败不计负不入账。
+    /// </summary>
+    private void TriggerScreenPrecheck()
+    {
+        if (!_precheckEnabled) return; // 3a：跟随预检开关
+        if (_foregroundBusy) return;   // 2a：换台/连接中跳过本轮（PauseGate 口径一致）
+        if (_adapter is null || _listView is null) return;
+        long now = System.Environment.TickCount64;
+        if (now - _lastScreenPrecheckMs < 3_000) return; // 3b：≥3 秒节流
+        _lastScreenPrecheckMs = now;
+        int slots = 8;
+        for (int pos = Math.Max(0, _listView.FirstVisiblePosition - 1); pos < _adapter.Count && slots > 0; pos++)
+        {
+            var ch = _adapter[pos].Channel;
+            if (ch is null) continue;
+            if (_precheck.Of(ch) != ChannelHealth.Unknown) continue;
+            var key = $"{ch.SourceId}:{ch.EpgKey}";
+            lock (_probeInFlightLock)
+            {
+                if (!_probeInFlight.Add(key)) continue; // 同台一次只跑一个探测任务
+            }
+            slots--;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var pace = WarmupPolicy.PaceOf(ch.SourceId);
+                    if (!_pace.TryAcquireGate(ch.SourceId, System.Environment.TickCount64, pace.MinGapMs)) return; // 1a：共享让路闸
+                    if (_resolver.TicketRemainingCooldownMs(ch) > 0) return; // 2：退避期弹回不发起不入账
+                    var verdict = await ProbeChannelVerdictAsync(ch);
+                    if (verdict == StreamResolver.ProbeVerdict.Reachable)
+                    {
+                        _pace.Record(ch.EpgKey, ch.SourceId, true); // 修法六 1b：计正
+                        _precheck.ReportSourceResult(ch, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                        _backoff.Recover(ch.SourceId); // 探通 200：若源被冻结全额恢复（同一本账）
+                    }
+                    else if (verdict == StreamResolver.ProbeVerdict.Rejected)
+                    {
+                        _pace.Record(ch.EpgKey, ch.SourceId, false); // 明确拒绝计负
+                        _backoff.RecordLimited(ch.SourceId, System.Environment.TickCount64);
+                        _precheck.ReportSourceResult(ch, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    }
+                    // Unreachable（网络级失败）：不计负不入账不记状态（统一口径，下轮再探）
+                }
+                catch { /* 探测失败静默：下轮再探 */ }
+                finally
+                {
+                    lock (_probeInFlightLock) { _probeInFlight.Remove(key); }
+                }
+            });
+        }
     }
 
     /// <summary>当前焦点行锚点键（⑪全局焦点锚定）：分类行取分类键，频道行取 C:频道号。</summary>
@@ -1628,10 +1783,17 @@ public class MainActivity : Activity
         box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v22 第 11 项：半透明水墨底，与列表页面板同源同号
         box.SetMinimumWidth((int)(480 * Resources!.DisplayMetrics!.Density)); // 居中浮层不因文案缩成窄条
 
-        var msg = new TextView(this) { Text = "确认退出道映？", TextSize = 20 };
+        var msg = new TextView(this) { Text = "确认退出 TaoLive？", TextSize = 20 };
         msg.SetTextColor(InkTranslucency.TextPrimary(this)); // v22 第 11 项：统一 Token，暗屏自动提白
         InkTranslucency.ApplyReadabilityShadow(msg);
         box.AddView(msg);
+
+        // 15:01 老板拍板：退出后后台保活继续跑——弹窗讲清楚，免得用户以为关干净了
+        var note = new TextView(this) { Text = "退出后后台保活继续运行，随时回来看", TextSize = 13 };
+        note.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(note);
+        var noteLp = new LinearLayout.LayoutParams(-2, -2) { TopMargin = (int)(8 * Resources!.DisplayMetrics!.Density) };
+        box.AddView(note, noteLp);
 
         var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var lp = new LinearLayout.LayoutParams(0, -2, 1f) { TopMargin = pad, LeftMargin = pad / 2, RightMargin = pad / 2 };
@@ -1700,13 +1862,19 @@ public class MainActivity : Activity
         public void OnDismiss(global::Android.Content.IDialogInterface? dialog) => _act();
     }
 
-    /// <summary>真完全关闭（v1.0.9）：停播放→去任务→结束进程；重开必为冷启动。</summary>
+    /// <summary>退出界面（15:01 老板拍板：退出后后台保活继续跑）：停播放→去任务→进程交给保活服务持有。</summary>
     private void ExitAppCompletely()
     {
         try { _host.Stop(); } catch { /* 已停不碍退出 */ }
         try { _precheckCts?.Cancel(); } catch { }
         FinishAndRemoveTask();
-        Java.Lang.JavaSystem.Exit(0); // 结束进程：重开即全新冷启动，不留后台音
+        // 老板 15:01 拍板：退出后后台继续跑——不再结束进程；前台保活服务继续持有进程
+        // （预热引擎同进程共享，重开即热启动）。预热开关关闭时无服务持有，进程随后由系统按后台空进程回收，等同真退出。
+        if (_warmupEnabled)
+        {
+            try { StartForegroundService(new Intent(this, typeof(WarmupService))); } // 幂等：已在跑则走 OnStartCommand 续命
+            catch (Exception svcEx) { CrashNet.Record($"[Warmup] 退出时保活拉起失败：{svcEx.Message}"); }
+        }
     }
 
     // ---- 遥控键 ----
@@ -1970,11 +2138,52 @@ public class MainActivity : Activity
         catch { return true; } // 探测本身失败：宁可放行也不卡重接
     }
 
+    /// <summary>
+    /// v25 修法二 2c/2d：网络变更/时钟跳变监听——换 IP 或墙钟跳变后，退避账与票据冷却都是
+    /// 旧环境记的（旧 IP 画像/旧墙钟冻结时刻），新环境不可信：退避账与票账冷却清零，
+    /// 票据缓存保留验证（失败自然重新入账，退避期不把好环境白冻 2 小时）。
+    /// </summary>
+    private void RegisterEnvReceiver()
+    {
+        _envReceiver = new EnvLedgerReceiver(() =>
+        {
+            try
+            {
+                _resolver.ClearCooldowns(); // 票账冷却清零（票据缓存保留验证）
+                _backoff.Clear();           // 源退避账清零（streak 一并归零，新环境从 2 分钟基值重算）
+                CrashNet.Record("[账本] 网络变更/时钟跳变：退避账与票据冷却清零（票据缓存保留验证）");
+            }
+            catch (Exception ex) { CrashNet.Record($"[账本] 环境清账失败：{ex.Message}"); }
+        });
+        var filter = new IntentFilter();
+        filter.AddAction(global::Android.Net.ConnectivityManager.ConnectivityAction);
+        filter.AddAction(Intent.ActionTimeChanged);
+        RegisterReceiver(_envReceiver, filter);
+    }
+
+    private sealed class EnvLedgerReceiver : BroadcastReceiver
+    {
+        private readonly Action _onEnvChange;
+        public EnvLedgerReceiver(Action onEnvChange) { _onEnvChange = onEnvChange; }
+        public override void OnReceive(Context? context, Intent? intent)
+        {
+            if (intent?.Action == global::Android.Net.ConnectivityManager.ConnectivityAction
+                || intent?.Action == Intent.ActionTimeChanged)
+                _onEnvChange();
+        }
+    }
+
     protected override void OnDestroy()
     {
         _precheckCts?.Cancel();
         _precheckCts?.Dispose();
         _precheckCts = null;
+        _hotStandby?.Stop(); // v25 修法七 1c：退出即停热备校验流（会话代数作废，不再漏跑）
+        if (_envReceiver != null)
+        {
+            try { UnregisterReceiver(_envReceiver); } catch { /* 已注销不碍 */ }
+            _envReceiver = null;
+        }
         _epgCts?.Cancel(); // B 包第 14 项：退出停节目单拉取
         _epgCts?.Dispose();
         _epgCts = null;

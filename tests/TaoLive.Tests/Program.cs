@@ -883,6 +883,15 @@ Check(StallRescue.BufferingLowPct == 5f,
     "1.0.12修正①·Buffering 主信号触发线（缓冲接近耗尽即时介入，发现延迟 2–6 秒压到 ≤1 秒）");
 Check(BufferInventory.TargetMs == 3000 && BufferInventory.Default == BufferInventory.Mode.StartFull,
     "1.0.12发现B·3 秒库存两档：默认档=起播即 3 秒（拍板口径，真机验证后可切）");
+// ---- v25 真机修复批（11-11 真机卡死实锤：两三秒一卡且卡死后永冻，须手动切台才恢复）----
+Check(StallRescue.ExhaustedRecoveryFirstDelayMs == 30_000,
+    "v25真机修复·重连阶梯耗尽后 30 秒起兜底重试（原口径永久躺平只报一次「信号中断」，画面冻死实锤）");
+Check(StallRescue.ExhaustedRecoveryPeriodMs == 60_000,
+    "v25真机修复·耗尽兜底 60 秒常驻节奏（首帧恢复或换台才收摊，不等用户救场）");
+Check(StallRescue.ExhaustedRebuildEveryCycles == 3,
+    "v25真机修复·耗尽兜底每 3 轮升级软重启内核（其余轮静默重取流重接，阶梯仍行进）");
+Check(StallRescue.ExhaustedRecoveryPeriodMs / StallRescue.ExhaustedRebuildEveryCycles > 0,
+    "v25真机修复·耗尽兜底节奏整除守卫（升级间隔=3 分钟，防参数改坏后除零/永不升级）");
 Check(BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 1200) == 3000
     && BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 4000) == 4000
     && BufferInventory.StartCachingMs(BufferInventory.Mode.SilentRefetch, 1200) == 1200,
@@ -1252,6 +1261,117 @@ Check(cp.LagSeconds() == 300.0, "AI池:300并发入队账目平");
 // 10 播放确认推进滞后回落
 cp.ReportPlayed(0, 100.0);
 Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
+
+// ==================== v25 修法批（九层第 27 项口径） ====================
+// 修法六：台级表现账（EpgKey+SourceId 一格账）+ 时段系数 + 让路闸；修法五/七并发安全；修法二清账口
+{
+    var pace = new ChannelPaceLedger();
+    const long baseMs = 600_000; // 央视频 10 分钟保鲜
+
+    // ① 台×源粒度：同台多源各记各的（老板 12:32 拍板口径）
+    for (int i = 0; i < 5; i++) { pace.Record("cctv1", "yangshipin", false); }
+    for (int i = 0; i < 8; i++) { pace.Record("cctv1", "nmtv", true); }
+    Check(pace.TierOf("cctv1", "yangshipin", batchSource: false) == ChannelPaceLedger.TierBrittle,
+        "v25⑥①同台多源各记各账：央视频源 0/5 记脆档不拖累 nmtv 源");
+    Check(pace.TierOf("cctv1", "nmtv", batchSource: false) == ChannelPaceLedger.TierStable,
+        "v25⑥①nmtv 源 8/8 记稳档（备援源抽风不拖累主源表现）");
+
+    // ② 滑动窗口 10 条封顶
+    var paceWin = new ChannelPaceLedger();
+    for (int i = 0; i < 12; i++) paceWin.Record("w1", "cztv", true); // 12 连正，窗口只留最近 10
+    paceWin.Record("w1", "cztv", false); paceWin.Record("w1", "cztv", false); // 2 负
+    Check(paceWin.TierOf("w1", "cztv", false) == ChannelPaceLedger.TierNormal,
+        "v25⑥②滑动窗口 10 条封顶：早期结论滚出窗口，按最近 10 条 8/10 记正常档（不因历史全程正而虚高）");
+
+    // ③ 窗口不足 3 条不评档（1 次失败不判脆，分析轮 3 漏洞 1）
+    var paceFew = new ChannelPaceLedger();
+    paceFew.Record("f1", "gzstv", false);
+    paceFew.Record("f1", "gzstv", false);
+    Check(paceFew.TierOf("f1", "gzstv", false) == ChannelPaceLedger.TierNormal,
+        "v25⑥③窗口<3 不评档：2 次失败仍正常档（1-2 次弹回不推脆档）");
+
+    // ④ 计负口径：网络级失败不计负（分析轮 2 漏洞 2）
+    Check(paceFew.TierOf("f1", "gzstv", false) == ChannelPaceLedger.TierNormal,
+        "v25⑥④网络级失败不计负：账本只认明确拒绝与播放流级失败");
+
+    // ⑤ 整表源不做台级三档（节拍按源，分析轮 2 漏洞 1）
+    Check(pace.TierOf("cctv1", "nmtv", batchSource: true) == ChannelPaceLedger.TierNormal,
+        "v25⑥⑤整表源豁免台级三档：batch=true 恒正常档");
+
+    // ⑥ 档位系数与钳制（登记口径含 jitter：值=tierMs × 时段 × jitter）
+    var paceFac = new ChannelPaceLedger();
+    for (int i = 0; i < 5; i++) paceFac.Record("x1", "yangshipin", true);
+    long stableMs = paceFac.RegisterIntervalMs("x1", "yangshipin", baseMs, 12, false);
+    Check(stableMs == (long)Math.Clamp(baseMs * 1.5 * ChannelPaceLedger.StableJitter("x1"), baseMs / 2, baseMs * 4),
+        "v25⑥⑥稳档 ×1.5×jitter（钳制内，非央视频时段外系数=1）");
+
+    // ⑦ 时段系数：晚高峰 0.7 / 深夜 2.0（同 jitter 口径精确对拍）
+    long peakMs = new ChannelPaceLedger().RegisterIntervalMs("x2", "cztv", baseMs, 20, false);
+    Check(peakMs == (long)Math.Clamp(baseMs * 0.7 * ChannelPaceLedger.StableJitter("x2"), baseMs / 2, baseMs * 4),
+        "v25⑥⑦晚高峰 19-23 → ×0.7（质量波动加密）");
+    long nightMs = new ChannelPaceLedger().RegisterIntervalMs("x3", "cztv", baseMs, 3, false);
+    Check(nightMs == (long)Math.Clamp(baseMs * 2 * ChannelPaceLedger.StableJitter("x3"), baseMs / 2, baseMs * 4),
+        "v25⑥⑦深夜 01-07 → ×2（正常档钳制上限 2×）");
+
+    // ⑧ yangshipin 时段系数恒 1.0（总闸只降不升，分析轮 1 漏洞 4）
+    for (int i = 0; i < 5; i++) { paceFac.Record("x4", "yangshipin", true); paceFac.Record("x5", "yangshipin", true); }
+    long yspPeak = paceFac.RegisterIntervalMs("x4", "yangshipin", baseMs, 20, false);   // 稳档 + 晚高峰
+    long yspNight = paceFac.RegisterIntervalMs("x5", "yangshipin", baseMs, 3, false);   // 稳档 + 深夜
+    Check(yspPeak == (long)Math.Clamp(baseMs * 1.5 * ChannelPaceLedger.StableJitter("x4"), baseMs / 2, baseMs * 4)
+        && yspNight == (long)Math.Clamp(baseMs * 1.5 * ChannelPaceLedger.StableJitter("x5"), baseMs / 2, baseMs * 4),
+        "v25⑥⑧央视频时段系数恒 1.0：晚高峰/深夜都不受时段加密（画像最敏感）");
+
+    // ⑨ 深夜总上限 4× / 晚高峰下限 0.5×（分析轮 1 漏洞 6）
+    var paceDeep = new ChannelPaceLedger();
+    for (int i = 0; i < 5; i++) paceDeep.Record("x6", "cztv", true);
+    Check(paceDeep.RegisterIntervalMs("x6", "cztv", baseMs, 2, false) <= baseMs * 4,
+        "v25⑥⑨深夜总上限 4×保鲜期（×jitter 后仍被钳住）");
+    var pacePeakLow = new ChannelPaceLedger();
+    for (int i = 0; i < 5; i++) pacePeakLow.Record("x7", "cztv", false);
+    Check(pacePeakLow.RegisterIntervalMs("x7", "cztv", baseMs, 20, false) >= baseMs / 2,
+        "v25⑥⑨晚高峰下限 0.5×保鲜期（脆档×0.7 不破下限）");
+
+    // ⑩ jitter ∈ [0.8,1.4] 且 EpgKey 稳定哈希一致（修法一 1c）
+    double j1 = ChannelPaceLedger.StableJitter("CCTV1"), j2 = ChannelPaceLedger.StableJitter("CCTV1");
+    Check(j1 >= 0.8 && j1 <= 1.4 && j1 == j2,
+        "v25一1c jitter ∈[0.8,1.4] 且 EpgKey 稳定哈希（同表分布一致不漂移）");
+
+    // ⑪ 全局让路闸：占位成功→MinGap 内拒绝→到期放行（修法一 1a）
+    var gate = new ChannelPaceLedger();
+    Check(gate.TryAcquireGate("yangshipin", 1_000_000, 2_000), "v25一1a 让路闸首次占位成功");
+    Check(gate.GateRemainingMs("yangshipin", 1_001_000) == 1_000,
+        "v25一1a 让路闸 MinGap 内剩余时长正确（不翻倍）");
+    Check(!gate.TryAcquireGate("yangshipin", 1_001_000, 2_000), "v25一1a MinGap 内再占失败（稳态与屏内共享同一闸）");
+    Check(gate.TryAcquireGate("yangshipin", 1_002_001, 2_000), "v25一1a 到期后重新可占");
+
+    // ⑫ RetainOnly 清孤儿（分析轮 55）
+    var paceRetain = new ChannelPaceLedger();
+    paceRetain.Record("keep1", "yangshipin", true);
+    paceRetain.Record("gone1", "yangshipin", true);
+    paceRetain.RetainOnly(k => k.StartsWith("keep"));
+    Check(paceRetain.TierOf("gone1", "yangshipin", false) == ChannelPaceLedger.TierNormal
+        && paceRetain.TierOf("keep1", "yangshipin", false) == ChannelPaceLedger.TierNormal,
+        "v25一55 RetainOnly 清孤儿：gone 台账清空，keep 台账保留");
+
+    // ⑬ SourceBackoffLedger 并发 smoke（修法七 3a：热备校验流与稳态循环并发入账）
+    var ledger = new SourceBackoffLedger();
+    Parallel.For(0, 300, i => ledger.RecordLimited("yangshipin", 1000 + i));
+    Check(ledger.IsFrozen("yangshipin", 1000) && ledger.RemainingMs("yangshipin", 1000) > 0,
+        "v25七3a 退避账 300 并发入账不炸账（ConcurrentDictionary）");
+    ledger.Recover("yangshipin");
+    Check(!ledger.IsFrozen("yangshipin", 1001), "v25七3a 200 全额恢复并行读安全");
+
+    // ⑭ 票账 ClearCooldowns：清冷却留缓存（修法二 2c/2d）
+    var ysp2 = new YspTicketService();
+    long t25 = 1794016800;
+    ysp2.MarkFetched("cc", t25, "http://x/cc.m3u8");
+    ysp2.MarkCooldown("cc", DateTimeOffset.FromUnixTimeSeconds(t25).DateTime);
+    ysp2.ClearCooldowns();
+    Check(!ysp2.InCooldown("cc", DateTimeOffset.FromUnixTimeSeconds(t25).DateTime.AddSeconds(1)),
+        "v25二2c ClearCooldowns：网络变更后票据冷却清零（不把好环境白冻 2 小时）");
+    Check(ysp2.TryGet("cc", t25 + 60, out var keep) && keep == "http://x/cc.m3u8",
+        "v25二2c ClearCooldowns：票据缓存保留验证（失败自然重新入账）");
+}
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;

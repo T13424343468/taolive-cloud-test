@@ -45,6 +45,16 @@ public static class StallRescue
     /// <summary>1.0.12 修正①·Buffering 主信号触发线（缓存百分比低于该值视为缓冲接近耗尽，即时介入不等看门狗巡检）。</summary>
     public const float BufferingLowPct = 5f;
 
+    /// <summary>v25 真机修复·耗尽兜底：断流重连阶梯耗尽后首次兜底重试延迟（毫秒）。
+    /// 真机实锤：阶梯耗尽后原口径永久躺平（只报一次「信号中断」），画面冻死直到用户手动切台。</summary>
+    public const int ExhaustedRecoveryFirstDelayMs = 30_000;
+
+    /// <summary>v25 真机修复·耗尽兜底：兜底重试周期（毫秒），直到首帧恢复或用户换台才收。</summary>
+    public const int ExhaustedRecoveryPeriodMs = 60_000;
+
+    /// <summary>v25 真机修复·耗尽兜底：每 N 轮兜底重试升级一次软重启内核（其余轮静默重取流重接）。</summary>
+    public const int ExhaustedRebuildEveryCycles = 3;
+
     /// <summary>
     /// stallIndex：本台会话内第几次卡死（0 起）。hasLowerQuality：是否还有可降档。
     /// 无可降档时第 2 级直接并入重取流，绝不空转一档。

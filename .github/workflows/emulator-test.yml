@@ -7,7 +7,7 @@ on:
 jobs:
   install-and-launch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,7 +25,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK
+      - name: Install classic-engine host dependencies (Qt5/X11/GL)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libqt5widgets5 libqt5gui5 libqt5core5a libqt5svg5 libqt5network5 libx11-6 libgl1
+
+      - name: Install Android SDK (base)
         run: |
           ANDROID_HOME=$RUNNER_TEMP/android-sdk
           mkdir -p $ANDROID_HOME/cmdline-tools
@@ -35,63 +40,106 @@ jobs:
           export ANDROID_SDK_ROOT=$ANDROID_HOME
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platform-tools" "emulator"
+          sdkmanager "platform-tools" "platforms;android-24"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
 
-      - name: Pick the highest available 32-bit ARM system image
+      - name: Install ARM32 system image (API 24, has kernel-qemu)
         run: |
           set -e
-          PICKED=$(sdkmanager --list | grep -oE 'system-images;android-[0-9]+;default;armeabi-v7a' | sort -u | awk -F';' '{split($2,a,"-"); if (a[2]+0 > max) {max=a[2]+0; pkg=$0}} END {print pkg}')
-          if [ -z "$PICKED" ]; then
-            echo "NO_ARM32_IMAGE_AVAILABLE"
-            sdkmanager --list | grep 'armeabi' | head -40 || true
-            exit 1
-          fi
-          echo "Picking $PICKED"
-          yes | sdkmanager "$PICKED"
-          echo "SYSIMAGE=$PICKED" >> $GITHUB_ENV
+          yes | sdkmanager "system-images;android-24;default;armeabi-v7a"
+          ls "$ANDROID_HOME/system-images/android-24/default/armeabi-v7a/" | head -20
+          test -f "$ANDROID_HOME/system-images/android-24/default/armeabi-v7a/kernel-qemu" || { echo "NO_KERNEL_QEMU"; exit 1; }
+          echo "KERNEL_QEMU_PRESENT"
 
-      - name: Create AVD and boot emulator (software emulation)
+      - name: Replace emulator with 28.0.25 (last release with classic/QEMU1 ARM engine)
+        run: |
+          set -e
+          curl -sSL -o emu28.zip https://dl.google.com/android/repository/emulator-linux-5395263.zip
+          rm -rf "$ANDROID_HOME/emulator"
+          unzip -q emu28.zip -d "$ANDROID_HOME"
+          ls "$ANDROID_HOME/emulator/" | head -20
+          test -f "$ANDROID_HOME/emulator/emulator64-arm" || { echo "NO_CLASSIC_ENGINE_BINARY"; exit 1; }
+          chmod +x "$ANDROID_HOME/emulator/emulator64-arm"
+          "$ANDROID_HOME/emulator/emulator64-arm" -version | head -2 || { echo "CLASSIC_ENGINE_WONT_LOAD"; ldd "$ANDROID_HOME/emulator/emulator64-arm" | grep 'not found'; exit 1; }
+          echo "CLASSIC_ENGINE_OK"
+
+      - name: Create AVD (API24 ARM32)
         run: |
           set -e
           export ANDROID_AVD_HOME=$HOME/.android/avd
           export ANDROID_USER_HOME=$HOME/.android
           mkdir -p "$ANDROID_AVD_HOME"
-          echo no | avdmanager create avd -n testavd -k "$SYSIMAGE" -d pixel
-          echo "--- avdmanager list avd ---"
-          avdmanager list avd || true
-          echo "--- avd dir ---"
-          ls -la "$ANDROID_AVD_HOME" || true
-          if ! emulator -list-avds | grep -q testavd; then
-            echo "AVD_NOT_FOUND_AFTER_CREATE"
-            find "$HOME/.android" -maxdepth 3 | head -30 || true
-            exit 1
-          fi
-          echo "AVD_VERIFIED"
-          emulator -avd testavd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 4096 -accel off -verbose > emulator.log 2>&1 &
+          echo no | avdmanager create avd -n testavd -k "system-images;android-24;default;armeabi-v7a" || true
+          CFG="$ANDROID_AVD_HOME/testavd.avd/config.ini"
+          cat "$CFG"
+          # classic 引擎需要有效 skin；且明确关闭 GPU 走 -gpu off
+          grep -q '^skin.name=' "$CFG" && sed -i 's|^skin.name=.*|skin.name=WXGA720|' "$CFG" || echo 'skin.name=WXGA720' >> "$CFG"
+          grep -q '^skin.path=' "$CFG" && sed -i 's|^skin.path=.*|skin.path=platforms/android-24/skins/WXGA720|' "$CFG" || echo 'skin.path=platforms/android-24/skins/WXGA720' >> "$CFG"
+          grep -q '^hw.gpu.enabled=' "$CFG" && sed -i 's|^hw.gpu.enabled=.*|hw.gpu.enabled=no|' "$CFG" || echo 'hw.gpu.enabled=no' >> "$CFG"
+          echo "--- patched config ---"
+          cat "$CFG"
+
+      - name: Boot with classic engine (TCG ARM emulation)
+        run: |
+          set -e
+          export ANDROID_AVD_HOME=$HOME/.android/avd
+          export ANDROID_USER_HOME=$HOME/.android
+          EMU="$ANDROID_HOME/emulator/emulator64-arm"
+          "$EMU" -list-avds || true
+          set -x
+          "$EMU" @testavd -engine classic -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu off -memory 2048 -cores 2 -verbose > emulator.log 2>&1 &
           EMUPID=$!
-          sleep 30
-          echo "--- emulator log first sample ---"
-          head -50 emulator.log || true
+          sleep 45
+          echo "--- emulator log head ---"
+          head -60 emulator.log || true
           if ! kill -0 $EMUPID 2>/dev/null; then
             echo "EMULATOR_DIED_AT_START"
             cat emulator.log
             exit 1
           fi
-          timeout 900 adb wait-for-device || { echo "DEVICE_NEVER_APPEARED"; tail -80 emulator.log; exit 1; }
-          echo "DEVICE_ONLINE"
-          timeout 8400 adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 10; done; echo BOOT_COMPLETED' || { echo "BOOT_TIMEOUT"; tail -80 emulator.log; exit 1; }
-          echo "BOOT_OK"
+          echo "ENGINE_ALIVE_AFTER_45S"
+          # 设备出现（fast-fail：引擎挂了立即报，最多等 20 分钟）
+          DEAD=0
+          timeout 1200 adb wait-for-device || DEAD=1
+          if [ $DEAD -ne 0 ]; then
+            if ! kill -0 $EMUPID 2>/dev/null; then
+              echo "EMULATOR_DIED_DURING_WAIT_FOR_DEVICE"
+            else
+              echo "DEVICE_NEVER_APPEARED"
+            fi
+            tail -100 emulator.log
+            exit 1
+          fi
+          echo "DEVICE_APPEARED"
+          # 等待开机完成，每轮检查引擎进程存活（TCG 下可能需要 30-90 分钟）
+          START=$SECONDS
+          while true; do
+            if ! kill -0 $EMUPID 2>/dev/null; then
+              echo "EMULATOR_DIED_DURING_BOOT"
+              tail -120 emulator.log
+              exit 1
+            fi
+            if timeout 40 adb shell getprop sys.boot_completed 2>/dev/null | grep -q '^1$'; then
+              echo "BOOT_COMPLETED"
+              break
+            fi
+            if [ $((SECONDS - START)) -gt 5400 ]; then
+              echo "BOOT_TIMEOUT_90MIN"
+              tail -120 emulator.log
+              exit 1
+            fi
+            sleep 15
+          done
           adb shell getprop ro.build.version.release || true
           adb shell getprop ro.product.cpu.abi || true
 
       - name: Dump emulator log
         if: always()
         run: |
-          cat emulator.log 2>/dev/null | tail -120 || echo "NO_EMULATOR_LOG"
+          cat emulator.log 2>/dev/null | tail -150 || echo "NO_EMULATOR_LOG"
 
       - name: Install APK
         run: |

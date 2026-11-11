@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationId>com.taolive.tv</ApplicationId>
+    <ApplicationVersion>33</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <ApplicationTitle>TaoLive</ApplicationTitle>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体。
+         v28 瘦身：收窄为仅 android-arm——此前双 ABI 列表使构建把整套 arm64-v8a 库（libvlc 43MB+libassemblies blob 22MB+mono/AOT 运行时，约 66MB 死重）打进 32 位包，87MB→20MB 出头 -->
+    <RuntimeIdentifiers>android-arm</RuntimeIdentifiers>
+    <!-- v28 主线⑤运行库裁剪：Release 起用裁剪（SDK 程序集裁剪，用户程序集保全），托管程序集 blob 22MB 预期砍半；反射暗路以真机装机为终验 -->
+    <AndroidLinkMode Condition="'$(Configuration)' == 'Release'">SdkOnly</AndroidLinkMode>
+    <!-- v33 裁剪坑全补：SdkOnly 误裁的运行库件逐件保全（v31 定稿名单原样移植；保全唯一事实源 = 本文件的 _ExtraTrimmerArgs） -->
+    <_ExtraTrimmerArgs Condition="'$(Configuration)' == 'Release'">--action copy System.Collections --action copy System.Collections.Concurrent --action copy System.Collections.NonGeneric --action copy System.Collections.Specialized --action copy System.ComponentModel.TypeConverter --action copy System.Diagnostics.DiagnosticSource --action copy System.Diagnostics.Process --action copy System.IO.FileSystem.DriveInfo --action copy System.Linq --action copy System.Net.Http --action copy System.Net.HttpListener --action copy System.Net.NameResolution --action copy System.Net.Primitives --action copy System.Net.Requests --action copy System.Net.Security --action copy System.Net.WebProxy --action copy System.Private.Uri --action copy System.Private.Xml.Linq --action copy System.Security.Claims --action copy System.Security.Cryptography --action copy System.Text.Encodings.Web --action copy System.Text.Json --action copy System.Text.RegularExpressions --action copy System.Threading.Channels --action copy System.Runtime.Numerics</_ExtraTrimmerArgs>
+
+    <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>
+    <AssemblyName>TaoLive.UI.Android.Tv</AssemblyName>
+    <!-- v1.0 警告清零：AndroidResgenFile 已弃用（XA1037，.NET 10 移除）——Resource.designer.cs 由 SDK 默认生成，无需声明 -->
+    <!-- 签名链纪律：道系安卓实包统一 C1 证书链（2026-11-07 总监抽查回灌，勿改回树内旧钥/默认随机钥） -->
+    <AndroidKeyStore>True</AndroidKeyStore>
+    <AndroidSigningKeyStore>..\..\keystore\debug.keystore</AndroidSigningKeyStore>
+    <AndroidSigningKeyStorePass>android</AndroidSigningKeyStorePass>
+    <AndroidSigningStorePass>android</AndroidSigningStorePass>
+    <AndroidSigningKeyAlias>androiddebugkey</AndroidSigningKeyAlias>
+    <AndroidSigningKeyPass>android</AndroidSigningKeyPass>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TaoLive.Model\TaoLive.Model.csproj" />
+    <ProjectReference Include="..\TaoLive.BLL\TaoLive.BLL.csproj" />
+    <PackageReference Include="LibVLCSharp" Version="3.10.1" />
+    <!-- libvlc 本机库以 lib/<abi> 物理文件参与打包（同源 vlc365）；.NET Android 对 lib/<abi>/*.so 自动纳入 AndroidNativeLibrary，
+         v1.0 警告清零：不再手写条目——旧显式声明与自动纳入重复，触发 XA4301 重复打包告警（APK 实际内容不变） -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <AndroidResource Include="Resources\values\styles.xml" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.taolive.tv"
+          android:versionCode="33"
+          android:versionName="1.0">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- A 类第6项·后台预热常驻服务（细案 §二）：前台服务权限与 13+ 通知（可拒，拒了服务照跑） -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <uses-feature android:name="android.software.leanback" android:required="false" />
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+  <application
+      android:label="TaoLive"
+      android:banner="@drawable/tv_banner"
+      android:icon="@mipmap/ic_launcher"
+      android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+      android:usesCleartextTraffic="true">
+    <!-- 不声明 LEANBACK/HOME 类别以外的桌面身份；banner 供电视桌面展示 -->
+    <!-- A 类第6项：后台预热保活服务 + 开机自启接收器（细案 §二；服务进程内共享同一预热引擎） -->
+    <service android:name="com.taolive.tv.WarmupService"
+             android:exported="false"
+             android:foregroundServiceType="dataSync" />
+    <receiver android:name="com.taolive.tv.WarmupBootReceiver"
+              android:exported="true"
+              android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

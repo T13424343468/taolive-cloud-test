@@ -1,0 +1,103 @@
+name: emulator-test
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  install-and-launch:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host capability probe
+        run: |
+          uname -a
+          nproc
+          free -h
+          ls -l /dev/kvm || echo "NO_KVM_DEVICE"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK
+        run: |
+          ANDROID_HOME=$RUNNER_TEMP/android-sdk
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          curl -sSL -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdtools.zip -d $ANDROID_HOME/cmdline-tools
+          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "emulator"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+
+      - name: Pick a 32-bit ARM system image
+        run: |
+          set -e
+          PICKED=""
+          for API in 33 32 30 28; do
+            PKG="system-images;android-$API;default;armeabi-v7a"
+            if sdkmanager --list | grep -q "$PKG "; then
+              PICKED="$PKG"
+              break
+            fi
+          done
+          if [ -z "$PICKED" ]; then
+            echo "NO_ARM32_IMAGE_AVAILABLE"
+            sdkmanager --list | grep 'system-images' || true
+            exit 1
+          fi
+          echo "Picking $PICKED"
+          yes | sdkmanager "$PICKED"
+          echo "SYSIMAGE=$PICKED" >> $GITHUB_ENV
+
+      - name: Create AVD and boot emulator
+        run: |
+          set -e
+          echo no | avdmanager create avd -n testavd -k "$SYSIMAGE" -d pixel
+          emulator -avd testavd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -accel on -memory 3072 &
+          adb wait-for-device || true
+          timeout 900 adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 5; done; echo BOOT_COMPLETED'
+          adb shell getprop ro.build.version.release || true
+          adb shell getprop ro.product.cpu.abi || true
+
+      - name: Install APK
+        run: |
+          adb install -r TaoLive-tv-v1.0-vc33-32bit.apk
+          adb shell pm list packages | grep taolive || echo "PACKAGE_NOT_FOUND"
+
+      - name: Launch app and capture evidence
+        run: |
+          adb logcat -c
+          adb shell monkey -p com.taolive.tv -c android.intent.category.LAUNCHER 1 || true
+          sleep 30
+          adb shell "dumpsys activity activities | grep -i taolive" || echo "ACTIVITY_NOT_TOP"
+          adb logcat -d > logcat-full.txt || true
+          adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-30s.png || true
+          sleep 60
+          adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-90s.png || true
+          adb shell "dumpsys activity processes | grep -i taolive | head -20" > proc-info.txt || true
+          adb shell ps -A | grep taolive > proc-ps.txt || true
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tao-live-vc33-cloud-evidence
+          path: |
+            logcat-full.txt
+            launch-30s.png
+            launch-90s.png
+            proc-info.txt
+            proc-ps.txt
+          if-no-files-found: warn

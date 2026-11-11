@@ -407,3 +407,10 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - **BLL 基线确认（取代 13:20 节旧注）**：本 worktree HEAD 已含 v25 全部落码（c650225 固化）+ 台账（40de59e）+ 复现补口（214fd04），恢复 r4 前的「BLL 基线须含 v25」条件已满足
 - **宁夏源复测（15:5x）**：3 轮 1 过（round1 ok 200B/200，round2-3 URLError），与早间口径一致仍间歇抖动，验收黑屏先疑源侧结论维持
 - **AI ts 前置验证已派后台分身（只读+独立目录）**：TsRemuxer（taoplay-live/src/AllPlayer.UI.Android.Phone/TsRemuxer.cs）对直播 ts 分片 TS→MP4 无损转封装的正确性/吞吐/边界沙箱实测，产物落 projects/1377423/ai_ts_probe/，把拍板依据从推断变数据
+
+## 16:2x 后台支援·AI ts 前置验证收口+巡逻v3.2清零+评分×竞速边界预析
+- **AI ts 前置验证（分身交货，产物 projects/1377423/ai_ts_probe/）**：结论=可行。真实直播 CCTV12（H.264 1080p25+AAC 48k）15 连续分片 15/15 无损（帧数逐一对账一致）；100 分片 0 失败、聚合 30.4MB/s（沙箱口径，5MB/5s 分片 remux 仅占时长 ~3%，SoC 慢 3-5 倍仍余量足，瓶颈在 AI 超分不在转封装）。边界：4KB/16KB 失败（门槛应提 ≥64KB）、无音轨/HEVC/半截分片均可过。改造点 file:line 五处（TsRemuxer.TryRemux 提 public、LiveHlsRelay ServeSegment/GetSegAsync 挂点+MIME/URI 改 mp4、AiSegmentRunner 零改动、AiWiring 369 行闸门自然放行、内存 byte[] 需落盘暂存或 MediaDataSource）。诚实口径：沙箱以 ffmpeg -c copy 作容器级代理（MediaMuxer 沙箱不可跑），真机标定四项=真机吞吐、MediaMuxer 时间戳绝对基值（~21h）是否归一、播放器对逐分片 fMP4 HLS 兼容性（最大剩余风险）、SegmentWriter 短段容差+央视 4K HEVC 真源抽验
+- **99 轮巡逻 v3.2 清零**：99/99 全绿（468/0、锚点 26/26、版本锚 27/1.1，前台已扩 FILES+VideoHost.cs 日志攒批锚点）；本轮复核确认，明细 patrol_v25_99.md
+- **评分×竞速边界预析（开工令前备案，待并入方案）**：竞速保持「实测优先」不按分排，但沿用既有退避账生死口径——冷却期（_deadUntilMs）内的死源不进竞速候选，冷却结束回场即实测；即评分管排序、退避账管生死、竞速管同时起跑，三权分立互不掺和。可堵「已知死源白耗起播时间」缺口，且不新增规则只复用现账
+- **宁夏源预案（candidate ④）**：curated 仅 1 条候选无备选源；红线不擅自新增收录。预案=验收遇黑屏先以其他省台对照排除源侧归因；如需备选源，老板点头后派源调研（找路子+全链路核验再入挂链）
+- **A/B 对比操作注意（已入对照清单 v5）**：A=26/1.0、B=27/1.1 同包名，A→B 正常覆盖升级；B→A 属降级系统会拒绝，须先卸载（丢收藏/设置/三本账）。建议先 A 跑基线再覆盖升 B；对照清单已同步 A 包（bfc8aeb7…1e82，官方包 v2 的升级替代）与 B 包四项对比验收表

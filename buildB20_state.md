@@ -353,3 +353,22 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - APK SHA-256: df84cce1d9a2d71dcd711d4216a021de748229d14fdbd6c98479555fc723fd70
 - 备份：/root/workspace/存档/TaoLive/20261111-1140-v1.0.12/
 - 遗留真机验证：定格保帧、静默重接黑帧（默认档已按拍板=起播即 3 秒；验证后 InventoryMode 一行可切）
+
+## 11:41 v24 交付口径改安装包（老板令「目前只要安装包」）
+- 安装包：dist/v24/TaoLive-32位.zip 重出，内只装 Signed APK + SHA256SUMS（去 .idsig），75.8MB，zip sha256 483b6ed6…eba33；APK sha256 不变 df84cce1…23fd70
+- 原三件套 zip 改名 TaoLive-32位-完整包.zip 留档；备份 存档/TaoLive/20261111-1140-v1.0.12/ 不动
+
+## 11:55 后台支援·手机版五层缺口核实（分析师候选①②，file:line 实锤）
+### 候选①：手机版 r3 复现电视版 v23 卡死模式——属实，四缺口
+- 手机版起播链有备援（MainActivity.Live.cs 260-262：主取流 4 秒快失败→ResolveWithFailoverAsync），但断流后全链无备援无退避：
+  1. 中转服务 LiveHlsRelay.cs FetchText/FetchBytes（243/258 行）上游失败静默返 null——单发不重试、不退避、不落健康账，403 半死源一次撞不通即断供
+  2. 断流自救 VideoHost.TryStreamRetry（AllPlayer.UI.Android.Shared/VideoHost.cs 168 行）只重播同一中转地址，不重新取流不切源；MaxAttempts 用尽即交还用户
+  3. 电视版 v24 五层的 UI 层件（Buffering 主信号/60 秒窗/节流/定格保帧/预备票/3 秒库存/水位只涨不降）全在 TaoLive.UI.Android.Tv 的 LiveVideoHost.cs，手机版是 TaoPlay 系自带宿主，一样没接
+  4. BLL 层件（退避账 YspCkey、EndpointRacer、StreamResolver.Failover、StallRescue、BufferPolicy）手机版引用即得但调用点未接
+- 推演：老板手机装 r3 播央视频源，会撞上与电视版 v23 同款「介入→几秒→卡→介入」循环
+- 落码蓝图（BLL 家底全现成，改动集中在手机版三处）：①LiveHlsRelay 上游取流接退避账+多次尝试；②直播 TryStreamRetry 改「重新取流走 Failover+健康表」而非重播旧地址；③停滞探针接 StallRescue 分级
+### 候选②：AI 主线对直播 ts 分片未生效——属实，改造条件已核清
+- AiSegmentRunner.cs 16/66/107 行：只吃 MP4 封装（注释明示 ts/mkv MediaMuxer 不支持，如实跳过）；直播 ts 分片全走直出兜底，1080P→4K 主线在手机直播上当前不发生
+- 改造路径家底现成：TaoPlay TsRemuxer.cs（TS→MP4 无损转封装，H.264/H.265+AAC 即可，不重编码零画质损失）——中转落盘 ts 分片→TsRemuxer→AiSegmentRunner 加工→放行即可闭环老板主线
+- 风险点：逐分片转封装的吞吐与时延须真机标定（老板真机实测 2 秒内 1080P→4K 是点播素材口径，直播逐段口径未实测）；H.265 央视源兼容性抽验
+### 候选③：两包真机验证统一对照清单已备（projects/1377423/两包真机验证对照清单.md）

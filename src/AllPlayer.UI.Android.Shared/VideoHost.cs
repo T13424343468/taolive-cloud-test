@@ -38,14 +38,42 @@ namespace AllPlayer.UI.Android.Shared
 
         private void Enqueue(Action act) => _playerQueue.Add(act);
 
+        // 15:44 老板拍板·日志攒批：LogLine 高频，逐条开文件是白开销——缓冲 + 1 秒节拍统一落盘；
+        // VLC 警告/错误仍直写（低频，故障现场不能延迟）。
+        private readonly object _logGate = new object();
+        private readonly System.Text.StringBuilder _logBuf = new System.Text.StringBuilder();
+        private System.Threading.Timer? _logFlushTimer;
+
         private void LogLine(string msg)
         {
             try
             {
                 if (_logPath == null) return;
-                global::System.IO.File.AppendAllText(_logPath, DateTime.Now.ToString("HH:mm:ss") + " " + msg + "\n");
+                lock (_logGate)
+                {
+                    _logBuf.Append(DateTime.Now.ToString("HH:mm:ss")).Append(' ').Append(msg).Append('\n');
+                    if (_logFlushTimer == null)
+                        _logFlushTimer = new System.Threading.Timer(_ => FlushLogBuf(), null, 1000, 1000);
+                }
             }
             catch { }
+        }
+
+        private void FlushLogBuf()
+        {
+            try
+            {
+                if (_logPath == null) return;
+                string chunk;
+                lock (_logGate)
+                {
+                    if (_logBuf.Length == 0) return;
+                    chunk = _logBuf.ToString();
+                    _logBuf.Clear();
+                }
+                global::System.IO.File.AppendAllText(_logPath, chunk);
+            }
+            catch { /* 日志只加速不担责：落盘失败静默 */ }
         }
         private readonly List<VideoItem> _playlist = new List<VideoItem>();
         private int _index = -1;

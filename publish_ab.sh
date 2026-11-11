@@ -21,7 +21,6 @@ rm -rf src/TaoLive.UI.Android.Tv/bin src/TaoLive.UI.Android.Tv/obj
 
 echo "=== [2/6] publish: $* ==="
 "$DOTNET" publish "$PROJ" -f net9.0-android -c Release \
-  -p:AndroidLinkMode=None \
   -p:AndroidSdkDirectory=/root/workspace/.local/android-sdk \
   -p:JavaSdkDirectory=/root/workspace/.local/jdk/jdk-17.0.21.0.2+1 \
   -p:UseMonoRuntime=true -p:RuntimeIdentifier=android-arm \

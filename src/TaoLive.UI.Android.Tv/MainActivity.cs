@@ -536,7 +536,7 @@ public class MainActivity : Activity
             if (seq != _playSeq) return;
             _playSource = source;
             ResolvedStream? resolved = null;
-            string kind = nameof(ConnectFailureKind.Unreachable); // v28③修复：提升作用域，非异常路径（空清单判死）也能带稳定度口径回写
+            string kind = nameof(ConnectFailureKind.None); // v28③修复：提升作用域，非异常路径（空清单判死）也能带稳定度口径回写
             try
             {
                 // v1.0.10 第①项：优先直连健康账里已验证的来源；取不到流时若换过源，

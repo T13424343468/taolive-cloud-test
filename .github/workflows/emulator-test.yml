@@ -6,8 +6,8 @@ on:
 
 jobs:
   install-and-launch:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,29 +45,29 @@ jobs:
         run: |
           set -e
           PICKED=""
-          for API in 33 32 30 28; do
+          for API in 30 28 33; do
             PKG="system-images;android-$API;default;armeabi-v7a"
-            if sdkmanager --list | grep -q "$PKG "; then
+            if sdkmanager --list | grep -q "$PKG"; then
               PICKED="$PKG"
               break
             fi
           done
           if [ -z "$PICKED" ]; then
             echo "NO_ARM32_IMAGE_AVAILABLE"
-            sdkmanager --list | grep 'system-images' || true
+            sdkmanager --list | grep 'system-images' | head -40 || true
             exit 1
           fi
           echo "Picking $PICKED"
           yes | sdkmanager "$PICKED"
           echo "SYSIMAGE=$PICKED" >> $GITHUB_ENV
 
-      - name: Create AVD and boot emulator
+      - name: Create AVD and boot emulator (software emulation)
         run: |
           set -e
-          echo no | avdmanager create avd -n testavd -k "$SYSIMAGE" -d pixel
-          emulator -avd testavd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -accel on -memory 3072 &
+          echo no | avdmanager create avd -n testavd -k "$SYSIMAGE"
+          emulator -avd testavd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 4096 -accel off &
           adb wait-for-device || true
-          timeout 900 adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 5; done; echo BOOT_COMPLETED'
+          timeout 5400 adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 10; done; echo BOOT_COMPLETED'
           adb shell getprop ro.build.version.release || true
           adb shell getprop ro.product.cpu.abi || true
 
@@ -80,12 +80,12 @@ jobs:
         run: |
           adb logcat -c
           adb shell monkey -p com.taolive.tv -c android.intent.category.LAUNCHER 1 || true
-          sleep 30
+          sleep 60
           adb shell "dumpsys activity activities | grep -i taolive" || echo "ACTIVITY_NOT_TOP"
           adb logcat -d > logcat-full.txt || true
-          adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-30s.png || true
-          sleep 60
-          adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-90s.png || true
+          adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-60s.png || true
+          sleep 120
+          adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-180s.png || true
           adb shell "dumpsys activity processes | grep -i taolive | head -20" > proc-info.txt || true
           adb shell ps -A | grep taolive > proc-ps.txt || true
 
@@ -96,8 +96,8 @@ jobs:
           name: tao-live-vc33-cloud-evidence
           path: |
             logcat-full.txt
-            launch-30s.png
-            launch-90s.png
+            launch-60s.png
+            launch-180s.png
             proc-info.txt
             proc-ps.txt
           if-no-files-found: warn

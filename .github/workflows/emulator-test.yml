@@ -44,7 +44,7 @@ jobs:
       - name: Pick the highest available 32-bit ARM system image
         run: |
           set -e
-          PICKED=$(sdkmanager --list | grep -oE 'system-images;android-[0-9]+;default;armeabi-v7a' | sort -u | awk -F';' '{gsub("android-","",$2); if ($2+0 > max) {max=$2+0; pkg=$0}} END {print pkg}')
+          PICKED=$(sdkmanager --list | grep -oE 'system-images;android-[0-9]+;default;armeabi-v7a' | sort -u | awk -F';' '{split($2,a,"-"); if (a[2]+0 > max) {max=a[2]+0; pkg=$0}} END {print pkg}')
           if [ -z "$PICKED" ]; then
             echo "NO_ARM32_IMAGE_AVAILABLE"
             sdkmanager --list | grep 'armeabi' | head -40 || true

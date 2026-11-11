@@ -466,8 +466,8 @@ namespace TaoLive.UI.Android.Phone
         private void ApplyTopBarPadding(LinearLayout topBar)
         {
             var land = (int)Resources!.Configuration!.Orientation == (int)global::Android.Content.Res.Orientation.Landscape;
-            int safeTop = land ? 0 : Model.TopBarPolicy.SafeTopPx(TaoUi.StatusBarHeight(this), TaoUi.TopCutoutInset(this));
-            var (padTop, padBottom) = Model.TopBarPolicy.Padding(safeTop, TaoUi.Dp(this, 12));
+            int safeTop = land ? 0 : AllPlayer.Model.TopBarPolicy.SafeTopPx(TaoUi.StatusBarHeight(this), TaoUi.TopCutoutInset(this));
+            var (padTop, padBottom) = AllPlayer.Model.TopBarPolicy.Padding(safeTop, TaoUi.Dp(this, 12));
             padTop -= TaoUi.Dp(this, 10);   // v3.25.17: 按钮整排上移10dp, 圆心对齐文字中心; 遮罩底线随行上移, 按钮下留白12dp不变
             int side = land ? Math.Max(TaoUi.Dp(this, 12), TaoUi.SideCutoutInset(this)) : TaoUi.Dp(this, 12);   // v3.25.19: 横屏左右避让挖孔
             topBar.SetPadding(side, padTop, side, padBottom);
@@ -978,7 +978,7 @@ namespace TaoLive.UI.Android.Phone
             bool playing = _host.IsPlaying;
             TaoUi.SetGlassIcon(_pauseBtn!, playing ? IconKind.Pause : IconKind.Play);
             // v3.22.6: 中央浮钮判定收敛到统一规则 (播放中绝不亮; 暂停+在播放器+未锁才亮)
-            _centerPlayBtn!.Visibility = Model.PlaybackUiPolicy.CenterPlayVisible(playing, _locked, _inPlayer)
+            _centerPlayBtn!.Visibility = AllPlayer.Model.PlaybackUiPolicy.CenterPlayVisible(playing, _locked, _inPlayer)
                 ? ViewStates.Visible : ViewStates.Gone;
         }
 
@@ -1265,9 +1265,9 @@ namespace TaoLive.UI.Android.Phone
                         var setColorMode = GetType().GetMethod("setColorMode", new[] { typeof(int) });
                         setColorMode?.Invoke(this, new object[] { 1 });
                     }
-                    string dolby = Model.DeviceCapabilityPolicy.DolbyVisionFallback(DolbyVisionSupported(), hdr);
-                    string line = Model.DeviceCapabilityPolicy.CapabilityLine(hz,
-                        Model.DeviceCapabilityPolicy.ColorMode(hdr, wide, contentHdr: true), dolby);
+                    string dolby = AllPlayer.Model.DeviceCapabilityPolicy.DolbyVisionFallback(DolbyVisionSupported(), hdr);
+                    string line = AllPlayer.Model.DeviceCapabilityPolicy.CapabilityLine(hz,
+                        AllPlayer.Model.DeviceCapabilityPolicy.ColorMode(hdr, wide, contentHdr: true), dolby);
                     AppLog.W("设备能力 " + line);
                 }
                 catch (Exception capEx) { AppLog.W("设备能力探测降级: " + capEx.GetType().Name); }

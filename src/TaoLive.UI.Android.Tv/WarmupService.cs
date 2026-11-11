@@ -58,7 +58,7 @@ public class WarmupService : Service
         {
             var am = (AlarmManager)GetSystemService(AlarmService)!;
             am.SetAndAllowWhileIdle(AlarmType.RtcWakeup,
-                SystemClock.CurrentTimeMillis() + 5000, BuildRestartPendingIntent());
+                Java.Lang.JavaSystem.CurrentTimeMillis() + 5000, BuildRestartPendingIntent());
         }
         catch { /* ROM 拦截则靠 Sticky 重建兜底 */ }
         base.OnTaskRemoved(rootIntent);

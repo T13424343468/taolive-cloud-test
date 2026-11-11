@@ -40,7 +40,8 @@ jobs:
           export ANDROID_SDK_ROOT=$ANDROID_HOME
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platform-tools" "platforms;android-24"
+          # emulator 包在此阶段保留：avdmanager 创建 AVD 时会校验其 package.xml
+          sdkmanager "platform-tools" "platforms;android-24" "emulator"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
@@ -54,19 +55,7 @@ jobs:
           test -f "$ANDROID_HOME/system-images/android-24/default/armeabi-v7a/kernel-qemu" || { echo "NO_KERNEL_QEMU"; exit 1; }
           echo "KERNEL_QEMU_PRESENT"
 
-      - name: Replace emulator with 28.0.25 (last release with classic/QEMU1 ARM engine)
-        run: |
-          set -e
-          curl -sSL -o emu28.zip https://dl.google.com/android/repository/emulator-linux-5395263.zip
-          rm -rf "$ANDROID_HOME/emulator"
-          unzip -q emu28.zip -d "$ANDROID_HOME"
-          ls "$ANDROID_HOME/emulator/" | head -20
-          test -f "$ANDROID_HOME/emulator/emulator64-arm" || { echo "NO_CLASSIC_ENGINE_BINARY"; exit 1; }
-          chmod +x "$ANDROID_HOME/emulator/emulator64-arm"
-          "$ANDROID_HOME/emulator/emulator64-arm" -version | head -2 || { echo "CLASSIC_ENGINE_WONT_LOAD"; ldd "$ANDROID_HOME/emulator/emulator64-arm" | grep 'not found'; exit 1; }
-          echo "CLASSIC_ENGINE_OK"
-
-      - name: Create AVD (API24 ARM32)
+      - name: Create AVD (API24 ARM32, before engine replacement)
         run: |
           set -e
           export ANDROID_AVD_HOME=$HOME/.android/avd
@@ -81,6 +70,18 @@ jobs:
           grep -q '^hw.gpu.enabled=' "$CFG" && sed -i 's|^hw.gpu.enabled=.*|hw.gpu.enabled=no|' "$CFG" || echo 'hw.gpu.enabled=no' >> "$CFG"
           echo "--- patched config ---"
           cat "$CFG"
+
+      - name: Replace emulator with 28.0.25 (last release with classic/QEMU1 ARM engine)
+        run: |
+          set -e
+          curl -sSL -o emu28.zip https://dl.google.com/android/repository/emulator-linux-5395263.zip
+          rm -rf "$ANDROID_HOME/emulator"
+          unzip -q emu28.zip -d "$ANDROID_HOME"
+          ls "$ANDROID_HOME/emulator/" | head -20
+          test -f "$ANDROID_HOME/emulator/emulator64-arm" || { echo "NO_CLASSIC_ENGINE_BINARY"; exit 1; }
+          chmod +x "$ANDROID_HOME/emulator/emulator64-arm"
+          "$ANDROID_HOME/emulator/emulator64-arm" -version | head -2 || { echo "CLASSIC_ENGINE_WONT_LOAD"; ldd "$ANDROID_HOME/emulator/emulator64-arm" | grep 'not found'; exit 1; }
+          echo "CLASSIC_ENGINE_OK"
 
       - name: Boot with classic engine (TCG ARM emulation)
         run: |

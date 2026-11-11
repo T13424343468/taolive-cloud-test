@@ -389,8 +389,9 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
         // 喂入路径打通：ReportSourceResult 经 WriteSourceResult 入评分账
         scoredPre.ReportSourceResult(sa, true, clock + 1, 500);
         Check(scoreStore.HasAccount("s", "s1"), "v28评分⑥喂入路径：ReportSourceResult 同步入评分账");
+        // 落盘：节流 3 秒后台落（不阻塞），这里即时 FlushNow 验证原子写口径（同健康账）
         scoreStore.FlushNow();
-        Check(File.Exists("/tmp/taolive_score_test/source_score.json"), "v28评分⑦落盘：节流后账本文件在位（原子替换口径同健康账）");
+        Check(File.Exists("/tmp/taolive_score_test/source_score.json"), "v28评分⑦落盘：即时落盘文件在位（原子替换口径同健康账）");
     }
     Check(multi.Of(va) == ChannelHealth.Alive, "单来源失效但另一来源可用，整台仍=可用");
     multi.ReportSourceResult(vb, false, 345678L);

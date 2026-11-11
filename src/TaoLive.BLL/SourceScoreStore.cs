@@ -136,6 +136,7 @@ public class SourceScoreStore
         try
         {
             var json = JsonSerializer.Serialize(snapshot);
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!); // 目录不存在时创建（真机私有目录恒在，测试目录自建）
             var tmp = _path + ".tmp";
             File.WriteAllText(tmp, json);
             File.Move(tmp, _path, overwrite: true); // 原子替换一步到位（照抄 SourceHealthStore v28 修法）

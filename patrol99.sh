@@ -5,7 +5,7 @@ export DOTNET_ROOT=/root/workspace/.local/dotnet9
 DOTNET=/root/workspace/.local/dotnet9/dotnet
 OUT=patrol_v25_99.md
 BASE=/tmp/patrol99_baseline_v2
-FILES="src/TaoLive.BLL/ChannelPaceLedger.cs src/TaoLive.BLL/WarmupPolicy.cs src/TaoLive.BLL/YspCkey.cs src/TaoLive.BLL/StreamResolver.cs src/TaoLive.UI.Android.Tv/Shared/LiveVideoHost.cs src/TaoLive.UI.Android.Tv/Shared/HotStandbyKeeper.cs src/TaoLive.UI.Android.Tv/MainActivity.cs src/TaoLive.UI.Android.Tv/WarmupService.cs tests/TaoLive.Tests/Program.cs"
+FILES="src/TaoLive.BLL/ChannelPaceLedger.cs src/TaoLive.BLL/WarmupPolicy.cs src/TaoLive.BLL/YspCkey.cs src/TaoLive.BLL/StreamResolver.cs src/AllPlayer.UI.Android.Shared/VideoHost.cs src/TaoLive.UI.Android.Tv/Shared/LiveVideoHost.cs src/TaoLive.UI.Android.Tv/Shared/HotStandbyKeeper.cs src/TaoLive.UI.Android.Tv/MainActivity.cs src/TaoLive.UI.Android.Tv/WarmupService.cs tests/TaoLive.Tests/Program.cs"
 
 echo "# v26(1.0 正式版)源码 99 轮巡逻记录（2026-11-11，基于最新源码，v3 口径：版本锚点=26/1.0）" > "$OUT"
 echo "" >> "$OUT"
@@ -39,6 +39,8 @@ anchors=(
   "src/TaoLive.UI.Android.Tv/MainActivity.cs:_hotStandby?.Start(seq"
   "src/TaoLive.UI.Android.Tv/WarmupService.cs:public override void OnTaskRemoved(Intent? rootIntent)"
   "src/TaoLive.UI.Android.Tv/WarmupService.cs:(AlarmManager)GetSystemService(AlarmService)"
+  "src/AllPlayer.UI.Android.Shared/VideoHost.cs:FlushLogBuf"
+  "src/AllPlayer.UI.Android.Shared/VideoHost.cs:StringBuilder"
 )
 
 total_fail=0
@@ -68,9 +70,9 @@ for i in $(seq 1 99); do
     f="${a%%:*}"; pat="${a#*:}"
     grep -qF "$pat" "$f" 2>/dev/null || { fail=1; anchor_bad=1; notes+=("锚点缺失:$pat"); }
   done
-  [ "$anchor_bad" -eq 0 ] && ANCH="24/24" || ANCH="缺失"
-  grep -q "<ApplicationVersion>26</ApplicationVersion>" src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj || { fail=1; notes+=("versionCode≠26"); }
-  grep -q "<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>" src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj || { fail=1; notes+=("displayVersion≠1.0"); }
+  [ "$anchor_bad" -eq 0 ] && ANCH="26/26" || ANCH="缺失"
+  grep -q "<ApplicationVersion>27</ApplicationVersion>" src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj || { fail=1; notes+=("versionCode≠27"); }
+  grep -q "<ApplicationDisplayVersion>1.1</ApplicationDisplayVersion>" src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj || { fail=1; notes+=("displayVersion≠1.1"); }
   if [ "$fail" -eq 0 ]; then
     echo "| $i/99 | ${PASSN}/0 | ${ANCH} | ${label} | ✅ |" >> "$OUT"
   else

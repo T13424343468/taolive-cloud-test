@@ -315,3 +315,17 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - 21/22 全活（清单 200+首分片 200，双 UA）；湖南 token 型源跨夜 >13 小时仍活，时效风险暂缓但真机验收仍先疑源腐化
 - 宁夏卫视（120.76.248.139/bfgd）：25 秒超时三轮 1 过，间歇抖动，较昨日「8s 偏紧偶发」劣化——验收若黑先疑源侧，必要时后台补找备用源
 - 结果档：verify_tool/morning_recheck_1111.json（脚本 morning_recheck_1111.py，含唯一 URL 数防闭包错校验）
+
+## 08:50 后台支援·手机版首轮编译预演实录（隔离副本，零冲突）
+- **环境回收根因实锤（重要）**：`nohup &` 分离进程在本轮工具调用结束后被环境收割（两次实测：首轮 38 行日志止于 BLL 编译后即死）；改用托管后台（受控后台任务）后全程存活至 APK 出炉。分身 6 次被清极可能同款机制——重派载体应改托管后台或前台直落，勿再用裸分离进程。
+- 三轮预演（副本 b20-compile-probe，758M 树拷 149M）：
+  - 轮1：8 错（6×CS0234 + 2×CS8130），全部 MainActivity.Player.cs，指向 TopBarPolicy / PlaybackUiPolicy / DeviceCapabilityPolicy 三类（快照 AllPlayer.Model 中本就存在，移植漏了命名空间适配）
+  - 轮2：`using Model = AllPlayer.Model;` 别名方案无效——`TaoLive.Model` 是真实存在的命名空间，外层命名空间成员查找优先于 using 别名，`Model.` 仍解析到 TaoLive.Model
+  - 轮3：六处改全限定 `AllPlayer.Model.Xxx` → **0 错，APK 出炉**：com.taolive.phone-Signed.apk 54MB（08:42），aapt2 验证 package com.taolive.phone / versionCode 1 / 1.0.0 / native-code arm64-v8a，apksigner 证书 SHA-256 c18030d3… 与 v21 血缘同源
+- 已落真实工作树（commit 1966b00）：Player.cs 六处全限定 + 清单 label TaoPlay→道映
+- **出包前余项（零警口径）**：
+  1. 版本定版：csproj 仍 1/1.0.0，versionCode/versionName 待定
+  2. XA4301×3：libvlc/libc++_shared/libtaoai 重复打包警告，需收口为零警
+  3. XA0141：Android 16 目标要求警告；XA0033：JDK 版本号解析警告（jdk17 输出格式）
+  4. 全测预演未跑（tests 为纯逻辑工程，AiBufferPool 428 绿基线不受 UI 编译影响）
+- **前台状态观察**：07:26 记账后 80+ 分钟无新落码、无新记账；若前台会话已中断，按防打断纪律由后台接管播放页砍件与筛选框落码（断点=本台账加速包节的功能对照清单，砍件范围已逐行定位）。

@@ -144,6 +144,7 @@ namespace TaoLive.UI.Android.Phone
             controls.AddView(_playerStatus, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
             _seek = new SeekBar(this);
+            _seek.Visibility = ViewStates.Gone; // 直播砍件: 进度条/拖动预览整套退场
             _seek.Max = 1000;
             _seek.StartTrackingTouch += (s, e) =>
             {
@@ -172,7 +173,7 @@ namespace TaoLive.UI.Android.Phone
                 if (len <= 0) return;
                 UpdateSeekPreview(_seek.Progress * len / 1000);
             };
-            // v3.13 进度行 (对照参考图): 当前时间 — 进度条 — 总时长, 全屏钮收在行尾
+            // v3.13 进度行 → 直播砍件: 进度条/时长字退场 (直播实时直出), 全屏钮收在行尾保留
             var seekRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             seekRow.SetGravity(GravityFlags.CenterVertical);
             _timeCur = new TextView(this) { Text = "00:00", TextSize = 12 };
@@ -231,6 +232,7 @@ namespace TaoLive.UI.Android.Phone
             _speedBtn.SetShadowLayer(4f, 0f, 1f, global::Android.Graphics.Color.Argb(153, 0, 0, 0));
             _speedBtn.SetPadding(TaoUi.Dp(this, 10), 0, TaoUi.Dp(this, 10), 0);
             _speedBtn.Click += (s, e) => ShowSpeedDialog();
+            _speedBtn.Visibility = ViewStates.Gone; // 直播砍件: 倍速整套退场
             bottomRow.AddView(_speedBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
             // v3.25.20 大字体适配: 固定 40dp 高在 1.3 倍字体下会截字, 改最小高 40dp + 自然撑开
             _speedBtn.SetMinHeight(TaoUi.Dp(this, 40));
@@ -738,7 +740,7 @@ namespace TaoLive.UI.Android.Phone
             var totalDx = e2.GetX() - _gLastX;
             var totalDy = e2.GetY() - _gLastY;
             if (_gMode == 0)
-                _gMode = Math.Abs(totalDx) > Math.Abs(totalDy) ? 1 : (e1.GetX() < w / 2f ? 2 : 3);
+                _gMode = Math.Abs(totalDx) > Math.Abs(totalDy) ? 0 : (e1.GetX() < w / 2f ? 2 : 3); // 直播砍件: 横滑快进退整套退场, 横滑视为无效手势
 
             if (_gMode == 1)          // 水平滑动: 快进/快退 (v3.25.14 老板定档: 横屏一屏宽=10分钟, 竖屏=5分钟)
             {
@@ -938,6 +940,7 @@ namespace TaoLive.UI.Android.Phone
         /// <summary>长按倍速: 按住 3x 快进, 松手恢复原速</summary>
         internal void StartRateBoost()
         {
+            return; // 直播砍件: 倍速/快进整套退场 (含长按 3x)
             if (_locked || _boosting || !_host.IsPlaying) return;
             _boosting = true;
             _boostRate = _currentRate;

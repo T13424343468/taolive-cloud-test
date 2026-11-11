@@ -174,16 +174,21 @@ public static class YspCkey
 }
 
 /// <summary>
-/// 取票服务：每频道缓存真实 playurl，正常 5 分钟换票；同一清单地址重取会 403，冷却 30 秒；
+/// 取票服务：每频道缓存真实 playurl，正常 5 分钟换票；
+/// 1.0.12 修法 B：403 冷却从固定 30 秒改指数退避账（2/4/8 分钟 ×2 步进，封顶 2 小时）——
+/// 30 秒一轮反复重试坏流是被自身重试频率喂出来的风控（真机 10:40 日志实锤）；取票成功全额恢复；
 /// 版权停播（iretcode 文案含「版权」）冷却到节目结束。取票请求带固定 UA（App 全局统一）。
 /// </summary>
 public class YspTicketService
 {
     private sealed class Ticket { public string PlayUrl = ""; public long FetchedAt; }
     private readonly Dictionary<string, Ticket> _cache = new();
-    private readonly Dictionary<string, DateTime> _cooldownUntil = new();
+    private readonly Dictionary<string, (DateTime Until, int Streak)> _cooldownUntil = new();
     public static readonly TimeSpan RenewInterval = TimeSpan.FromMinutes(5);
-    public static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(30);
+    /// <summary>1.0.12 修法 B：退避基值 2 分钟（连败 ×2 步进：2/4/8/16…）。</summary>
+    public static readonly TimeSpan CooldownBase = TimeSpan.FromMinutes(2);
+    /// <summary>1.0.12 修法 B：退避封顶 2 小时（与 SourceBackoffLedger 同一口径）。</summary>
+    public static readonly TimeSpan CooldownMax = TimeSpan.FromHours(2);
 
     private readonly string _guid;
     public const string ClientUserAgent = "Mozilla/5.0 (Linux; Android 12; TCL 50V8G) AppleWebKit/537.36 TaoLive/1.0";
@@ -214,12 +219,35 @@ public class YspTicketService
             && (playUrl = t.PlayUrl) != null;
     }
 
-    public void MarkFetched(string channelId, long nowEpoch, string playUrl) =>
+    public void MarkFetched(string channelId, long nowEpoch, string playUrl)
+    {
         _cache[channelId] = new Ticket { PlayUrl = playUrl, FetchedAt = nowEpoch };
+        _cooldownUntil.Remove(channelId); // 1.0.12 修法 B：取票成功=退避全额恢复（口子开自动切回）
+    }
 
-    public void MarkCooldown(string channelId, DateTime until) => _cooldownUntil[channelId] = until;
+    /// <summary>
+    /// 1.0.12 修法 B·记录一次取票失败（403/风控/清单失效）：该频道退避一个周期，
+    /// 连败 ×2 步进（2/4/8 分钟起步拉长），封顶 CooldownMax。now=当前时刻（调用方注入）。
+    /// </summary>
+    public void MarkCooldown(string channelId, DateTime now)
+    {
+        int streak = _cooldownUntil.TryGetValue(channelId, out var cur) ? cur.Streak + 1 : 1;
+        long ms = (long)CooldownBase.TotalMilliseconds;
+        for (int i = 1; i < streak; i++)
+        {
+            ms *= 2;
+            if (ms >= (long)CooldownMax.TotalMilliseconds) { ms = (long)CooldownMax.TotalMilliseconds; break; }
+        }
+        _cooldownUntil[channelId] = (now.AddMilliseconds(ms), streak);
+    }
+
     public bool InCooldown(string channelId, DateTime now) =>
-        _cooldownUntil.TryGetValue(channelId, out var u) && now < u;
+        _cooldownUntil.TryGetValue(channelId, out var u) && now < u.Until;
+
+    /// <summary>退避剩余毫秒（未冻结为 0）：限流提示按剩余时长动态给预期。</summary>
+    public long RemainingCooldownMs(string channelId, DateTime now) =>
+        _cooldownUntil.TryGetValue(channelId, out var u) && now < u.Until
+            ? (long)(u.Until - now).TotalMilliseconds : 0;
 
     /// <summary>自愈6/8：清空全部票据缓存（可疑状态重置，静默，随后自然重取）。</summary>
     public void ClearAll()

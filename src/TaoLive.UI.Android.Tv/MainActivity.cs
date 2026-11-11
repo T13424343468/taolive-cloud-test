@@ -51,9 +51,10 @@ public class MainActivity : Activity
     private LinearLayout _listPanel = null!;
     private ListView? _listView;
     private bool _listOpen;
-    // B 包第 12 项：列表页改五标签抽屉（全部/央视/卫视/地方台/收藏），左右键切标签
+    // B 包第 12 项：列表页改五标签抽屉（1.0.12 UI② 改序：全部/收藏/央视/卫视/地方台），左右键切标签
     private DrawerSupport.Tab _drawerTab = DrawerSupport.Tab.All;
     private List<TextView>? _tabViews;
+    private const int DrawerPad = 48; // 1.0.12 UI③：频道列表页统一边距基准（页头/画面信息/标签行同口径对齐）
     // B 包第 14 项：底部节目单（央视网官方接口，没数据不硬造）；v22 第 12 项：亮出 7 秒无操作自动收起
     private LinearLayout? _epgPanel;
     private TextView? _epgNow;
@@ -252,11 +253,25 @@ public class MainActivity : Activity
     {
         // 重连前重新取票（v1.0.8）：换台代数守卫在宿主内，这里只管拿新鲜入口
         // ⑬联动：优先取本台会话实际使用的来源变体（健康表最近验证可用者）
-        _host.ReconnectRefresher = async () =>
+        // 1.0.12 发现 A·备援接入重连链路：换票委托分级切——第 1 次重连同源换票（普通卡顿秒级恢复）；
+        // 第 2 次起同源失败即走备援选择（健康表优先最近验证可用来源），备援成功记健康表，
+        // 恢复自动回主源（SourceFailover 现成机制复用）。
+        _host.ReconnectRefresher = async (attempt) =>
         {
             var src = _playSource ?? _current;
             if (src is null) return null;
-            var fresh = await _resolver.ResolvePlayUrlAsync(src, force: true);
+            ResolvedStream? fresh;
+            if (attempt >= 2)
+            {
+                CrashNet.Record($"[重连] 连续第 {attempt} 次换票，同源转备援选择（1.0.12 发现 A）");
+                fresh = await _resolver.ResolveWithFailoverAsync(src, force: true);
+                if (fresh != null)
+                    _precheck.ReportSourceResult(fresh.Channel, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // 备援成功记健康表
+            }
+            else
+            {
+                fresh = await _resolver.ResolvePlayUrlAsync(src, force: true);
+            }
             if (fresh is null) return null;
             var opts = new List<(string Key, string Value)>(fresh.Options);
             foreach (var (k, v) in LiveQuality.OptionsFor(EffectiveTier)) opts.Add((k, v)); // A⑩：带实际生效档
@@ -938,21 +953,24 @@ public class MainActivity : Activity
             }
             StyleDialogButton(clean, InkTranslucency.AccentFocusDrawable()); // 一键清理=朱砂（危险项）
             StyleDialogButton(close, InkTranslucency.FocusDrawable()); // 关闭=纸白
-            btns.AddView(clean, new LinearLayout.LayoutParams(0, -2, 1f));
-            btns.AddView(close, new LinearLayout.LayoutParams(0, -2, 1f));
+            // 1.0.12 UI①：按钮行固定底栏——固定行高常驻占位，不论日志多少行按钮始终在屏幕底部固定位置
+            int btnH = (int)(52 * Resources.DisplayMetrics.Density);
+            btns.AddView(clean, new LinearLayout.LayoutParams(0, btnH, 1f));
+            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
             box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
             var dlg = new AlertDialog.Builder(this)
                 .SetView(box)
                 .SetCancelable(true) // 返回键=关闭
                 .Create()!;
             _crashDialog = dlg;
-            dlg.Show();
-            // 全屏自管：窗底透明+内容铺满，露出的是播放画面，与列表页浮在画面上观感一致
+            // 1.0.12 UI①·窗口次序修正：全屏自管配置移到 Show 之前——先 Show 后 SetLayout 时内容按
+            // wrap_content 计量，scroll 权重在 wrap 父布局里失效（面板缩半屏、按钮随日志内容浮动的老病灶）
             var win = dlg.Window!;
             win.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
             win.SetLayout(-1, -1);
             win.SetFlags(WindowManagerFlags.LayoutInScreen, WindowManagerFlags.LayoutInScreen);
             box.LayoutParameters = new FrameLayout.LayoutParams(-1, -1); // box 显式铺满，不留 ROM 内边距
+            dlg.Show();
             close.RequestFocus(); // 默认焦点落「关闭」——防误清日志，与退出弹窗默认落「取消」同理
             dlg.SetOnDismissListener(new DismissActionPeer(() => _crashDialog = null));
         }
@@ -1105,14 +1123,18 @@ public class MainActivity : Activity
 
     private void OpenChannelList()
     {
+        bool freshOpen = !_listOpen; // 1.0.12 UI②：仅「关→开」的呼出才重定默认标签（抽屉内切标签/点标签不覆盖用户选择）
         _listOpen = true;
         _listPanel.RemoveAllViews();
         _listPanel.Visibility = ViewStates.Visible; // 呼出列表：盖板必须显式转可见（v1.0.3 漏了这步，真机按菜单无反应）
         SuppressEpgForDrawer(); // v22 第 13 项：抽屉打开先收节目单条（隐藏+停计时），叠字从根上清掉
+        // 1.0.12 UI②·默认定位当前台：已收藏→收藏；未收藏→按分类（央视/卫视/地方）；无归属→全部
+        if (freshOpen)
+            _drawerTab = DrawerSupport.DefaultTab(_current, n => _favorites.IsFavorite(n));
 
         // B 包第 12 项：抽屉头部——标题 + 台数 + 五标签行（当前标签朱砂底高亮，确认/左右键切换）
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        header.SetPadding(48, 40, 48, 8);
+        header.SetPadding(DrawerPad, 40, DrawerPad, 8);
         var title = new TextView(this) { Text = "道映·频道", TextSize = 24 };
         title.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(title);
@@ -1130,31 +1152,33 @@ public class MainActivity : Activity
         _statsInfo = new TextView(this) { Text = "画面信息检测中", TextSize = 17, Gravity = GravityFlags.CenterVertical };
         _statsInfo.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(_statsInfo);
-        _statsInfo.SetPadding(48, 4, 48, 4);
+        _statsInfo.SetPadding(DrawerPad, 4, DrawerPad, 4);
         _statsTier = new TextView(this) { Text = "画质:检测中", TextSize = 17, Gravity = GravityFlags.CenterVertical };
         _statsTier.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(_statsTier);
-        _statsTier.SetPadding(48, 4, 48, 4);
+        _statsTier.SetPadding(DrawerPad, 4, DrawerPad, 4);
         statsBlock.AddView(_statsInfo, new LinearLayout.LayoutParams(-1, lineH));
         statsBlock.AddView(_statsTier, new LinearLayout.LayoutParams(-1, lineH));
         _listPanel.AddView(statsBlock);
         RefreshStatsLine(); // 立即按实测值填充（2 秒节拍在跑，不等下一拍）
 
         // 五分类标签行（第二块，v22 第 9 项换位后随画面信息块之后）；
-        // v22 第 14 项：左右 padding 24→12、LeftMargin 12→8（五标签横向收窄约 1/3，「收藏」收回屏内），
-        // 与画面信息块之间间距拉开（块顶 padding 24）
+        // 1.0.12 UI③：行边距统一走 DrawerPad 基准，与页头/列表项同一水平对齐线；
+        // 首标签 LeftMargin=0（其余 8），标签行最左与页头文字严格对齐
         var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        tabRow.SetPadding(48, 24, 48, 12);
+        tabRow.SetPadding(DrawerPad, 24, DrawerPad, 12);
         _tabViews = new List<TextView>();
+        int tabIndex = 0;
         foreach (DrawerSupport.Tab t in Enum.GetValues(typeof(DrawerSupport.Tab)))
         {
             var tv = new TextView(this) { Text = DrawerSupport.Label(t), TextSize = 16 };
             tv.SetPadding(12, 10, 12, 10);
             InkTranslucency.ApplyReadabilityShadow(tv);
-            var lpTab = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = 8 };
+            var lpTab = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = tabIndex == 0 ? 0 : 8 };
             tabRow.AddView(tv, lpTab);
             _tabViews.Add(tv);
             tv.Click += (_, _) => { _drawerTab = t; OpenChannelList(); };
+            tabIndex++;
         }
         StyleTabs();
         _listPanel.AddView(tabRow);

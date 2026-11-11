@@ -336,3 +336,20 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
 - 签名：apksigner 补签，v1/v2/v3 全 true，SHA-256 c18030d3… 同源
 - 完整包：dist/道映-phone-v1.0.0-r2.zip（136MB：Signed APK+RELEASE-NOTES+源码 git archive+SHA256SUMS）；备份 /root/workspace/存档/TaoLive/20261111-0935-phone-r2/
 - 待真机：铺满效果（长屏横屏黑边应消失）、换装图标、点屏呼出复点
+
+## 10:15 手机版 r3 出包收口（本轮含 TaoPlay 残留全清令）
+- r3 全量落码（commit 2937c6e）：桌面名根治（Activity Label TaoPlay→道映）；残留授权/关于/恢复目录文案改道映；直播主线接线（LiveHlsRelay.cs + MainActivity.Live.cs：7源目录/取流failover/本地HLS中转/AiBufferPool过账/过热低电守卫/降档回写；播放页上台下台=直播上一台下一台；退出播放页 StopLivePlayback 统一收口；AI状态字直播分支=池实时账；主页新增「📺 直播频道」入口行）
+- TaoPlay 残留全清（10:08 老板令「除了AI增强部分、播放页部分按钮样式作参考外全部清理」）：类头注释×3、下载文件名前缀、MediaSession名、Wifi/Wake锁名×2、组播锁名、FrameStatsLine口径注释、恢复目录注释、TV侧注释×3——全部改道映/去TaoPlay字样；保留 AI 参考口径 4 处（TaoAIKernel、LiveQuality×2、csproj AI内核注释）+ 播放页按钮样式原样
+- 版本：versionCode 1 / versionName 1.0.0-r3；编译 0 错（修 Live.cs 4 类首编错：AiBufferPool缺using、AppSettings双套需全限定AllPlayer.Model、LinearLayout.Gravity只读改SetGravity、_livePanel类型FrameLayout→LinearLayout）；全测 428 PASS / 0 FAIL
+- 签名：apksigner 补签，v1/v2/v3 全 true，证书 SHA-256 c18030d3… 同源；aapt2 核 1/1.0.0-r3 / application-label「道映」
+- 交付：dist 仅 zip 安装包口径（10:04 令）——zip 内只装 Signed APK + SHA256SUMS（54.3MB：道映-phone-v1.0.0-r3.zip，APK sha256 5b424fae…）；备份 /root/workspace/存档/TaoLive/20261111-1015-phone-r3/
+- 如实口径：ts 直播分片走池账目+保险路径=直出（AiSegmentRunner 只吃 MP4 封装，加工插槽已留）；ReportPlayed=送达即近似已播
+- 待真机：直播频道列表（筛选/换台）、直播起播、AI池状态字、桌面名显示「道映」
+
+## v24 / 1.0.12 落码收口（11-11 11:40，子代理 daoying_1012_coding）
+- 七条拍板清单全部落码：修法 B（30 秒冷却→指数退避 2/4/8 分钟封顶 2 小时、成功即恢复）、备援接入重连链路（发现 A：换票委托分级切，第 1 次同源第 2 次起 ResolveWithFailoverAsync+健康表）、⑨B 清零窗 60 秒、Buffering 主信号+5 秒去重窗、90 秒介入上限 2 次、定格最后一帧+「正在换信号」角标、3 秒库存两档（BufferInventory，默认档=起播即 3 秒）、水位只涨不降（取消 HoldEdge 降档）、UI 三项（崩溃日志按钮固定底栏+窗口次序修正、Tab 改序 收藏插二+默认定位当前台、DrawerPad=48 对齐+首标签 LeftMargin=0）
+- 全测全绿：442 PASS / 0 FAIL（409 基线 + 33 新增断言）；编译零错误（警告全为既有基线）
+- 出包：dist/v24/TaoLive-32位.zip（内套 TaoLive-32位.apk+SHA256SUMS+.idsig），versionCode 24 / 1.0.12，v1/v2/v3 全签，证书 c18030d3… 同源
+- APK SHA-256: df84cce1d9a2d71dcd711d4216a021de748229d14fdbd6c98479555fc723fd70
+- 备份：/root/workspace/存档/TaoLive/20261111-1140-v1.0.12/
+- 遗留真机验证：定格保帧、静默重接黑帧（默认档已按拍板=起播即 3 秒；验证后 InventoryMode 一行可切）

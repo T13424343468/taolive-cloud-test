@@ -59,11 +59,19 @@ public class LiveVideoHost : IDisposable
     private bool _earlyRescueUsed;           // ⑨B本轮卡顿已提前介入（水位低先动，不等6秒）
     private int _earlyRescueStreak;          // v23 第 5 条：⑨B静默重取流连续介入次数（连续满 EarlyRescueEscalateAt 升级自救阶梯）
     private long _lastEarlyRescueMs;         // v23 第 5 条：最近一次⑨B介入时刻（持续走钟 EarlyRescueResetMs 才清计数，假活不清零）
+    private long _lastRescueTriggerMs;       // 1.0.12 修正①：最近一次自救触发时刻（Buffering 事件与看门狗 5 秒窗去重）
+    private long _rescueWindowStartMs;       // 1.0.12 修正⑤：90 秒介入节流窗口起点
+    private int _rescueWindowCount;          // 1.0.12 修正⑤：窗口内已介入次数（封顶 StallRescue.RescueCapPerWindow）
+    private bool _rescueThrottleLogged;      // 1.0.12 修正⑤：节流期只记一次日志，防刷屏
+    private int _refreshFailures;            // 1.0.12 发现 A：连续换票失败次数（第 2 次起换票委托切备援；成功即清零）
+    private bool _inventoryRefetch;          // 1.0.12 发现 B：静默重接补库存档——首帧后已补过一次 3 秒库存
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
-    private long _lastDeescalateMs;           // ⑩水位追回：降档节流（30 秒最多降一档）
     /// <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
     public long TotalMemBytes { get; set; }
+
+    /// <summary>1.0.12 发现 B：3 秒库存档位（默认「起播即 3 秒」拍板口径；真机验证静默重接保帧后可切补库存档）。</summary>
+    public BufferInventory.Mode InventoryMode { get; set; } = BufferInventory.Default;
 
     // ⑫画面信息行（第④项）：原/现帧率与分辨率快照。分辨率在起播解析媒体轨道取得（原=现，无缩放）；
     // 现帧率按展示帧差实测，测不出如实给「检测中」。
@@ -140,9 +148,11 @@ public class LiveVideoHost : IDisposable
     /// 重连前刷新入口（v1.0.8）：断流重连不再拿旧地址硬重试——直播源票据 5 分钟级过期，
     /// 旧 URL 重试一百次也是失败。UI 层挂入换票委托，重连前先取新鲜入口；取不到（源端
     /// 失效/冷却中）沿用原地址再试一次，重试次数照旧计。
-    /// ⑫/⑬联动：静默重取流走同一委托（消费来源级健康表优先取最近验证可用来源）。
+    /// 1.0.12 发现 A：参数=连续换票失败次数（1 起）——第 1 次重连同源换票（普通卡顿秒级恢复）；
+    /// 第 2 次起同源失败即走备援选择（健康表优先最近验证可用来源），备援成功记健康表，恢复自动回主源。
+    /// ⑫/⑬联动：静默重取流走同一委托。
     /// </summary>
-    public Func<Task<RefreshedStream?>>? ReconnectRefresher { get; set; }
+    public Func<int, Task<RefreshedStream?>>? ReconnectRefresher { get; set; }
 
     /// <summary>⑫②级降清晰度：是否还有可降档（UI 按 AI 增强档位判断）；无档可降时自救直接并入重取流。</summary>
     public Func<bool>? HasLowerQuality { get; set; }
@@ -189,7 +199,13 @@ public class LiveVideoHost : IDisposable
         _player = new MediaPlayer(_libVlc) { EnableHardwareDecoding = false };
         _videoCarrier!.MediaPlayer = _player;
         _player.EncounteredError += (_, _) => OnStreamError();
-        _player.Buffering += (_, e) => Volatile.Write(ref _bufferPct, e.Cache); // ⑩水位实测来源（0–100）
+        _player.Buffering += (_, e) =>
+        {
+            Volatile.Write(ref _bufferPct, e.Cache); // ⑩水位实测来源（0–100）
+            // 1.0.12 修正①·主信号：缓冲接近耗尽（VLC 实时回报）即时触发提前介入，
+            // 发现延迟从 2–6 秒压到 ≤1 秒；看门狗降级为兜底，双触发走 5 秒去重窗
+            if (e.Cache <= StallRescue.BufferingLowPct) OnBufferingLow();
+        };
         _player.Stopped += (_, _) => { /* 换台/重连的 Stop 有代数守卫，此处无需动作 */ };
         _player.TimeChanged += (_, _) =>
         {
@@ -198,6 +214,13 @@ public class LiveVideoHost : IDisposable
             if (_frameShown) return;
             _frameShown = true;
             _earlyRescueStreak = 0; // v23 第 5 条：首帧清零（真首帧才算，微动不清）
+            // 1.0.12 发现 B·静默重接补库存档：首帧出画后静默重接一次，把库存补到 3 秒（先开画后补库存，
+            // 换台首帧不慢）；默认「起播即 3 秒」档不需要这步
+            if (InventoryMode == BufferInventory.Mode.SilentRefetch && !_inventoryRefetch)
+            {
+                _inventoryRefetch = true;
+                _ = SilentRefreshAsync(announce: false);
+            }
             StartStatsRetry(); // ⑤首帧后再解析轨道：起播后每500ms重试至多10次，后台不阻塞
             FrameShown?.Invoke();
         };
@@ -240,27 +263,62 @@ public class LiveVideoHost : IDisposable
                 _earlyRescueStreak = 0; // 真恢复：连续介入计数清零
             // ⑨B缓冲水位低提前介入：时钟 4 秒没走就先静默重取流（先出画面口径），不等 6 秒卡死；
             // 每轮卡顿只提前介入一次，重置额度靠 TimeChanged 恢复；
-            // v23 第 5 条：连续介入满 EarlyRescueEscalateAt 次无效→不再静默重取流，升级走分级自救阶梯
+            // 1.0.12 修正①⑤：Buffering 事件（主信号）与看门狗（兜底）统一走介入入口——5 秒去重 + 90 秒窗上限 2 次
             if (age >= EarlyRescueMs && !_earlyRescueUsed && !_kernelRebuilding)
-            {
-                _earlyRescueUsed = true;
-                _earlyRescueStreak++;
-                _lastEarlyRescueMs = Environment.TickCount64;
-                try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入（连续第 {_earlyRescueStreak} 次）：时钟 {age}ms 未走，静默重取流"); } catch { }
-                if (_earlyRescueStreak >= StallRescue.EarlyRescueEscalateAt)
-                {
-                    _earlyRescueStreak = 0;
-                    try { CrashNet.Record($"[LiveVideoHost] ⑨B 连续 {StallRescue.EarlyRescueEscalateAt} 次介入无效，升级分级自救阶梯（v23 第 5 条）"); } catch { }
-                    HandleStall(); // 静默重取流→降清晰度→软重启内核，阶梯行进
-                    return;
-                }
-                _ = SilentRefreshAsync();
-            }
+                TriggerEarlyRescue($"看门狗兜底：时钟 {age}ms 未走");
             ObserveBufferWatermark(age); // ⑩水位实接：默认贴边、抖动攒水位、平稳追回，动作变化落日志
             return;
         }
         Volatile.Write(ref _lastTickMs, Environment.TickCount64); // 防连发：触发一次后重新计时
         HandleStall();                            // ⑫分级快速自救：快过断流重连阶梯
+    }
+
+    /// <summary>1.0.12 修正①·Buffering 主信号触发点：缓冲接近耗尽即时介入（VLC 内核线程回调，守卫后走统一入口）。</summary>
+    private void OnBufferingLow()
+    {
+        if (_userStopped || !_frameShown || _kernelRebuilding || _streamDead) return;
+        TriggerEarlyRescue("Buffering 缓冲空");
+    }
+
+    /// <summary>
+    /// ⑨B 提前介入统一入口（1.0.12 修正①⑤）：Buffering 事件为主信号、看门狗为兜底，
+    /// 同一次卡顿 5 秒去重窗内不重复计（阶梯不跳级）；90 秒窗口介入上限 2 次（限频代替拉黑，
+    /// 探活与重连共用同一请求预算口径，稳定性审查#1：限频不挡自救行进）；
+    /// 连续介入满 EarlyRescueEscalateAt 次仍升级分级自救阶梯。via=触发来源（打点用）。
+    /// </summary>
+    private void TriggerEarlyRescue(string via)
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastRescueTriggerMs < StallRescue.DedupWindowMs) return; // 修正①：同一卡顿双触发去重
+        _lastRescueTriggerMs = now;
+        if (now - _rescueWindowStartMs > StallRescue.RescueWindowMs)
+        {
+            _rescueWindowStartMs = now;
+            _rescueWindowCount = 0;
+            _rescueThrottleLogged = false;
+        }
+        if (_rescueWindowCount >= StallRescue.RescueCapPerWindow)
+        {
+            if (!_rescueThrottleLogged)
+            {
+                _rescueThrottleLogged = true;
+                try { CrashNet.Record($"[LiveVideoHost] ⑨B 介入节流：{StallRescue.RescueWindowMs / 1000} 秒内已达 {StallRescue.RescueCapPerWindow} 次上限，本窗口不再重取流（1.0.12 修正⑤：限频代替拉黑）"); } catch { }
+            }
+            return;
+        }
+        _rescueWindowCount++;
+        _earlyRescueUsed = true;
+        _earlyRescueStreak++;
+        _lastEarlyRescueMs = now;
+        try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入（{via}，连续第 {_earlyRescueStreak} 次）：静默重取流"); } catch { }
+        if (_earlyRescueStreak >= StallRescue.EarlyRescueEscalateAt)
+        {
+            _earlyRescueStreak = 0;
+            try { CrashNet.Record($"[LiveVideoHost] ⑨B 连续 {StallRescue.EarlyRescueEscalateAt} 次介入无效，升级分级自救阶梯"); } catch { }
+            HandleStall(); // 静默重取流→降清晰度→软重启内核，阶梯行进
+            return;
+        }
+        _ = SilentRefreshAsync(announce: true);
     }
 
     /// <summary>⑤首帧后轨道解析重试：每 500ms 一次至多 10 次（StatsLinePolicy 口径），成功即停。</summary>
@@ -298,7 +356,7 @@ public class LiveVideoHost : IDisposable
                 break;
             default:
                 if (action == StallRescueAction.LowerQuality) LowerQualityRequested?.Invoke();
-                _ = SilentRefreshAsync();
+                _ = SilentRefreshAsync(announce: true);
                 break;
         }
     }
@@ -328,41 +386,60 @@ public class LiveVideoHost : IDisposable
                     CrashNet.Record($"[BufferPolicy] 水位低攒缓冲：重连缓存目标 → {CacheLadder.At(_cachingIndex)}ms");
                 }
                 break;
-            case BufferAction.HoldEdge: // 平稳贴边：阶梯缓降回零延迟（30 秒最多一档，不闪不卡）
-                long now = Environment.TickCount64;
-                if (_cachingIndex > 0 && now - _lastDeescalateMs > 30_000)
-                {
-                    _lastDeescalateMs = now;
-                    _cachingIndex--;
-                    CrashNet.Record($"[BufferPolicy] 水位平稳贴边：重连缓存目标 → {CacheLadder.At(_cachingIndex)}ms（平滑追回直播边缘）");
-                }
+            case BufferAction.HoldEdge:
+                // 1.0.12 修正②：水位只涨不降——取消平稳贴边自动降档（固定 3 秒库存不被水位自适应自己降回去）；
+                // HoldEdge 仅记账（_lastBufferAction 在方法头已更新），不再动 _cachingIndex
                 break;
         }
     }
 
-    /// <summary>静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。</summary>
-    private async Task SilentRefreshAsync()
+    /// <summary>
+    /// 静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。
+    /// 1.0.12 定格口径：同台自救不铺清场遮罩——载体视图不销毁，VLC 停后 surface 天然保帧
+    /// （定格最后一帧，真机验证项）；announce=true 时亮「正在换信号」角标（信息条），补库存重接不声张。
+    /// </summary>
+    private async Task SilentRefreshAsync(bool announce = false)
     {
         long gen = _genCounter.NextGeneration(); // 新一代：旧重连/旧自救路径全部作废
+        if (announce) StatusChanged?.Invoke("正在换信号，请稍候…"); // 1.0.12 定格+角标：不黑屏不亮全屏牌
         if (ReconnectRefresher != null)
         {
-            try
+            var fresh = await RefreshStreamAsync("静默重取流");
+            if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 期间换台：作废
+            if (fresh?.Url != null && fresh.Url != _currentUrl)
             {
-                var fresh = await ReconnectRefresher();
-                if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 期间换台：作废
-                if (fresh?.Url != null && fresh.Url != _currentUrl)
-                {
-                    _currentUrl = fresh.Url;
-                    // A 类 P1·缺键才补：静默重取给出的选项并入现有表（同键以新值为准，未给的键沿用旧表），
-                    // 整表覆盖会丢掉 Play 时注入的 Referer/UA 请求头——第二实例被 CDN 拒的实锤根因
-                    if (fresh.Options != null)
-                        _currentOptions = MergeOptions(_currentOptions, fresh.Options);
-                }
+                _currentUrl = fresh.Url;
+                // A 类 P1·缺键才补：静默重取给出的选项并入现有表（同键以新值为准，未给的键沿用旧表），
+                // 整表覆盖会丢掉 Play 时注入的 Referer/UA 请求头——第二实例被 CDN 拒的实锤根因
+                if (fresh.Options != null)
+                    _currentOptions = MergeOptions(_currentOptions, fresh.Options);
             }
-            catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 静默重取流换源失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址快速重接）"); }
         }
         if (_userStopped || !_genCounter.IsCurrent(gen)) return;
         StartInternal(silent: true);
+    }
+
+    /// <summary>
+    /// 1.0.12 发现 A·换票统一走此入口：按连续失败次数分级——第 1 次同源换票（普通卡顿秒级恢复），
+    /// 第 2 次起委托收到 attempt≥2 即走备援选择（健康表优先）；成功清零、失败累加（异常同败）。
+    /// </summary>
+    private async Task<RefreshedStream?> RefreshStreamAsync(string via)
+    {
+        if (ReconnectRefresher == null) return null;
+        int attempt = Volatile.Read(ref _refreshFailures) + 1;
+        try
+        {
+            var fresh = await ReconnectRefresher(attempt);
+            if (fresh?.Url != null) Volatile.Write(ref _refreshFailures, 0);
+            else Interlocked.Increment(ref _refreshFailures);
+            return fresh;
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Increment(ref _refreshFailures);
+            CrashNet.Record($"[LiveVideoHost] {via}换票失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址重接）");
+            return null;
+        }
     }
 
     /// <summary>
@@ -380,6 +457,11 @@ public class LiveVideoHost : IDisposable
         _stallCount = 0;      // ⑫：换台自救行进清零，分级从静默重取流重新走
         _earlyRescueStreak = 0; // v23 第 5 条：换台清零连续介入计数
         _lastEarlyRescueMs = 0;
+        _lastRescueTriggerMs = 0;   // 1.0.12 修正①：去重窗随换台清零
+        _rescueWindowCount = 0;     // 1.0.12 修正⑤：介入节流窗口随换台重开（新台新预算）
+        _rescueThrottleLogged = false;
+        _refreshFailures = 0;       // 1.0.12 发现 A：连续换票失败计数随换台清零
+        _inventoryRefetch = false;  // 1.0.12 发现 B：补库存标记随换台重置
         _measuredFps = null;  // ④：换台重新实测
         _fpsLastDisplayed = 0;
         _fpsLastMs = 0;
@@ -409,8 +491,13 @@ public class LiveVideoHost : IDisposable
         _currentMedia?.Dispose(); // ④旧媒体统计源释放
         var media = new Media(_libVlc!, new Uri(_currentUrl));
         _currentMedia = media; // ④保留引用：Media.Statistics 提供帧统计
-        // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）
-        var caching = CacheLadder.At(_cachingIndex);
+        // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）；
+        // 1.0.12 发现 B：3 秒库存两档——默认「起播即 3 秒」（库存档兜底，修正②：重连缓存递增口径并入固定库存档，
+        // 不被水位自适应降回去）；补库存档先开画（修正④：换台口径=先开画后补库存），首帧后静默重接补到 3 秒
+        int ladder = CacheLadder.At(_cachingIndex);
+        int caching = (_inventoryRefetch || InventoryMode == BufferInventory.Mode.StartFull)
+            ? Math.Max(BufferInventory.TargetMs, ladder)
+            : ladder;
         media.AddOption($":network-caching={caching}");
         media.AddOption($":live-caching={Math.Max(1200, caching)}");
         foreach (var opt in _currentOptions) media.AddOption(opt);
@@ -460,22 +547,16 @@ public class LiveVideoHost : IDisposable
         {
             timer.Dispose();
             if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 代数守卫：换台后旧重连作废
-            // 重连前重新取票（v1.0.8）：过期票据重试必败，先换新鲜入口再起播
-            if (ReconnectRefresher != null)
+            // 重连前重新取票（v1.0.8）：过期票据重试必败，先换新鲜入口再起播；
+            // 1.0.12 发现 A：走统一换票入口按连续失败分级——第 1 次同源、第 2 次起委托切备援
+            var fresh = await RefreshStreamAsync("重连");
+            if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 换票期间换台
+            if (fresh?.Url != null && fresh.Url != _currentUrl)
             {
-                try
-                {
-                    var fresh = await ReconnectRefresher();
-                    if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 换票期间换台
-                    if (fresh?.Url != null && fresh.Url != _currentUrl)
-                    {
-                        _currentUrl = fresh.Url;
-                        // A 类 P1·缺键才补：同上，重连换票绝不整表覆盖丢请求头
-                        if (fresh.Options != null)
-                            _currentOptions = MergeOptions(_currentOptions, fresh.Options);
-                    }
-                }
-                catch (Exception ex) { CrashNet.Record($"[LiveVideoHost] 重连换票失败（{FailureKind(ex)}）：{ex.Message}（沿用原地址重试）"); }
+                _currentUrl = fresh.Url;
+                // A 类 P1·缺键才补：同上，重连换票绝不整表覆盖丢请求头
+                if (fresh.Options != null)
+                    _currentOptions = MergeOptions(_currentOptions, fresh.Options);
             }
             StartInternal();
         };

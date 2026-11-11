@@ -28,8 +28,22 @@ public static class StallRescue
     public const int EarlyRescueEscalateAt = 3;
 
     /// <summary>介入计数清零窗口（毫秒）：时钟恢复（持续走钟）满此时长才清连续介入计数——
-    /// 时钟微动的「假活」不清零，防止循环静默重取流永远升不了级。</summary>
-    public const int EarlyRescueResetMs = 30_000;
+    /// 时钟微动的「假活」不清零，防止循环静默重取流永远升不了级。
+    /// 1.0.12 拍板稿第 5 条：30 秒 → 60 秒（出过首帧后 60 秒内再卡不清计数，自救能真正走到重启内核级）。</summary>
+    public const int EarlyRescueResetMs = 60_000;
+
+    /// <summary>1.0.12 修正①·双触发去重窗（毫秒）：Buffering 事件（主信号）与看门狗（兜底）会在同一次卡顿上
+    /// 双双触发，窗内不重复计（_stallCount/阶梯不跳级）。</summary>
+    public const int DedupWindowMs = 5000;
+
+    /// <summary>1.0.12 修正⑤·介入节流窗口（毫秒）：窗口内介入次数封顶（90 秒内介入上限 2 次，限频代替拉黑）。</summary>
+    public const int RescueWindowMs = 90_000;
+
+    /// <summary>1.0.12 修正⑤·节流窗口内介入次数上限（探活与重连共用同一请求预算口径）。</summary>
+    public const int RescueCapPerWindow = 2;
+
+    /// <summary>1.0.12 修正①·Buffering 主信号触发线（缓存百分比低于该值视为缓冲接近耗尽，即时介入不等看门狗巡检）。</summary>
+    public const float BufferingLowPct = 5f;
 
     /// <summary>
     /// stallIndex：本台会话内第几次卡死（0 起）。hasLowerQuality：是否还有可降档。

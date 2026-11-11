@@ -10,8 +10,8 @@ namespace TaoLive.BLL;
 /// </summary>
 public static class DrawerSupport
 {
-    /// <summary>五标签（B 包定稿：全部/央视/卫视/地方台/收藏）。</summary>
-    public enum Tab { All, Cctv, Satellite, Local, Favorite }
+    /// <summary>五标签（1.0.12 UI② 定稿：全部/收藏/央视/卫视/地方台——收藏插第二位，其余不变）。</summary>
+    public enum Tab { All, Favorite, Cctv, Satellite, Local }
 
     public static string Label(Tab t) => t switch
     {
@@ -20,13 +20,31 @@ public static class DrawerSupport
         _ => "",
     };
 
-    /// <summary>标签循环（左右键切标签）：顺序 全部→央视→卫视→地方台→收藏→全部。</summary>
+    /// <summary>标签循环（左右键切标签）：顺序 全部→收藏→央视→卫视→地方台→全部（1.0.12 UI② 改序后自动生效）。</summary>
     public static Tab NextTab(Tab t, bool rightward)
     {
         var all = (Tab[])Enum.GetValues(typeof(Tab));
         int i = Array.IndexOf(all, t);
         i = (i + (rightward ? 1 : all.Length - 1)) % all.Length;
         return all[i];
+    }
+
+    /// <summary>
+    /// 1.0.12 UI②·打开列表页默认定位（纯函数可测）：当前台已收藏 → 收藏；
+    /// 未收藏 → 按分类落央视（含 CGTN/专项，v22 第 7 项口径）/卫视（省级）/地方台（城市/自有源）；
+    /// 未收藏且无归属 → 全部。
+    /// </summary>
+    public static Tab DefaultTab(Model.Channel? current, Func<int, bool> isFavorite)
+    {
+        if (current is null) return Tab.All;
+        if (isFavorite(current.Number)) return Tab.Favorite;
+        return current.Category switch
+        {
+            Model.ChannelCategory.Cctv or Model.ChannelCategory.Cgtn or Model.ChannelCategory.Special => Tab.Cctv,
+            Model.ChannelCategory.Provincial => Tab.Satellite,
+            Model.ChannelCategory.City or Model.ChannelCategory.UserSource => Tab.Local,
+            _ => Tab.All,
+        };
     }
 
     /// <summary>频道行：归属台；分组行：标题；空态行：无频道时的提示文案（不占焦点）。</summary>

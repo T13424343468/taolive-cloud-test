@@ -82,9 +82,17 @@ Check(entries[0].GroupHint == "央视" && entries[0].Name == "CCTV-1", "m3u 分�
     Check(svc.TryGet("c1", t0 + 240, out var hit) && hit == "http://x/c1.m3u8", "票据缓存窗口内命中");
     Check(!svc.TryGet("c1", t0 + 301, out _), "票据缓存窗口过期");
     var now = DateTimeOffset.FromUnixTimeSeconds(t0).DateTime;
-    svc.MarkCooldown("c2", now.AddSeconds(30));
-    Check(svc.InCooldown("c2", now.AddSeconds(29)), "403 冷却中");
-    Check(!svc.InCooldown("c2", now.AddSeconds(31)), "冷却 30 秒到期放行");
+    // 1.0.12 修法 B：403 冷却改指数退避账（2/4/8 分钟 ×2 步进，封顶 2 小时），替换固定 30 秒
+    svc.MarkCooldown("c2", now); // 首败：退避 2 分钟
+    Check(svc.InCooldown("c2", now.AddMinutes(1)), "1.0.12修法B·403退避期内拒绝取票");
+    Check(!svc.InCooldown("c2", now.AddMinutes(2).AddSeconds(1)), "1.0.12修法B·首败退避约2分钟到期放行（30秒固定冷却作废）");
+    svc.MarkCooldown("c2", now); // 连败第 2 次：退避 4 分钟
+    Check(svc.InCooldown("c2", now.AddMinutes(3)) && !svc.InCooldown("c2", now.AddMinutes(4).AddSeconds(1)), "1.0.12修法B·连败退避加深至4分钟");
+    svc.MarkCooldown("c2", now); // 连败第 3 次：退避 8 分钟
+    Check(svc.InCooldown("c2", now.AddMinutes(5)) && !svc.InCooldown("c2", now.AddMinutes(8).AddSeconds(1)), "1.0.12修法B·三连败退避8分钟（2/4/8 口径）");
+    svc.MarkFetched("c2", t0, "http://x/c2.m3u8"); // 取票成功=全额恢复
+    Check(!svc.InCooldown("c2", now.AddSeconds(1)), "1.0.12修法B·取票成功退避全额恢复（口子开自动切回）");
+    Check(YspTicketService.CooldownBase == TimeSpan.FromMinutes(2) && YspTicketService.CooldownMax == TimeSpan.FromHours(2), "1.0.12修法B·退避基值2分钟封顶2小时（口径固化）");
 }
 // 6.2 浙江新蓝网 auth_key：与摸底实测向量对拍（2026-11-07 实测 200）
 {
@@ -865,8 +873,20 @@ Check(ListFoldController.ToggleLabel(0) == "全部收起" && ListFoldController.
     "v23①折叠交互整行退场：ListFoldController 纯逻辑保留（UI 行已清，列表默认铺开）");
 Check(StallRescue.EarlyRescueEscalateAt == 3,
     "v23⑤⑨B 静默重取流连续介入升级线=3 次（时钟微动假活不再无限循环介入）");
-Check(StallRescue.EarlyRescueResetMs == 30_000,
-    "v23⑤介入计数清零窗口=30 秒持续走钟（微动不清零，升级阶梯不被绕过）");
+Check(StallRescue.EarlyRescueResetMs == 60_000,
+    "1.0.12·出过首帧后 60 秒持续走钟才清介入计数（30 秒窗口作废，自救能真正走到重启内核级）");
+Check(StallRescue.DedupWindowMs == 5000,
+    "1.0.12修正①·Buffering 主信号与看门狗 5 秒去重窗（同一次卡顿双触发不重复计，阶梯不跳级）");
+Check(StallRescue.RescueWindowMs == 90_000 && StallRescue.RescueCapPerWindow == 2,
+    "1.0.12修正⑤·90 秒窗口介入上限 2 次（限频代替拉黑，探活与重连共用请求预算口径）");
+Check(StallRescue.BufferingLowPct == 5f,
+    "1.0.12修正①·Buffering 主信号触发线（缓冲接近耗尽即时介入，发现延迟 2–6 秒压到 ≤1 秒）");
+Check(BufferInventory.TargetMs == 3000 && BufferInventory.Default == BufferInventory.Mode.StartFull,
+    "1.0.12发现B·3 秒库存两档：默认档=起播即 3 秒（拍板口径，真机验证后可切）");
+Check(BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 1200) == 3000
+    && BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 4000) == 4000
+    && BufferInventory.StartCachingMs(BufferInventory.Mode.SilentRefetch, 1200) == 1200,
+    "1.0.12发现B·起播缓存口径：库存档兜底不低3秒/阶梯高者保留；补库存档先开画（修正②④并入）");
 Check(ResumeNetWaitPolicy.StepMs == 500 && ResumeNetWaitPolicy.MaxSteps == 6,
     "v23④回前台网络就绪等待步进 500ms×6≈3 秒封顶（常数收口可调）");
 Check(ResumeNetWaitPolicy.ShouldWait(0) && !ResumeNetWaitPolicy.ShouldWait(ResumeNetWaitPolicy.MaxSteps),
@@ -894,11 +914,26 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     var favOrder = new List<int> { 3, 2 };            // 收藏：城市台在前
     static ChannelHealth Dead(Channel c) => c.Unavailable ? ChannelHealth.Dead : ChannelHealth.Alive;
 
-    // 标签与循环
+    // 标签与循环（1.0.12 UI② 改序：全部/收藏/央视/卫视/地方台——收藏插第二位）
     Check(DrawerSupport.Label(DrawerSupport.Tab.Cctv) == "央视", "B·五标签文案（央视）");
-    Check(DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, true) == DrawerSupport.Tab.All
-        && DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, false) == DrawerSupport.Tab.Local,
-        "B·标签循环：收藏→全部、收藏反向→地方台");
+    Check(((DrawerSupport.Tab[])Enum.GetValues(typeof(DrawerSupport.Tab)))
+        .Select(t => DrawerSupport.Label(t)).SequenceEqual(new[] { "全部", "收藏", "央视", "卫视", "地方台" }),
+        "1.0.12 UI②·标签顺序=全部/收藏/央视/卫视/地方台（收藏插第二位）");
+    Check(DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, true) == DrawerSupport.Tab.Cctv
+        && DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, false) == DrawerSupport.Tab.All,
+        "1.0.12 UI②·标签循环随改序自动生效：收藏→央视、收藏反向→全部");
+    Check(DrawerSupport.NextTab(DrawerSupport.Tab.All, true) == DrawerSupport.Tab.Favorite
+        && DrawerSupport.NextTab(DrawerSupport.Tab.Local, true) == DrawerSupport.Tab.All,
+        "1.0.12 UI②·首尾循环：全部→收藏、地方台→全部");
+    // 1.0.12 UI②·默认定位当前台：已收藏→收藏；未收藏按分类；无归属→全部
+    var curFav = chans.First(c => c.Number == 2); // 省台已收藏
+    var curCctv = chans.First(c => c.Number == 1); // 央视未收藏
+    Check(DrawerSupport.DefaultTab(curFav, n => favOrder.Contains(n)) == DrawerSupport.Tab.Favorite,
+        "1.0.12 UI②·当前台已收藏默认定位「收藏」");
+    Check(DrawerSupport.DefaultTab(curCctv, n => favOrder.Contains(n)) == DrawerSupport.Tab.Cctv,
+        "1.0.12 UI②·未收藏按分类定位（央视）");
+    Check(DrawerSupport.DefaultTab(null, n => favOrder.Contains(n)) == DrawerSupport.Tab.All,
+        "1.0.12 UI②·无当前台默认「全部」");
 
     // 全部标签：收藏成组置顶（按收藏序）+ 无信号分组置底（v22 第 7/15 项：画质档位行撤出列表页）
     var all = DrawerSupport.BuildRows(DrawerSupport.Tab.All, chans, favOrder, Dead);

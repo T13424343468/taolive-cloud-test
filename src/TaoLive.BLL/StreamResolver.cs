@@ -21,7 +21,7 @@ public class ResolvedStream
 /// - 取票型源（央视频/浙江/贵州/上海/内蒙古）在此现场换票成可播 m3u8，入口 URL 不直接给播放器；
 /// - 直连型（西安）与自签型（江苏，播放时重签 180s 防盗链）在此统一收口；
 /// - 换票结果进短效缓存：切台/预连接命中缓存即起播（预连接缓存窗口见各源标注）；
-/// - 央视频票据 5 分钟窗口 + 403 冷却 30 秒（YspTicketService）；其余源缓存 60 秒。
+/// - 央视频票据 5 分钟窗口 + 403 指数退避账 2/4/8 分钟（1.0.12 修法 B，YspTicketService）；其余源缓存 60 秒。
 /// </summary>
 public class StreamResolver
 {
@@ -167,7 +167,7 @@ public class StreamResolver
             var body = await HttpGetStringAsync(ticketUrl, null, YspTicketService.ClientUserAgent);
             if (body is null)
             {
-                _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow.AddSeconds(YspTicketService.Cooldown.TotalSeconds));
+                _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow); // 1.0.12 修法 B：指数退避账（2/4/8 分钟）替换 30 秒固定冷却
                 return null;
             }
             var (iretcode, playurl) = ParseYspResponse(body);
@@ -176,7 +176,7 @@ public class StreamResolver
                 _ysp.MarkFetched(ch.EpgKey, now, playurl);
                 return playurl;
             }
-            _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow.AddSeconds(YspTicketService.Cooldown.TotalSeconds));
+            _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow); // 1.0.12 修法 B：连败退避加深（×2 步进封顶 2 小时）
             return null;
         }
         finally { _gate.Release(); }

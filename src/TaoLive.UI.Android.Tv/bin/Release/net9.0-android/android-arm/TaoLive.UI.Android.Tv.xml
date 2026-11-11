@@ -332,7 +332,7 @@
         </member>
         <member name="T:TaoLive.UI.Android.Tv.Shared.IVideoCarrierView">
             <summary>
-            道映直播播放宿主（不复用 TaoPlay 全量播放壳，直播专用裁剪版）：
+            道映直播播放宿主（直播专用裁剪版，不接全量播放壳）：
             - 低延迟直播参数（network-caching 1200ms 起，重连时递增 2500→4000→6000）；
             - 卡流看门狗（v1.0.8）：直播流停止推进时 VLC 不报错，看门狗 2 秒巡检一次，
               播放时钟 6 秒无推进即按断流重连（2/4/6 秒梯度），绝不让画面冻死；
@@ -351,6 +351,9 @@
         </member>
         <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.TotalMemBytes">
             <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
+        </member>
+        <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.InventoryMode">
+            <summary>1.0.12 发现 B：3 秒库存档位（默认「起播即 3 秒」拍板口径；真机验证静默重接保帧后可切补库存档）。</summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SnapshotStats">
             <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
@@ -375,7 +378,9 @@
             重连前刷新入口（v1.0.8）：断流重连不再拿旧地址硬重试——直播源票据 5 分钟级过期，
             旧 URL 重试一百次也是失败。UI 层挂入换票委托，重连前先取新鲜入口；取不到（源端
             失效/冷却中）沿用原地址再试一次，重试次数照旧计。
-            ⑫/⑬联动：静默重取流走同一委托（消费来源级健康表优先取最近验证可用来源）。
+            1.0.12 发现 A：参数=连续换票失败次数（1 起）——第 1 次重连同源换票（普通卡顿秒级恢复）；
+            第 2 次起同源失败即走备援选择（健康表优先最近验证可用来源），备援成功记健康表，恢复自动回主源。
+            ⑫/⑬联动：静默重取流走同一委托。
             </summary>
         </member>
         <member name="P:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.HasLowerQuality">
@@ -401,6 +406,17 @@
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.RestartKernel">
             <summary>⑫③软重启播放内核：重建设播环境（不动系统），同流继续。互斥防连环重启。</summary>
         </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.OnBufferingLow">
+            <summary>1.0.12 修正①·Buffering 主信号触发点：缓冲接近耗尽即时介入（VLC 内核线程回调，守卫后走统一入口）。</summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.TriggerEarlyRescue(System.String)">
+            <summary>
+            ⑨B 提前介入统一入口（1.0.12 修正①⑤）：Buffering 事件为主信号、看门狗为兜底，
+            同一次卡顿 5 秒去重窗内不重复计（阶梯不跳级）；90 秒窗口介入上限 2 次（限频代替拉黑，
+            探活与重连共用同一请求预算口径，稳定性审查#1：限频不挡自救行进）；
+            连续介入满 EarlyRescueEscalateAt 次仍升级分级自救阶梯。via=触发来源（打点用）。
+            </summary>
+        </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.StartStatsRetry">
             <summary>⑤首帧后轨道解析重试：每 500ms 一次至多 10 次（StatsLinePolicy 口径），成功即停。</summary>
         </member>
@@ -418,8 +434,18 @@
             缓冲池大小，不打断当前画面；变化才落日志（CrashNet 通道），界面不显示延迟。
             </summary>
         </member>
-        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SilentRefreshAsync">
-            <summary>静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。</summary>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.SilentRefreshAsync(System.Boolean)">
+            <summary>
+            静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。
+            1.0.12 定格口径：同台自救不铺清场遮罩——载体视图不销毁，VLC 停后 surface 天然保帧
+            （定格最后一帧，真机验证项）；announce=true 时亮「正在换信号」角标（信息条），补库存重接不声张。
+            </summary>
+        </member>
+        <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.RefreshStreamAsync(System.String)">
+            <summary>
+            1.0.12 发现 A·换票统一走此入口：按连续失败次数分级——第 1 次同源换票（普通卡顿秒级恢复），
+            第 2 次起委托收到 attempt≥2 即走备援选择（健康表优先）；成功清零、失败累加（异常同败）。
+            </summary>
         </member>
         <member name="M:TaoLive.UI.Android.Tv.Shared.LiveVideoHost.Play(System.String,System.Collections.Generic.IReadOnlyList{System.ValueTuple{System.String,System.String}})">
             <summary>

@@ -70,7 +70,7 @@ public static class FrameStatsLine
         return same ? $"帧率:{origFps:0}fps" : $"帧率:{origFps:0}fps>{curFps:0}fps";
     }
 
-    /// <summary>分辨率档位（按宽度向上归档，与 TaoPlay 口径一致）：≤1280=720P、≤1920=1080P、≤2560=2K、≤4096=4K、其余 8K。</summary>
+    /// <summary>分辨率档位（按宽度向上归档）：≤1280=720P、≤1920=1080P、≤2560=2K、≤4096=4K、其余 8K。</summary>
     public static string ResBucket(int w)
     {
         if (w <= 0) return "";

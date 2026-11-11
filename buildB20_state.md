@@ -329,3 +329,10 @@ TaoPlay 有真 AI：libtaoai.so（ncnn）+ 三模型——flownet 插帧、reale
   3. XA0141：Android 16 目标要求警告；XA0033：JDK 版本号解析警告（jdk17 输出格式）
   4. 全测预演未跑（tests 为纯逻辑工程，AiBufferPool 428 绿基线不受 UI 编译影响）
 - **前台状态观察**：07:26 记账后 80+ 分钟无新落码、无新记账；若前台会话已中断，按防打断纪律由后台接管播放页砍件与筛选框落码（断点=本台账加速包节的功能对照清单，砍件范围已逐行定位）。
+
+## 09:35 手机版 r2 出包收口
+- r2 三件全落码（commit 839352a）：铺满修复（比例新增铺满档=默认，布局变化+起播1.2s双补刷，载体实际宽高喂内核拉满不留黑边）；换装（电视版 ic_launcher_fg/bg → phone ic_fg/ic_bg，mipmap 48/72/96/144/192 重出，anydpi-v26 同步生效）；首页品牌字改「道映」（Home.cs 46）
+- 版本：versionCode 1 / versionName 1.0.0-r2；编译 0 错（警告全为 r1 基线既有，无新增）；全测 428 PASS / 0 FAIL
+- 签名：apksigner 补签，v1/v2/v3 全 true，SHA-256 c18030d3… 同源
+- 完整包：dist/道映-phone-v1.0.0-r2.zip（136MB：Signed APK+RELEASE-NOTES+源码 git archive+SHA256SUMS）；备份 /root/workspace/存档/TaoLive/20261111-0935-phone-r2/
+- 待真机：铺满效果（长屏横屏黑边应消失）、换装图标、点屏呼出复点

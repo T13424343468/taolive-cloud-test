@@ -1,9 +1,9 @@
 // 【道映适配说明 2026-11-07】
-// 本文件自 TaoPlay（AllPlayer）同源复制，作为播放壳改造起点：
+// 本文件自 AllPlayer 同源复制，作为播放壳改造起点：
 // 1) 命名空间 AllPlayer.* → TaoLive.*（Model/BLL 对应替换）；
 // 2) 裁剪直播用不到的能力（磁力边下边播、字幕定位、密码箱、本地流服务器）；
 // 3) 直播参数：network-caching 低延迟档、断流重连 3 次、自动降清晰度档；
-// 4) AI 画质层（TaoAI）后续按 TaoPlay 同源接入。
+// 4) AI 画质层（TaoAI）后续按同源接入。
 // 在完成 1)~2) 前不参与编译（csproj 以注释状态管理，见 README）。
 using System;
 using System.Collections.Generic;

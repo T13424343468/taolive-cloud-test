@@ -14,7 +14,7 @@ using AllPlayer.UI.Android.Shared;
 
 namespace TaoLive.UI.Android.Phone
 {
-    /// <summary>TaoPlay 手机版 — 播放页 (partial): 手势 / 控制条 / 锁定 / 画中画 / 倍速 / 投屏 / 字幕音轨。</summary>
+    /// <summary>道映手机版 — 播放页 (partial): 手势 / 控制条 / 锁定 / 画中画 / 倍速 / 投屏 / 字幕音轨。</summary>
     public partial class MainActivity
     {
         // v3.22.0 方案A: 画面载体抽象化——默认自写纹理视图 (退后台不回收画面层),
@@ -203,10 +203,10 @@ namespace TaoLive.UI.Android.Phone
                 lp.RightMargin = TaoUi.Dp(this, 6);
                 bottomRow.AddView(b, lp);
             }
-            Mk(IconKind.Prev, () => _host.PlayPrevious());
+            Mk(IconKind.Prev, () => { if (_isLive) LiveSwitch(-1); else _host.PlayPrevious(); });
             _pauseBtn = TaoUi.MakeGlassBtn(this, IconKind.Pause, 20, TogglePauseBtn);
             bottomRow.AddView(_pauseBtn, new LinearLayout.LayoutParams(TaoUi.Dp(this, 40), TaoUi.Dp(this, 40)) { LeftMargin = TaoUi.Dp(this, 10), RightMargin = TaoUi.Dp(this, 10) });
-            Mk(IconKind.Next, () => _host.PlayNext());
+            Mk(IconKind.Next, () => { if (_isLive) LiveSwitch(1); else _host.PlayNext(); });
             // v3.20.7 状态字不在画面中间晃, 紧挨左侧三个按钮靠左; 上下两行小字垂直居中
             var midStatus = new LinearLayout(this) { Orientation = Orientation.Vertical };
             midStatus.SetGravity(GravityFlags.CenterVertical | GravityFlags.Left);
@@ -610,6 +610,7 @@ namespace TaoLive.UI.Android.Phone
                 RestoreSystemBars();   // v3.25.17: 回主页还原系统栏常驻
                 if (_locked) { _locked = false; if (_unlockBtn != null) _unlockBtn.Visibility = ViewStates.Gone; }
                 // 离开播放页必须收尾: 存进度 + 停播 (任何路径回列表都不能留着声音)
+                if (_isLive) StopLivePlayback();   // r3: 直播态统一收口 (relay/池/态位), 覆盖返回钮与全部回主页路径
                 SaveTsIfRecording();
                 _host.Stop();
                 StartScan(); // 回主页刷新一遍
@@ -1110,6 +1111,12 @@ namespace TaoLive.UI.Android.Phone
         internal void UpdateAiStatusText()
         {
             if (_aiStatusFps == null || _aiStatusRes == null) return;
+            if (_isLive)   // r3: 直播态显示 AI 池实时账 (初始缓冲/落后/直出), 不走文件增强文案
+            {
+                _aiStatusFps.Text = LivePoolStatusText();
+                _aiStatusRes.Text = "";
+                return;
+            }
             var s = AppSettings.Current;
             string? cur = _host.CurrentPath;
             bool isMp4 = false, magnet = false;
@@ -1387,7 +1394,7 @@ namespace TaoLive.UI.Android.Phone
             {
                 if (_mcastLock != null) return;
                 var wifi = (global::Android.Net.Wifi.WifiManager)GetSystemService(WifiService)!;
-                var lck = wifi.CreateMulticastLock("taoplay-cast");
+                var lck = wifi.CreateMulticastLock("道映-cast");
                 if (lck == null) return;
                 lck.SetReferenceCounted(false);
                 lck.Acquire();

@@ -8,7 +8,7 @@ using LibVLCSharp.Shared;
 namespace TaoLive.UI.Android.Tv.Shared;
 
 /// <summary>
-/// 道映直播播放宿主（不复用 TaoPlay 全量播放壳，直播专用裁剪版）：
+/// 道映直播播放宿主（直播专用裁剪版，不接全量播放壳）：
 /// - 低延迟直播参数（network-caching 1200ms 起，重连时递增 2500→4000→6000）；
 /// - 卡流看门狗（v1.0.8）：直播流停止推进时 VLC 不报错，看门狗 2 秒巡检一次，
 ///   播放时钟 6 秒无推进即按断流重连（2/4/6 秒梯度），绝不让画面冻死；

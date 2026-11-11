@@ -19,14 +19,14 @@ using Uri = Android.Net.Uri;
 namespace TaoLive.UI.Android.Phone
 {
     /// <summary>
-    /// TaoPlay 手机版 v3.0 重做版 — 核心 (partial, 主页见 MainActivity.Home, 播放页见 MainActivity.Player)。
+    /// 道映手机版 v3.0 重做版 — 核心 (partial, 主页见 MainActivity.Home, 播放页见 MainActivity.Player)。
     /// 设计约定 (Tao 系最新标准):
     /// · 启动即钉基调: 先按设置应用三象主题 (0水墨/1天灰/2墨夜), 再建界面;
     /// · 颜色只出自 TaoPalette 事实源, 界面层零写死色值;
     /// · 耗时操作 (扫描/删除/设置落盘) 全部后台线程, 主线程只碰内存与界面;
     /// · 按钮纯图标加大、整格命中; 文案说人话: 报错给可执行指引、状态如实。
     /// </summary>
-    [Activity(Label = "TaoPlay", MainLauncher = true, Exported = true,
+    [Activity(Label = "道映", MainLauncher = true, Exported = true,
         LaunchMode = LaunchMode.SingleTask,
         ScreenOrientation = ScreenOrientation.Portrait,
         Theme = "@android:style/Theme.Material.NoActionBar",
@@ -177,6 +177,7 @@ namespace TaoLive.UI.Android.Phone
 
             // v3.18.5: AI 装配挪到启动最前面(后台线程, 不挡界面)——模型越早装好, 基准越早可用
             InitAiEnhance();
+            InitLive();   // r3 直播主线: 台单/取流/缓冲池家底后台装配
 
             // 启动即钉基调: 界面构建之前先落主题, 深色系统的机器也不许开局错底
             TaoTheme.ApplyFromSettings();
@@ -239,6 +240,13 @@ namespace TaoLive.UI.Android.Phone
             // 换集/切视频时同步刷新标题 (含自动连播和循环重播)
             _host.CurrentPathChanged += p => RunOnUiThread(() =>
             {
+                // r3 直播态: 标题挂台名, 不走文件增强管线 (分片账目走缓冲池)
+                if (_isLive && _liveCurrent != null)
+                {
+                    _title.Text = _liveCurrent.Name;
+                    UpdateAiStatusText();
+                    return;
+                }
                 var name = p == null ? "" : System.IO.Path.GetFileName(p);
                 _title.Text = name;
                 AiSegmentRunner.InvalidateSpec();   // v3.20.9: 新片的增强规格还没跑出来, 旧片规格不作数
@@ -484,7 +492,7 @@ namespace TaoLive.UI.Android.Phone
                                 StartActivity(new Intent(global::Android.Provider.Settings.ActionApplicationDetailsSettings,
                                     Uri.Parse("package:" + PackageName)));
                             }
-                            catch { TaoUi.Toast(this, "没能打开设置, 请手动到系统设置里给 TaoPlay 授权"); }
+                            catch { TaoUi.Toast(this, "没能打开设置, 请手动到系统设置里给道映授权"); }
                         }, false),
                     });
             });
@@ -516,14 +524,14 @@ namespace TaoLive.UI.Android.Phone
                 if (need && _dlWifiLock == null)
                 {
                     var wm = (global::Android.Net.Wifi.WifiManager)GetSystemService(global::Android.Content.Context.WifiService)!;
-                    var wifiNew = wm.CreateWifiLock(global::Android.Net.WifiMode.FullHighPerf, "TaoPlay:download")!;
+                    var wifiNew = wm.CreateWifiLock(global::Android.Net.WifiMode.FullHighPerf, "道映:download")!;
                     wifiNew.SetReferenceCounted(false);
                     _dlWifiLock = wifiNew;
                 }
                 if (need && _dlWakeLock == null)
                 {
                     var pm = (global::Android.OS.PowerManager)GetSystemService(global::Android.Content.Context.PowerService)!;
-                    var wakeNew = pm.NewWakeLock(global::Android.OS.WakeLockFlags.Partial, "TaoPlay:download")!;
+                    var wakeNew = pm.NewWakeLock(global::Android.OS.WakeLockFlags.Partial, "道映:download")!;
                     wakeNew.SetReferenceCounted(false);
                     _dlWakeLock = wakeNew;
                 }
@@ -652,7 +660,7 @@ namespace TaoLive.UI.Android.Phone
         // ================= 扫描 =================
 
         /// <summary>v3.25.13 密码箱功能退场的一次性收尾: 凭旧索引把收进箱里的文件原路搬回原位置,
-        /// 没有来历记录的搬进 Movies/TaoPlay恢复 目录, 最后清掉索引与箱目录; 全程只搬不删用户视频。
+        /// 没有来历记录的搬进 Movies/道映恢复 目录, 最后清掉索引与箱目录; 全程只搬不删用户视频。
         /// 跑过一遍后再也不进 (索引文件清掉即不会再有第二遍), 失败不挡启动。</summary>
         private void RestoreLegacyVaultFiles()
         {
@@ -702,14 +710,14 @@ namespace TaoLive.UI.Android.Phone
                         catch { }   // 单个文件失败不挡其余, 文件留原处不丢
                     }
 
-                    // 2) 没账的: 搬进本卷 Movies/TaoPlay恢复 (重名自动编号), 然后清掉箱目录
+                    // 2) 没账的: 搬进本卷 Movies/道映恢复 (重名自动编号), 然后清掉箱目录
                     foreach (var dir in vaultDirs)
                     {
                         if (!Directory.Exists(dir)) continue;
                         try
                         {
                             var recover = System.IO.Path.Combine(global::Android.OS.Environment.GetExternalStoragePublicDirectory(
-                                global::Android.OS.Environment.DirectoryMovies)!.AbsolutePath, "TaoPlay恢复");
+                                global::Android.OS.Environment.DirectoryMovies)!.AbsolutePath, "道映恢复");
                             foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
                             {
                                 try
@@ -846,7 +854,7 @@ namespace TaoLive.UI.Android.Phone
         internal void ShowAbout()
         {
             TaoPopup.ShowMessage(this, "关于",
-                "TaoPlay v3.13（安卓重做版）\n本地视频 / 网络流 / 磁力边下边播 / 边播边存\n支持断点续播、字幕音轨与倍速\n\n太极 · 播放 —— 道法自然，尽收眼底。",
+                "道映 v3.13（安卓重做版）\n本地视频 / 网络流 / 磁力边下边播 / 边播边存\n支持断点续播、字幕音轨与倍速\n\n道映 —— 道法自然，尽收眼底。",
                 new (string, Action?, bool)[] { ("好的", null, false) });
         }
 

@@ -143,7 +143,7 @@ namespace AllPlayer.BLL
                 if (!string.IsNullOrEmpty(seg)) return Uri.UnescapeDataString(seg);
             }
             catch { }
-            return "TaoPlay_" + DateTime.Now.ToString("MMdd-HHmmss") + ".mp4";
+            return "道映_" + DateTime.Now.ToString("MMdd-HHmmss") + ".mp4";
         }
 
         public void Pause(string id)

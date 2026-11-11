@@ -29,7 +29,7 @@
     <ProjectReference Include="..\TaoLive.Model\TaoLive.Model.csproj" />
     <ProjectReference Include="..\TaoLive.BLL\TaoLive.BLL.csproj" />
     <PackageReference Include="LibVLCSharp" Version="3.10.1" />
-    <!-- libvlc 本机库以 lib/arm64-v8a 物理文件参与打包（TaoPlay 同源 vlc365 arm64） -->
+    <!-- libvlc 本机库以 lib/arm64-v8a 物理文件参与打包（同源 vlc365 arm64） -->
   </ItemGroup>
 
   <ItemGroup>

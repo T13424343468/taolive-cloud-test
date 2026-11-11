@@ -457,6 +457,16 @@ namespace AllPlayer.UI.Android.Shared
             PlayPath(uri);
         }
 
+        /// <summary>r3 直播专用: 本机中转地址直进 PlayPath——绝不过 HLS 边播边存 (直播不落盘),
+        /// 不进连播列表; 断流自救/载体自检等既有保险照常生效。</summary>
+        public Task PlayLiveAsync(string uri)
+        {
+            _playlist.Clear();
+            _index = -1;
+            PlayPath(uri);
+            return Task.CompletedTask;
+        }
+
         private void PlayItem(VideoItem item) => PlayPath(item.Path);
 
         /// <summary>v3.25.3: 消费一次待跳续播点 (CAS 取走即清, 时间回执与 3 秒兜底谁先到谁触发, 防双跳)</summary>
@@ -1013,7 +1023,7 @@ namespace AllPlayer.UI.Android.Shared
             try
             {
                 var ctx = _videoCarrier?.HostContext ?? global::Android.App.Application.Context;   // v3.25.21: 载体可空, 兜底应用上下文
-                var session = new global::Android.Media.Session.MediaSession(ctx, "TaoPlay");
+                var session = new global::Android.Media.Session.MediaSession(ctx, "道映");
                 session.SetCallback(new MediaButtonCallback(this));
                 session.SetFlags(global::Android.Media.Session.MediaSessionFlags.HandlesMediaButtons
                     | global::Android.Media.Session.MediaSessionFlags.HandlesTransportControls);

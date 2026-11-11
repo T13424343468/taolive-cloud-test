@@ -13,7 +13,7 @@ using AllPlayer.Model;
 
 namespace TaoLive.UI.Android.Phone
 {
-    /// <summary>TaoPlay 手机版 — 主页 (partial): 品牌头 / 状态 / 搜索 / 磁力条 / 视频列表。</summary>
+    /// <summary>道映手机版 — 主页 (partial): 品牌头 / 状态 / 搜索 / 磁力条 / 视频列表。</summary>
     public partial class MainActivity
     {
         // ---- 主页控件 ----
@@ -57,6 +57,13 @@ namespace TaoLive.UI.Android.Phone
             AddHeaderIcon(titleRow, IconKind.Theme, CycleTheme, ref _themeBtn);
             AddHeaderIcon(titleRow, IconKind.Gear, ShowHomeMenu, ref _settingsBtn);
             _homePanel.AddView(titleRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+
+            // ---- r3 直播入口: 一行老电视风入口, 点开直播频道列表 ----
+            var liveEntry = new TextView(this) { Text = "📺 直播频道", TextSize = 16, Typeface = Typeface.DefaultBold };
+            liveEntry.SetTextColor(TaoTheme.Accent);
+            liveEntry.SetPadding(0, TaoUi.Dp(this, 12), 0, TaoUi.Dp(this, 2));
+            liveEntry.Click += (s, e) => ShowLivePanel();
+            _homePanel.AddView(liveEntry, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
             // ---- 状态行: 点状态行可重试授权/重扫 ----
             _status = new TextView(this) { Text = "正在准备…", TextSize = 13 };
@@ -146,7 +153,7 @@ namespace TaoLive.UI.Android.Phone
                 var downloadsFolder = global::Android.OS.Environment.GetExternalStoragePublicDirectory(global::Android.OS.Environment.DirectoryDownloads)!.AbsolutePath;
                 _downloads = new DownloadService(
                     System.IO.Path.Combine(GetExternalFilesDir(null)!.AbsolutePath, "downloads.json"),
-                    System.IO.Path.Combine(downloadsFolder, "TaoPlay"));
+                    System.IO.Path.Combine(downloadsFolder, "道映"));
                 _downloads.Load();
                 _downloads.Changed += () => RunOnUiThread(UpdateDownloadLocks);   // v3.25.20: 有任务在下载时持有保持锁, 灭屏不再停滞
             }

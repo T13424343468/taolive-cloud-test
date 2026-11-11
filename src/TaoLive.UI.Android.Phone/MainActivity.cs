@@ -106,7 +106,7 @@ namespace TaoLive.UI.Android.Phone
         internal float _contentFps;            // v3.25.1: 视频内容真实帧率 (探到了才向系统声明)
         internal long _lastPosMs;
         internal string? _lastEnhanceStartedPath;   // v3.21.0 换片去重: 同一片不重复触发增强入队
-        internal int _aspectIdx;   // 0跟随片源 1=16:9 2=4:3
+        internal int _aspectIdx = 3;   // 0跟随片源 1=16:9 2=4:3 3=铺满 (r2 默认铺满: 真机反馈直播横屏右/底黑边, 2026-11-11)
         internal float _gLastX, _gLastY;
         internal int _gMode;       // 0未定 1水平快进 2左侧亮度 3右侧音量
         internal long _gSeekMs;

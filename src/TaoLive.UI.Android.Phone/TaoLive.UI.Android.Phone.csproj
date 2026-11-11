@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>com.taolive.phone</ApplicationId>
     <ApplicationVersion>1</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.0-r1</ApplicationDisplayVersion>
+    <ApplicationDisplayVersion>1.0.0-r2</ApplicationDisplayVersion>
     <ApplicationTitle>道映</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <AndroidEnableAot>false</AndroidEnableAot>

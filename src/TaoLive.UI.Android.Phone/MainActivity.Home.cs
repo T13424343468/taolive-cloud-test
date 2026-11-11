@@ -43,7 +43,7 @@ namespace TaoLive.UI.Android.Phone
             brandHit.AddView(brand, new FrameLayout.LayoutParams(TaoUi.Dp(this, 27), TaoUi.Dp(this, 27), GravityFlags.Center));
             titleRow.AddView(brandHit, TaoUi.Dp(this, 48), TaoUi.Dp(this, 48));
 
-            var title = new TextView(this) { Text = "TaoPlay", TextSize = 22, Typeface = Typeface.DefaultBold };
+            var title = new TextView(this) { Text = "道映", TextSize = 22, Typeface = Typeface.DefaultBold };
             title.SetTextColor(TaoTheme.TextMain);
             // v3.25.25 跑马灯: 与播放页标题同口径, 超长文字区域内循环滚动不截断
             title.SetSingleLine(true);

@@ -33,6 +33,9 @@ namespace TaoLive.UI.Android.Phone
                 ? (IVideoCarrierView)new AllPlayerTextureView(this)
                 : new VideoCarrierAdapter(new LibVLCSharp.Platforms.Android.VideoView(this));
             _playerPanel.AddView(_carrier.AsView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+            // r2 铺满修复 (真机反馈直播横屏右/底黑边): 铺满档跟住载体视图实际尺寸,
+            // 旋屏/全屏切换布局重定即重刷, 内核把画面拉到整张视图不留黑边
+            _carrier.AsView.LayoutChange += (_, _) => { if (_aspectIdx == 3) ApplyAspect(); };
 
             // v3.23.1 (真机反馈打开画面抖动): 纹理载体首帧挂上后、内核报出视频真实尺寸前,
             // 会外露「贴底横条→过裁放大→跳回适配」的中间态——开场整层黑场过渡,
@@ -287,6 +290,8 @@ namespace TaoLive.UI.Android.Phone
             //（画面挂稳前后各应用一次, 双保险都拿到 Surface）
             ApplyDisplayBoost();
             _carrier.AsView.PostDelayed(new Java.Lang.Runnable(ApplyDisplayBoost), 1500);
+            // r2 铺满: 起播后内核 vout 就绪再按当前档补刷一次比例 (布局已定型, 铺满档拿到最终尺寸)
+            _carrier.AsView.PostDelayed(new Java.Lang.Runnable(ApplyAspect), 1200);
 
             // 缓存(边播边存)完成 -> 自动无损转成 MP4, 各种播放器/剪辑工具直接能用 (只挂一次)
             if (!_recordWired)
@@ -1070,7 +1075,7 @@ namespace TaoLive.UI.Android.Phone
                 $"循环播放: {(_host.LoopEnabled ? "开" : "关")}",
                 $"自动旋转: {(AppSettings.Current.AutoRotate ? "开" : "关")}",
                 $"画质增强（实验）: {(AppSettings.Current.AiAutoGear ? "智能自动" : new[] { "关", "低档", "中档", "高档" }[Math.Clamp(AppSettings.Current.AiEnhanceTier, 0, 3)])}",
-                $"画面比例: {new[] { "跟随片源", "16:9", "4:3" }[_aspectIdx]}",
+                $"画面比例: {new[] { "跟随片源", "16:9", "4:3", "铺满" }[_aspectIdx]}",
                 "字幕轨道",
                 "音轨",
                 "画中画",
@@ -1320,16 +1325,39 @@ namespace TaoLive.UI.Android.Phone
             return false;
         }
 
-        /// <summary>画面比例选择: 原片宽高比异常时手动纠正; 卡片列表</summary>
+        /// <summary>画面比例选择: 原片宽高比异常时手动纠正; 卡片列表。
+        /// r2 新增「铺满」档并设为默认——按载体视图实际宽高把画面拉到整张视图, 长屏不留黑边。</summary>
         private void ShowAspectDialog()
         {
-            var names = new[] { "跟随片源", "16:9", "4:3" };
+            var names = new[] { "跟随片源", "16:9", "4:3", "铺满" };
             var labels = names.Select((n, i) => (i == _aspectIdx ? "●  " : "○  ") + n).ToArray();
             TaoPopup.ShowListDialog(this, "画面比例", labels.Select((t, i) => (t, (Action)(() =>
             {
                 _aspectIdx = i;
-                _host.SetAspectRatio(i == 1 ? "16:9" : i == 2 ? "4:3" : null);
+                ApplyAspect();
             }))).ToArray());
+        }
+
+        /// <summary>r2 铺满修复: 按当前档刷新内核画面比例; 铺满档取载体视图实际宽高,
+        /// 尺寸未定版时先跟随片源, 由布局回调与起播补刷兜底。</summary>
+        private void ApplyAspect()
+        {
+            string? aspect = _aspectIdx switch
+            {
+                1 => "16:9",
+                2 => "4:3",
+                3 => FillAspectRatio(),
+                _ => null,
+            };
+            _host.SetAspectRatio(aspect);
+        }
+
+        private string? FillAspectRatio()
+        {
+            var v = _carrier.AsView;
+            int w = v.Width, h = v.Height;
+            if (w <= 0 || h <= 0) return null;   // 尚未布局: 等布局回调/起播补刷
+            return $"{w}:{h}";
         }
 
         internal void ShowTrackDialog(bool subtitle)

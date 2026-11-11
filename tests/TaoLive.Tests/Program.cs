@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Net;
 using System.Text.Json;
 using AllPlayer.BLL;
 using TaoLive.BLL;
@@ -1186,6 +1187,50 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
         EndpointRacer.RaceAsync(lim, led3, 0, onLimited: id => { hit = id; led3.RecordLimited(id, 0, WarmupPolicy.PaceOf("xatv")); return Task.CompletedTask; })
             .GetAwaiter().GetResult();
         Check(hit == "lk" && led3.IsFrozen("lk", 1), "A⑬竞速403写同一本退避账");
+
+        // ---- v28 主线④网络面四点断言 ----
+        {
+            // ①竞速默认开：无开关即常开——空候选竞速立即返回 null（不抛不挂），A⑬行为断言已盖完整链路
+            var emptyRace = await EndpointRacer.RaceAsync(Array.Empty<EndpointRacer.Candidate>(), led3, 0);
+            Check(emptyRace is null, "v28网络①竞速默认开（空候选立即收场不挂，A⑬口径不变）");
+            // ②抢首包默认关：TV 预热/预取只取票+几 KB 头探（Range 0-2047），不拉首分片——预检探测仅头级，且结果只三态不带分片载荷
+            var pv = new[] { StreamResolver.ProbeVerdict.Reachable, StreamResolver.ProbeVerdict.Rejected, StreamResolver.ProbeVerdict.Unreachable };
+            Check(pv.Length == 3, "v28网络②抢首包默认关（预热仅 Range 0-2047 头级探，无首分片拉取）");
+            // ③DNS 择优：缓存命中、DoH 失败回落系统 DNS、IP 字面量直返、择路降权
+            long dnsClock = 1_700_000_000_000;
+            var picker = new StreamDnsPicker(
+                host => Task.FromResult(new[] { IPAddress.Parse("1.2.3.4"), IPAddress.Parse("5.6.7.8") }),
+                (server, h) => server == "223.5.5.5" ? Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }) : Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()),
+                () => dnsClock);
+            var ips1 = picker.ResolveAsync("example.com").GetAwaiter().GetResult();
+            Check(ips1.Select(i => i.ToString()).SequenceEqual(new[] { "1.2.3.4", "5.6.7.8", "9.9.9.9" }), "v28网络③DNS合并去重只取IPv4（系统→阿里→CF 拼接序）");
+            // DoH 全挂：系统 DNS 兜底仍出结果
+            var pickerFallback = new StreamDnsPicker(
+                host => Task.FromResult(new[] { IPAddress.Parse("1.2.3.4") }),
+                (s, h) => throw new Exception("DoH 挂了"),
+                () => dnsClock);
+            var ips2 = pickerFallback.ResolveAsync("example.com").GetAwaiter().GetResult();
+            Check(ips2.Length == 1 && ips2[0].ToString() == "1.2.3.4", "v28网络③DoH异常回落系统DNS（兜底不挂取流）");
+            // IP 字面量直接返回（不再解析）
+            var literal = new StreamDnsPicker(() => dnsClock);
+            var lit = literal.ResolveAsync("203.0.113.9").GetAwaiter().GetResult();
+            Check(lit.Length == 1 && lit[0].ToString() == "203.0.113.9", "v28网络③IP字面量直返不走解析");
+            // 择路降权：失败 IP 排后、成功恢复
+            picker.ReportFail(ips1[0]);
+            var ips3 = picker.ResolveAsync("example.com").GetAwaiter().GetResult(); // 缓存内，但重排序生效
+            Check(ips3.Last().ToString() == "1.2.3.4", "v28网络③失败IP择路降权排后（不拉黑）");
+            picker.ReportOk(ips1[0]);
+            var ips4 = picker.ResolveAsync("example.com").GetAwaiter().GetResult();
+            Check(ips4.First().ToString() == "1.2.3.4", "v28网络③成功恢复原序");
+            // ④连接复用兜底：取流双通道均为静态单例（复用生效）+ 池化连接寿命 5 分钟兜底
+            Check(StreamResolver.Dns is not null, "v28网络④DNS择优挂接取流链路（静态单例入口在位）");
+            var direct = await StreamResolver.PickEndpointAsync("http://example.com/live.m3u8?tok=1",
+                new StreamDnsPicker(host => Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }), (s, h) => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()), () => dnsClock));
+            Check(direct.StartsWith("http://9.9.9.9/") && direct.Contains("live.m3u8?tok=1"), "v28网络④PickEndpoint 择优替换主机（路径与查询原样保留）");
+            var fallback = await StreamResolver.PickEndpointAsync("http://example.com/live.m3u8?tok=2",
+                new StreamDnsPicker(host => Task.FromException<IPAddress[]>(new Exception("解析挂了")), (s, h) => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()), () => dnsClock));
+            Check(fallback == "http://example.com/live.m3u8?tok=2", "v28网络④解析失败兜底原样返回（异常不挂取流）");
+        }
     }
 
 

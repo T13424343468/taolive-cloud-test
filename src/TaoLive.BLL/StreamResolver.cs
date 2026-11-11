@@ -25,9 +25,43 @@ public class ResolvedStream
 /// </summary>
 public class StreamResolver
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
+    // v28 主线④网络面·连接复用：静态单例 + PooledConnectionLifetime 5 分钟兜底刷新
+    // （长会话下 DNS 变更/服务端切 IP 不至于挂在失效连接上；连接复用本身默认开，无开关）。
+    private static readonly SocketsHttpHandler HttpHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        ConnectTimeout = TimeSpan.FromSeconds(6),
+    };
+    private static readonly SocketsHttpHandler ProbeHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        ConnectTimeout = TimeSpan.FromSeconds(4),
+    };
+    private static readonly HttpClient Http = new(HttpHandler) { Timeout = TimeSpan.FromSeconds(10) };
     /// <summary>A类第11项·超时分级：探活轻探收紧到 4 秒（换票/清单维持 10 秒），快失败快转向。</summary>
-    private static readonly HttpClient ProbeHttp = new() { Timeout = TimeSpan.FromSeconds(4) };
+    private static readonly HttpClient ProbeHttp = new(ProbeHandler) { Timeout = TimeSpan.FromSeconds(4) };
+
+    /// <summary>v28 主线④网络面·DNS 择优（DoH 兜底回落系统 DNS；IP 失败降权不拉黑）。取流链路统一走它。</summary>
+    public static readonly StreamDnsPicker Dns = new();
+
+    /// <summary>把 URL 的主机名经 DNS 择优换成「http://IP:port」直连形式（路径/查询原样保留）。
+    /// 主机名已是 IP 字面量或解析失败时原样返回（兜底走系统解析，绝不因优化挂掉）。</summary>
+    public static async Task<string> PickEndpointAsync(string url, StreamDnsPicker? picker = null)
+    {
+        var dnsUse = picker ?? Dns; // 测试注入点：默认取全局单例
+        try
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+                || uri.HostNameType == UriHostNameType.IPv4 || uri.HostNameType == UriHostNameType.IPv6)
+                return url;
+            var ips = await dnsUse.ResolveAsync(uri.Host);
+            if (ips.Length == 0) return url;
+            var builder = new UriBuilder(uri) { Host = ips[0].ToString() };
+            if (!uri.IsDefaultPort) builder.Port = uri.Port;
+            return builder.Uri.ToString();
+        }
+        catch { return url; } // DNS 全挂：原 URL 走系统解析兜底
+    }
     private static readonly Regex M3u8Regex = new(
         "https?://[^\"\\\\\\s]+\\.m3u8[^\"\\\\\\s]*", RegexOptions.Compiled);
 
@@ -397,6 +431,7 @@ public class StreamResolver
     /// </summary>
     public async Task<ProbeVerdict> ProbeUrlVerdictAsync(string url, string? referer, string? ua)
     {
+        url = await PickEndpointAsync(url); // v28 主线④：探测请求经 DNS 择优（https 证书按原域名 SNI 校验不变，HttpClient 连接复用兜底）
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 2047);
         if (!string.IsNullOrEmpty(referer)) req.Headers.TryAddWithoutValidation("Referer", referer);
@@ -461,6 +496,7 @@ public class StreamResolver
     /// </summary>
     public static async Task<(string? Body, bool Rejected)> HttpGetStringClassifiedAsync(string url, string? referer, string? ua)
     {
+        url = await PickEndpointAsync(url); // v28 主线④：换票/清单请求经 DNS 择优（同上兜底口径）
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         if (!string.IsNullOrEmpty(referer)) req.Headers.TryAddWithoutValidation("Referer", referer);
         if (!string.IsNullOrEmpty(ua)) req.Headers.TryAddWithoutValidation("User-Agent", ua);

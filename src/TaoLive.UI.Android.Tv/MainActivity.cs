@@ -536,6 +536,7 @@ public class MainActivity : Activity
             if (seq != _playSeq) return;
             _playSource = source;
             ResolvedStream? resolved = null;
+            string kind = nameof(ConnectFailureKind.Unreachable); // v28③修复：提升作用域，非异常路径（空清单判死）也能带稳定度口径回写
             try
             {
                 // v1.0.10 第①项：优先直连健康账里已验证的来源；取不到流时若换过源，
@@ -567,7 +568,7 @@ public class MainActivity : Activity
             catch (Exception ex)
             {
                 // ⑫失败矩阵实接：逐类归因落日志 + 对应提示（不笼统「连接失败」）；v22 第 2 项：限流提示接退避账
-                var kind = LiveVideoHost.FailureKind(ex);
+                kind = LiveVideoHost.FailureKind(ex);
                 CrashNet.Record($"[ConnectFailure][{kind}] 取流异常 {ch.Name}（源={ch.SourceId}）：{ex.Message}");
                 resolved = null;
                 if (kind == nameof(ConnectFailureKind.RateLimited))

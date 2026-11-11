@@ -7,9 +7,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>com.taolive.tv</ApplicationId>
-    <ApplicationVersion>25</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.13</ApplicationDisplayVersion>
-    <ApplicationTitle>道映</ApplicationTitle>
+    <ApplicationVersion>26</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <ApplicationTitle>TaoLive</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体 -->
     <RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers>

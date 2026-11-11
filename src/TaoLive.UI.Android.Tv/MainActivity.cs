@@ -115,6 +115,8 @@ public class MainActivity : Activity
     private Channel? _playSource;
     // v1.0.10 第①项：源健康账本地存储（应用私有目录，跨启动保留已验证源）
     private SourceHealthStore? _healthStore;
+    private SourceScoreStore? _scoreStore; // v28 主线③：源健康度评分账（与健康账同生命周期）
+    private long _tuneBeginMs; // v28 主线③：换台起点（首帧耗时 = 首帧时刻 − 起点）
     private Task? _healthLoadTask; // v28 读盘优化：健康账后台灌回任务（落盘须等灌回，防空账覆盖旧账）
     private readonly SourceBackoffLedger _backoff = new(); // A⑬/A⑥：同一本 403 退避账（竞速与预热共用）
     private readonly Dictionary<string, long> _nextProbeAtMs = new(); // A⑥：每台下次到期时刻（TickCount64）
@@ -207,8 +209,10 @@ public class MainActivity : Activity
         }
         catch (Exception svcEx) { CrashNet.Record($"[Warmup] 保活服务拉起失败（功能不残废）：{svcEx.Message}"); }
         var healthStore = _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
+        // v28 主线③：评分账与健康账同生命周期——启动灌回→挂预检（选源按分排序；账空退化既有顺序）
+        var scoreStore = _scoreStore = new SourceScoreStore(FilesDir.AbsolutePath);
         // v28 读盘优化：健康账读盘改后台；账本灌回完成才挂预检（共账切换）、才进预检循环（顺序依赖）
-        _healthLoadTask = Task.Run(healthStore.Load);
+        _healthLoadTask = Task.Run(() => { healthStore.Load(); scoreStore.Load(); _precheck.AttachScoreStore(scoreStore); });
         _precheck.StateChanged += (key, state) => _ui.Post(() =>
         {
             RefreshListStatuses();
@@ -360,7 +364,12 @@ public class MainActivity : Activity
             _videoContainer?.SetBackgroundColor(Color.Transparent); // ⑦新流首帧到齐：撤底色亮画面
             _videoMask.Visibility = ViewStates.Gone; // v22 第 1 项：首帧落地撤清场遮罩，旧合成帧全程未外露
             // ⑬健康表回写：播放实测成功覆盖预检结论（取播来源变体优先；Unix 毫秒，落盘可比）
-            if (_playSource != null) _precheck.ReportSourceResult(_playSource, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            // v28 主线③：同一处喂评分账——首帧成功+换台起点到首帧耗时（速度分），timeout=false
+            if (_playSource != null)
+            {
+                var firstFrameMs = Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _tuneBeginMs);
+                _precheck.ReportSourceResult(_playSource, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), firstFrameMs);
+            }
             HideLoading();
         });
     }
@@ -494,6 +503,7 @@ public class MainActivity : Activity
         int seq = ++_playSeq;
         _current = ch;
         _frameForCurrentSwitch = false;
+        _tuneBeginMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // v28 主线③：换台起点（首帧耗时喂入评分账）
         CloseChannelList();
         // v1.0.10 修复⑦：撤旧画面的同时铺干净底色，GPU 残留旧缓冲绝不外露（花屏竖条）；
         // 新流首帧到齐才撤底色亮画面（FrameShown 处清回透明）
@@ -573,7 +583,8 @@ public class MainActivity : Activity
             if (seq != _playSeq) return;
             if (resolved is null)
             {
-                _precheck.ReportSourceResult(source, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // ⑬：取流失败回写健康表
+                _precheck.ReportSourceResult(source, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    timeout: kind == nameof(ConnectFailureKind.ConnectTimeout)); // ⑬：取流失败回写健康表；v28③超时喂稳定度负项
                 _ui.Post(() =>
                 {
                     if (seq != _playSeq) return;
@@ -2101,10 +2112,11 @@ public class MainActivity : Activity
         // v1.0.10 第①项：退后台即把源健康账落盘（后台线程，不阻塞界面）
         // v28 读盘优化：先等灌回再落盘——灌回未完成时落盘会把没读完的旧账覆盖成空账
         var store = _healthStore;
-        if (store != null)
+        var scores = _scoreStore;
+        if (store != null || scores != null)
         {
             var load = _healthLoadTask;
-            Task.Run(async () => { if (load != null) await load; store.FlushNow(); });
+            Task.Run(async () => { if (load != null) await load; store?.FlushNow(); scores?.FlushNow(); });
         }
     }
 

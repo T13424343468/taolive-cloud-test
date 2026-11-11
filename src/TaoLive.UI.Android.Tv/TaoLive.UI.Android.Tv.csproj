@@ -14,6 +14,8 @@
     <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体。
          v28 瘦身：收窄为仅 android-arm——此前双 ABI 列表使构建把整套 arm64-v8a 库（libvlc 43MB+libassemblies blob 22MB+mono/AOT 运行时，约 66MB 死重）打进 32 位包，87MB→20MB 出头 -->
     <RuntimeIdentifiers>android-arm</RuntimeIdentifiers>
+    <!-- v28 主线⑤运行库裁剪：Release 起用裁剪（SDK 程序集裁剪，用户程序集保全），托管程序集 blob 22MB 预期砍半；反射暗路以真机装机为终验 -->
+    <AndroidLinkMode Condition="'$(Configuration)' == 'Release'">SdkOnly</AndroidLinkMode>
     <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>
     <AssemblyName>TaoLive.UI.Android.Tv</AssemblyName>
     <AndroidResgenFile>Resources\Resource.designer.cs</AndroidResgenFile>
@@ -34,8 +36,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <AndroidNativeLibrary Include="lib\arm64-v8a\libvlc.so" />
-    <AndroidNativeLibrary Include="lib\arm64-v8a\libc++_shared.so" />
+    <!-- v28 瘦身：32 位包剔除 arm64 本机库条目（RuntimeIdentifiers 已收窄 android-arm，条目残留导致 XA4301 重复警告） -->
     <AndroidNativeLibrary Include="lib\armeabi-v7a\libvlc.so" />
     <AndroidNativeLibrary Include="lib\armeabi-v7a\libc++_shared.so" />
   </ItemGroup>

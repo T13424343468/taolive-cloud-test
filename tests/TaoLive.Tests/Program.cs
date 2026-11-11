@@ -347,6 +347,51 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(multi.Of(vb) == ChannelHealth.Alive, "回写可用后整台状态=可用");
     multi.ReportSourceResult(va, false, 234567L);
     Check(multi.SourceHealthOf(va)?.State == ChannelHealth.Dead, "回写：实测失效覆盖预检结论");
+
+    // ---- v28 主线③源健康度评分：归一化/半衰/空账退化/喂入路径 ----
+    {
+        var clock = 1_700_000_000_000L;
+        var scores = new SourceScoreStore("/tmp/taolive_score_test", () => clock);
+        // 喂入路径：Report 走账、ScoreOf 出分
+        scores.Report("a", "a1", ok: true, ms: 1000);
+        var s1 = scores.ScoreOf("a", "a1");
+        Check(s1.HasValue && s1.Value > 0 && s1.Value <= 100, "v28评分①喂入后出分（0~100 归一化）");
+        // 速度归一化：2s 内满分梯度、10s 及以上为 0
+        var fast = new SourceScoreStore("/tmp/taolive_score_test", () => clock);
+        fast.Report("f", "f1", ok: true, ms: 1000);
+        fast.Report("f", "f2", ok: true, ms: 12000);
+        var sf = fast.ScoreOf("f", "f1")!.Value;
+        var sl = fast.ScoreOf("f", "f2")!.Value;
+        Check(sf > sl, "v28评分②速度归一化：快源分高于慢源");
+        // 半衰：同一笔账，时间后移 7 天分值约减半
+        clock += SourceScoreStore.HalfLifeMs;
+        var s2 = scores.ScoreOf("a", "a1")!.Value;
+        Check(s2 < s1!.Value && s2 > s1.Value * 0.4, "v28评分③七天半衰：旧结论权重衰减约半");
+        clock -= SourceScoreStore.HalfLifeMs;
+        // 空账退化：无评分账时 BestAliveSource 仍按既有「最近核验优先」
+        var bare = new ChannelPrecheck(ch => Task.FromResult(ch.SourceId == "a"), intervalMs: 1);
+        var xa = new Channel { Name = "X", SourceId = "a", EpgKey = "x1" };
+        var xb = new Channel { Name = "X", SourceId = "b", EpgKey = "x2" };
+        await bare.RunAsync(new[] { xa, xb });
+        var pickBare = bare.BestAliveSource(xb, new[] { xa, xb });
+        Check(pickBare?.EpgKey == "x1", "v28评分④空账退化：无评分仍取最近核验可用源（行为不倒退）");
+        // 有账排序：高分源胜出（va 高分、vb 低分，都 Alive）
+        var scoredPre = new ChannelPrecheck(ch => Task.FromResult(true), intervalMs: 1);
+        var sa = new Channel { Name = "S", SourceId = "s", EpgKey = "s1" };
+        var sb = new Channel { Name = "S", SourceId = "s", EpgKey = "s2" };
+        await scoredPre.RunAsync(new[] { sa, sb });
+        var scoreStore = new SourceScoreStore("/tmp/taolive_score_test", () => clock);
+        scoreStore.Report("s", "s1", ok: true, ms: 300);
+        scoreStore.Report("s", "s2", ok: true, ms: 9000);
+        scoredPre.AttachScoreStore(scoreStore);
+        var pickScored = scoredPre.BestAliveSource(sa, new[] { sa, sb });
+        Check(pickScored?.EpgKey == "s1", "v28评分⑤有账按分排序：高分源胜出");
+        // 喂入路径打通：ReportSourceResult 经 WriteSourceResult 入评分账
+        scoredPre.ReportSourceResult(sa, true, clock + 1, 500);
+        Check(scoreStore.HasAccount("s", "s1"), "v28评分⑥喂入路径：ReportSourceResult 同步入评分账");
+        scoreStore.FlushNow();
+        Check(File.Exists("/tmp/taolive_score_test/source_score.json"), "v28评分⑦落盘：节流后账本文件在位（原子替换口径同健康账）");
+    }
     Check(multi.Of(va) == ChannelHealth.Alive, "单来源失效但另一来源可用，整台仍=可用");
     multi.ReportSourceResult(vb, false, 345678L);
     Check(multi.SourceHealthOf(vb)?.State == ChannelHealth.Dead, "全部来源实测失败均已记录");

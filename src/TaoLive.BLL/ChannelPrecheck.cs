@@ -49,6 +49,15 @@ public class ChannelPrecheck
     /// <summary>源健康账持久化（v1.0.10）：UI 注入后，每次健康表变化自动节流落盘；启动时经 Attach 灌回历史账。</summary>
     public SourceHealthStore? HealthStore { get; private set; }
 
+    /// <summary>v28 主线③·源健康度评分账（可空注入：账空退化既有顺序，行为绝不倒退）。</summary>
+    public SourceScoreStore? ScoreStore { get; private set; }
+
+    /// <summary>注入评分账本（与健康账同口径：先建后注均可）。</summary>
+    public void AttachScoreStore(SourceScoreStore store)
+    {
+        ScoreStore = store ?? throw new ArgumentNullException(nameof(store));
+    }
+
     /// <summary>
     /// 注入持久化存储：会话内已有结论与历史账合并（同键取核验时间新者）后，
     /// 改为与账本共享同一本健康表——此后预检/播放实测回写直接落在账本条目上，节流落盘即所见即所存。
@@ -96,20 +105,34 @@ public class ChannelPrecheck
     /// </summary>
     public Channel? BestAliveSource(Channel ch, IEnumerable<Channel> catalog)
     {
-        Channel? best = null;
+        // v28 主线③：评分账非空时按分排序（分高者胜，同分取核验时间新者）；无分/账空退化既有「最新核验优先」。
+        var scored = new List<(Channel Ch, double Score, long At)>();
+        bool anyScored = false;
+        Channel? bestFallback = null;
         long bestAt = -1;
         foreach (var cand in catalog)
         {
             if (GroupKey(cand) != GroupKey(ch) || cand.Unavailable) continue;
             var entry = SourceHealthOf(cand);
             if (entry is null || entry.State != ChannelHealth.Alive) continue;
+            var score = ScoreStore?.ScoreOf(cand.SourceId, cand.EpgKey);
+            if (score.HasValue)
+            {
+                anyScored = true;
+                scored.Add((cand, score.Value, entry.CheckedAtMs));
+            }
             if (entry.CheckedAtMs > bestAt)
             {
                 bestAt = entry.CheckedAtMs;
-                best = cand;
+                bestFallback = cand;
             }
         }
-        return best ?? (Of(ch) == ChannelHealth.Alive ? ch : null);
+        if (anyScored)
+        {
+            scored.Sort((a, b) => b.Score != a.Score ? b.Score.CompareTo(a.Score) : b.At.CompareTo(a.At));
+            return scored[0].Ch;
+        }
+        return bestFallback ?? (Of(ch) == ChannelHealth.Alive ? ch : null);
     }
 
     /// <summary>直接标记状态（播放实测/预检覆盖写）。仅在状态真正变化时发事件，防重复刷列表。</summary>
@@ -126,14 +149,16 @@ public class ChannelPrecheck
     /// 播放实测覆盖预检结论；同频道任一来源通即整台转可用。
     /// v1.0.10：连续失败达阈值自动淘汰（交回重探）；每次变化节流落盘。
     /// </summary>
-    public void ReportSourceResult(Channel ch, bool ok, long nowMs)
+    public void ReportSourceResult(Channel ch, bool ok, long nowMs, long ms = 0, bool timeout = false)
     {
-        WriteSourceResult(ch, ok, nowMs);
+        WriteSourceResult(ch, ok, nowMs, ms, timeout);
     }
 
-    /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。</summary>
-    private void WriteSourceResult(Channel ch, bool ok, long nowMs)
+    /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。
+    /// v28 主线③：同一入口向评分账喂入（成功记速度 0 时不计；预检轻探不计耗时，喂入 ok 无 ms）。</summary>
+    private void WriteSourceResult(Channel ch, bool ok, long nowMs, long ms = 0, bool timeout = false)
     {
+        ScoreStore?.Report(ch.SourceId, ch.EpgKey, ok, ms, timeout);
         var key = SourceKey(ch);
         var entry = _sourceHealth.GetOrAdd(key, _ => new SourceHealthEntry
         {

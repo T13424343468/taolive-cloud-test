@@ -31,6 +31,7 @@ public class WarmupStore
     private readonly string? _dir;
     private readonly Dictionary<string, WarmupEntry> _cache = new(StringComparer.Ordinal);
     private bool _dirty;
+    private bool _loadCompleted; // v28巡逻修：盘上旧账是否已并入内存。false=未确认（灌回未开始或未完成），落盘前须先补并
     private long? _lastFlushMs; // null=从未落盘（首次必落，不吃节流）
     private readonly object _gate = new();
 
@@ -38,17 +39,30 @@ public class WarmupStore
 
     private static string CachePath(string dir) => Path.Combine(dir, "playlist_cache.json");
 
-    /// <summary>启动灌回：读盘；损坏文件按无缓存处理（绝不挡起播）。</summary>
+    /// <summary>锁内补并盘上旧账：只补内存没有的键（旧值不覆盖新值），消「落盘快照缺未灌回条目→覆盖盘上旧账」的丢失窗口。
+    /// 损坏文件按无缓存处理（绝不挡起播）；无论成败，完成后 _loadCompleted=true（同一生命周期内补并一次即可）。</summary>
+    private void MergeDiskLocked()
+    {
+        try
+        {
+            var path = CachePath(_dir!);
+            if (File.Exists(path))
+            {
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, WarmupEntry>>(File.ReadAllText(path));
+                if (loaded != null)
+                    foreach (var kv in loaded)
+                        if (!_cache.ContainsKey(kv.Key)) _cache[kv.Key] = kv.Value;
+            }
+        }
+        catch { /* 损坏即弃：缓存只加速，不承担正确性 */ }
+        finally { _loadCompleted = true; }
+    }
+
+    /// <summary>启动灌回：读盘。v28巡逻修：全程锁内灌回（消字典并发），只补内存没有的键（旧值不覆盖新值）。</summary>
     public void Load()
     {
         if (string.IsNullOrEmpty(_dir)) return;
-        try
-        {
-            if (!File.Exists(CachePath(_dir))) return;
-            var loaded = JsonSerializer.Deserialize<Dictionary<string, WarmupEntry>>(File.ReadAllText(CachePath(_dir)));
-            if (loaded != null) foreach (var kv in loaded) _cache[kv.Key] = kv.Value;
-        }
-        catch { /* 损坏即弃：缓存只加速，不承担正确性 */ }
+        lock (_gate) MergeDiskLocked();
     }
 
     /// <summary>写入缓存条目（含节流落盘）。nowMs=Unix 毫秒；dir 未注入时只留内存。</summary>
@@ -86,6 +100,7 @@ public class WarmupStore
         string body;
         lock (_gate)
         {
+            if (!_loadCompleted) MergeDiskLocked(); // v28巡逻修：灌回未完成时先就地补并盘上旧账再落盘——快照永不缺盘上条目，覆盖丢失窗口消除
             if (!_dirty || (_lastFlushMs is long last && nowMs - last < ThrottleMs)) return;
             _dirty = false;
             _lastFlushMs = nowMs;

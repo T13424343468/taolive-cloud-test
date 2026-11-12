@@ -60,9 +60,31 @@ public static class FallbackSourceRegistry
         new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8"),
     };
 
-    /// <summary>全量备援表（15 卫视 + 6 央视，共 21 路）。</summary>
+    // ---- 卫视大盘摸排第二批（老板 2026-11-12 23:0x 令「新增的十个源一并收录」）----
+    // 摸排详《备援第二家族与jstv换源摸排.md》§七：全部全链 206 实 TS（清单→分片按清单目录拼），
+    // 无票据无 302，域名或国内 IP 免解析。新增独立覆盖 5 台（浙江/东方/广东/北京/湖北）；
+    // 深圳/黑龙江/东南三台与既有登记同名——按 Index 首条生效，既有稳定档优先，
+    // 新路留表作同族备线（②选源智能化落码时按家族/token 评分）。
+    // bfgd 六路共享同一入口与 token 串：家族内共 token，token 失效=同族齐挂，评分侧须共 token 降权；
+    // bfgd 慢端特性：并发探测分片偶发 seg-fail，单发全过——探活须单发、超时≥12s（防并发限速误判）。
+
+    private static readonly FallbackEntry[] SatellitesBatch2 =
+    {
+        new("浙江卫视", "http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8"), // cztv-ali 浙江官方蓝天频道，同域双活
+        new("东方卫视", "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8"),               // bestv 百视通
+        new("黑龙江卫视", "http://120.76.248.139/live/bfgd/4200000095.m3u8"),              // bfgd（观察档，共 token）
+        new("深圳卫视", "http://120.76.248.139/live/bfgd/4200000100.m3u8"),                // bfgd（观察档，共 token）
+        new("东南卫视", "http://120.76.248.139/live/bfgd/4200000483.m3u8"),                // bfgd（观察档，共 token）
+        new("广东卫视", "http://120.76.248.139/live/bfgd/4200000092.m3u8"),                // bfgd（单发重测过）
+        new("北京卫视", "http://120.76.248.139/live/bfgd/4200000083.m3u8"),                // bfgd（单发重测过）
+        new("湖北卫视", "http://120.76.248.139/live/bfgd/4200000102.m3u8"),                // bfgd（单发重测过）
+        new("黑龙江卫视", "https://idclive.hljtv.com:4430/live/hljws_own.m3u8"),           // hljtv 黑龙江官方 own 流
+        new("深圳卫视", "http://gmxw.7766.org:808/hls/45/index.m3u8"),                     // gmxw id45（清单标注口径，分片按目录拼）
+    };
+
+    /// <summary>全量备援表（24 路既有 + 10 路卫视摸排第二批，共 34 路）。</summary>
     public static readonly FallbackEntry[] Table =
-        Satellites.Concat(Cctv).ToArray();
+        Satellites.Concat(Cctv).Concat(SatellitesBatch2).ToArray();
 
     /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
     private static string Normalize(string name) =>

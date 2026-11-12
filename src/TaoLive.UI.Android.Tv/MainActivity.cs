@@ -1202,7 +1202,7 @@ public class MainActivity : Activity
                 };
                 row.Click += (_, _) => { onClick(); SaveAdvancedTuning(); RefreshAdvancedRows(); };
                 box.AddView(row);
-                var sub = new TextView(this) { Text = desc, TextSize = 13 };
+                var sub = new TextView(this) { Text = desc, TextSize = 15 };
                 sub.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
                 InkTranslucency.ApplyReadabilityShadow(sub);
                 sub.SetPadding(Dp(30), 0, Dp(24), Dp(10));
@@ -1242,7 +1242,7 @@ public class MainActivity : Activity
             var tip = new TextView(this)
             {
                 Text = "改坏了随时点「一键还原默认」回出厂值。\n端口项改动下次播放生效，其余即时生效。",
-                TextSize = 13,
+                TextSize = 15,
             };
             tip.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(tip);

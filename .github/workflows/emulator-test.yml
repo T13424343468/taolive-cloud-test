@@ -7,7 +7,7 @@ on:
 jobs:
   install-and-launch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 355
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,13 +54,21 @@ jobs:
           yes | sdkmanager "$PICKED"
           echo "SYSIMAGE=$PICKED" >> $GITHUB_ENV
 
-      - name: Create AVD and boot emulator (software emulation)
+      - name: Create AVD and boot emulator (software emulation, with progress heartbeat)
         run: |
           set -e
           echo no | avdmanager create avd -n testavd -k "$SYSIMAGE"
           emulator -avd testavd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 4096 -accel off &
-          adb wait-for-device || true
-          timeout 5400 adb wait-for-device shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 10; done; echo BOOT_COMPLETED'
+          sleep 30
+          adb devices || true
+          BC=""
+          for i in $(seq 1 60); do
+            BC=$(timeout 30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            echo "boot-check $i: '$BC'  $(date -u +%H:%M:%S)"
+            if [ "$BC" = "1" ]; then echo BOOT_COMPLETED; break; fi
+            sleep 300
+          done
+          if [ "$BC" != "1" ]; then echo BOOT_TIMEOUT_5H; exit 1; fi
           adb shell getprop ro.build.version.release || true
           adb shell getprop ro.product.cpu.abi || true
 

@@ -56,8 +56,18 @@ public static class StallRescue
     /// <summary>v25 真机修复·耗尽兜底：兜底重试周期（毫秒），直到首帧恢复或用户换台才收。</summary>
     public const int ExhaustedRecoveryPeriodMs = 60_000;
 
-    /// <summary>v25 真机修复·耗尽兜底：每 N 轮兜底重试升级一次软重启内核（其余轮静默重取流重接）。</summary>
-    public const int ExhaustedRebuildEveryCycles = 3;
+    /// <summary>v25 真机修复·耗尽兜底：每 N 轮兜底重试升级一次软重启内核（其余轮静默重取流重接）。
+    /// ④内核自愈提前（老板 2026-11-12 令「取不到首帧几十秒内主动内核自愈」）：耗尽兜底循环只在
+    /// 首帧未出时运行（出首帧即收摊），N=1 即每轮兜底直接软重启内核——配合 30 秒首延迟，
+    /// 首帧取不到 30 秒内主动内核自愈，不再等 3 轮（约 2.5 分钟）才升级。
+    /// 节流账不破：软重启不消耗取流预算（RescueCapPerWindow 口径不变）。</summary>
+    public const int ExhaustedRebuildEveryCycles = 1;
+
+    /// <summary>④内核自愈提前·可测判定面（与 LiveVideoHost 兜底行内表达式同语义，常量单一来源）：
+    /// 兜底轮次 cycle（1 起）落在升级线内且首帧未出（frameShown=false）→ 该轮软重启内核；
+    /// 首帧已出（正常流）恒 false，不误触发。</summary>
+    public static bool ShouldKernelRebuildOnExhausted(int cycle, bool frameShown) =>
+        !frameShown && cycle > 0 && cycle % ExhaustedRebuildEveryCycles == 0;
 
     /// <summary>
     /// stallIndex：本台会话内第几次卡死（0 起）。hasLowerQuality：是否还有可降档。

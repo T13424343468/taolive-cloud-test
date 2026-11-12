@@ -41,9 +41,10 @@ jobs:
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
           yes | sdkmanager --licenses > /dev/null || true
           # round9: dynamic pick of an x86 image with ARM translation (houdini); never hard-code a package again
-          sdkmanager --list | grep -oE 'system-images;android-[0-9]+;[a-z_]+;x86' | sort -u | tee /tmp/x86-images.txt
+          sdkmanager --list | grep -oE '^system-images;android-[0-9]+;[a-z_]+;x86_64$' | sort -u | tee /tmp/x86-images.txt
+          sdkmanager --list | grep -oE '^system-images;android-(2[1-7]);[a-z_]+;x86$' | sort -u >> /tmp/x86-images.txt || true
           PICK=""
-          for CAND in "system-images;android-31;google_apis;x86_64" "system-images;android-30;google_apis;x86_64" "system-images;android-25;google_apis;x86"; do
+          for CAND in "system-images;android-31;google_apis;x86_64" "system-images;android-30;google_apis;x86_64" "system-images;android-25;google_apis;x86" "system-images;android-24;google_apis;x86" "system-images;android-25;default;x86"; do
             if grep -qxF "$CAND" /tmp/x86-images.txt; then PICK="$CAND"; break; fi
           done
           [ -n "$PICK" ] || { echo "NO_X86_IMAGE_AVAILABLE"; cat /tmp/x86-images.txt; exit 1; }

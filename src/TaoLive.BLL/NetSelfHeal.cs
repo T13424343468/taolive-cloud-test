@@ -364,6 +364,11 @@ public class SelfHealProxyKernel : IDisposable
         if (ctx.Request.Headers["Referer"] is { Length: > 0 } rf && HlsRewriter.TryUnwrap(rf, out var rfInner)) req.Headers.TryAddWithoutValidation("Referer", rfInner);
 
         using var resp = await Forward.SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, ct);
+        // 评审观察①延伸修法（票据型轮换源 302）：回源默认跟随重定向，响应体来自最终 URL；
+        // 相对分片的解析基址必须是重定向后的最终 URL（票据 ?tm&key 也须随基址带上），
+        // 用入口 target 当基址会让相对分片落到入口 host → 实测 404（74.91 家族 19:2x 沙箱实证）。
+        var finalBase = resp.RequestMessage?.RequestUri?.ToString();
+        if (string.IsNullOrEmpty(finalBase)) finalBase = target;
         ctx.Response.StatusCode = (int)resp.StatusCode;
         ctx.Response.ContentType = resp.Content.Headers.ContentType?.ToString() ?? "";
         if (resp.Content.Headers.ContentLength is { } len) ctx.Response.ContentLength64 = len;
@@ -373,9 +378,9 @@ public class SelfHealProxyKernel : IDisposable
         if (isPlaylist)
         {
             // 子清单/主清单：正文域名 URL 全改写为代理 URL（播放链后续请求继续走代理）；
-            // 相对路径按本清单自身地址转绝对再包（评审观察②修法，零状态）
+            // 相对路径按重定向后最终地址转绝对再包（零状态，票据 query 随基址保留）
             var body = await resp.Content.ReadAsStringAsync(ct);
-            var rewritten = HlsRewriter.RewritePlaylist(body, target);
+            var rewritten = HlsRewriter.RewritePlaylist(body, finalBase);
             var buf = System.Text.Encoding.UTF8.GetBytes(rewritten);
             ctx.Response.ContentLength64 = buf.Length;
             await ctx.Response.OutputStream.WriteAsync(buf, ct);

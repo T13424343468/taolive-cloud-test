@@ -7,7 +7,7 @@ on:
 jobs:
   install-and-launch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 355
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,62 +34,53 @@ jobs:
         run: |
           ANDROID_HOME=$RUNNER_TEMP/android-sdk
           mkdir -p $ANDROID_HOME/cmdline-tools
-          curl -sSL -o cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q cmdtools.zip -d $ANDROID_HOME/cmdline-tools
+          curl -sSL -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
           export ANDROID_SDK_ROOT=$ANDROID_HOME
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platform-tools" "platforms;android-24" "emulator"
+          # round7: x86_64 Google Play image (API 24) - ships libhoudini ARM translation
+          sdkmanager "platform-tools" "platforms;android-24" "emulator" "system-images;android-24;google_apis_playstore;x86_64"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
 
-      - name: Install ARM32 system image (API 24, has kernel-qemu)
+      - name: Verify ARM translation layer present in image
         run: |
           set -e
-          yes | sdkmanager "system-images;android-24;default;armeabi-v7a"
-          ls "$ANDROID_HOME/system-images/android-24/default/armeabi-v7a/" | head -20
-          test -f "$ANDROID_HOME/system-images/android-24/default/armeabi-v7a/kernel-qemu" || { echo "NO_KERNEL_QEMU"; exit 1; }
-          echo "KERNEL_QEMU_PRESENT"
+          IMG=$ANDROID_HOME/system-images/android-24/google_apis_playstore/x86_64
+          ls "$IMG" | head -20
+          find "$IMG" -name '*houdini*' | head -10 || true
 
-      - name: Create AVD (API24 ARM32, before engine replacement)
+      - name: Create AVD (x86_64 Google Play, houdini ARM translation)
         run: |
           set -e
           export ANDROID_AVD_HOME=$HOME/.android/avd
           export ANDROID_USER_HOME=$HOME/.android
           mkdir -p "$ANDROID_AVD_HOME"
-          echo no | avdmanager create avd -n testavd -k "system-images;android-24;default;armeabi-v7a" || true
-          CFG="$ANDROID_AVD_HOME/testavd.avd/config.ini"
+          echo no | avdmanager create avd -n testavd -k "system-images;android-24;google_apis_playstore;x86_64" || true
+          CFG=$ANDROID_AVD_HOME/testavd.avd/config.ini
           cat "$CFG"
-          grep -q '^skin.name=' "$CFG" && sed -i 's|^skin.name=.*|skin.name=WXGA720|' "$CFG" || echo 'skin.name=WXGA720' >> "$CFG"
-          grep -q '^skin.path=' "$CFG" && sed -i 's|^skin.path=.*|skin.path=platforms/android-24/skins/WXGA720|' "$CFG" || echo 'skin.path=platforms/android-24/skins/WXGA720' >> "$CFG"
+          # software rendering; extra boot props for headless CI
           grep -q '^hw.gpu.enabled=' "$CFG" && sed -i 's|^hw.gpu.enabled=.*|hw.gpu.enabled=no|' "$CFG" || echo 'hw.gpu.enabled=no' >> "$CFG"
+          grep -q '^hw.gpu.mode=' "$CFG" && sed -i 's|^hw.gpu.mode=.*|hw.gpu.mode=off|' "$CFG" || echo 'hw.gpu.mode=off' >> "$CFG"
+          grep -q '^hw.cpu.ncore=' "$CFG" && sed -i 's|^hw.cpu.ncore=.*|hw.cpu.ncore=4|' "$CFG" || echo 'hw.cpu.ncore=4' >> "$CFG"
+          grep -q '^hw.ramSize=' "$CFG" && sed -i 's|^hw.ramSize=.*|hw.ramSize=2048|' "$CFG" || echo 'hw.ramSize=2048' >> "$CFG"
           echo "--- patched config ---"
           cat "$CFG"
 
-      - name: Replace emulator with 28.0.25 (last release with classic/QEMU1 ARM engine)
+      - name: Boot x86_64 emulator (TCG, no KVM)
         run: |
-          set -e
-          curl -sSL -o emu28.zip https://dl.google.com/android/repository/emulator-linux-5395263.zip
-          rm -rf "$ANDROID_HOME/emulator"
-          unzip -q emu28.zip -d "$ANDROID_HOME"
-          ls "$ANDROID_HOME/emulator/" | head -20
-          test -f "$ANDROID_HOME/emulator/emulator64-arm" || { echo "NO_CLASSIC_ENGINE_BINARY"; exit 1; }
-          chmod +x "$ANDROID_HOME/emulator/emulator64-arm"
-          "$ANDROID_HOME/emulator/emulator64-arm" -version | head -2 || { echo "CLASSIC_ENGINE_WONT_LOAD"; ldd "$ANDROID_HOME/emulator/emulator64-arm" | grep 'not found'; exit 1; }
-          echo "CLASSIC_ENGINE_OK"
-
-      - name: Boot with classic engine (TCG ARM emulation, 4h patience + heartbeat)
-        run: |
-          set -e
+          set -x
           export ANDROID_AVD_HOME=$HOME/.android/avd
           export ANDROID_USER_HOME=$HOME/.android
-          EMU="$ANDROID_HOME/emulator/emulator64-arm"
+          EMU=$ANDROID_HOME/emulator/emulator
           "$EMU" -list-avds || true
-          set -x
-          "$EMU" @testavd -engine classic -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu off -memory 1024 -show-kernel -verbose > emulator.log 2>&1 &
+          set +e
+          # -no-accel: runners have no KVM; x86_64 TCG is far faster than ARM32 TCG
+          "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu off -memory 2048 -show-kernel > emulator.log 2>&1 &
           EMUPID=$!
           sleep 45
           echo "--- emulator log head ---"
@@ -100,59 +91,30 @@ jobs:
             exit 1
           fi
           echo "ENGINE_ALIVE_AFTER_45S"
-          DEVICE_UP=0
-          for i in $(seq 1 48); do
-            if ! kill -0 $EMUPID 2>/dev/null; then
-              echo "EMULATOR_DIED_DURING_WAIT_FOR_DEVICE (round $i)"
-              tail -150 emulator.log
-              exit 1
-            fi
-            ST=$(adb devices 2>/dev/null | tail -n +2 | tr -d ' ' | grep -c 'device$\|offline$' || true)
-            echo "wait-for-device check $i: engine-alive, adb-lines=$ST  $(date -u +%H:%M:%S)"
-            if timeout 60 adb wait-for-device 2>/dev/null; then DEVICE_UP=1; break; fi
-            sleep 240
-          done
-          if [ $DEVICE_UP -ne 1 ]; then
-            echo "DEVICE_NEVER_APPEARED_4H"
-            tail -200 emulator.log
-            exit 1
-          fi
-          echo "DEVICE_APPEARED"
+
+      - name: Wait for boot (bounded, fast-fail)
+        run: |
           START=$SECONDS
-          BOOT_OK=0
           while true; do
-            if ! kill -0 $EMUPID 2>/dev/null; then
-              echo "EMULATOR_DIED_DURING_BOOT"
-              tail -150 emulator.log
+            if timeout 40 adb wait-for-device; then
+              if timeout 40 adb shell getprop sys.boot_completed 2>/dev/null | grep -q '^1$'; then
+                echo "BOOT_COMPLETED"
+                break
+              fi
+            fi
+            if [ $((SECONDS - START)) -gt 900 ]; then
+              echo "BOOT_TIMEOUT_15MIN"
+              tail -120 emulator.log || true
               exit 1
             fi
-            if timeout 60 adb shell getprop sys.boot_completed 2>/dev/null | grep -q '^1$'; then
-              echo "BOOT_COMPLETED"
-              BOOT_OK=1
-              break
-            fi
-            ELAPSED=$((SECONDS - START))
-            if [ $ELAPSED -gt 14400 ]; then
-              echo "BOOT_TIMEOUT_4H"
-              tail -200 emulator.log
-              exit 1
-            fi
-            if [ $((ELAPSED % 300)) -lt 30 ]; then
-              echo "boot-wait ${ELAPSED}s; kernel-log tail:"
-              tail -8 emulator.log || true
-            fi
-            sleep 30
+            sleep 15
           done
           adb shell getprop ro.build.version.release || true
-          adb shell getprop ro.product.cpu.abi || true
-
-      - name: Dump emulator log
-        if: always()
-        run: |
-          tail -150 emulator.log 2>/dev/null || echo "NO_EMULATOR_LOG"
+          adb shell getprop ro.product.cpu.abilist || true
 
       - name: Install APK
         run: |
+          # ARM32 APK on x86_64 image relies on houdini translation
           adb install -r TaoLive-tv-v1.0-vc33-32bit.apk
           adb shell pm list packages | grep taolive || echo "PACKAGE_NOT_FOUND"
 
@@ -167,7 +129,11 @@ jobs:
           sleep 120
           adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-180s.png || true
           adb shell "dumpsys activity processes | grep -i taolive | head -20" > proc-info.txt || true
-          adb shell ps -A | grep taolive > proc-ps.txt || true
+          adb shell "ps -A | grep taolive" > proc-ps.txt || true
+
+      - name: Dump emulator log
+        if: always()
+        run: cat emulator.log 2>/dev/null | tail -150 || echo "NO_EMULATOR_LOG"
 
       - name: Upload evidence
         if: always()

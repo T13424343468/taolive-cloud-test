@@ -43,7 +43,7 @@ jobs:
           # round9: dynamic pick of an x86 image with ARM translation (houdini); never hard-code a package again
           sdkmanager --list | grep -oE 'system-images;android-[0-9]+;[a-z_]+;x86' | sort -u | tee /tmp/x86-images.txt
           PICK=""
-          for CAND in "system-images;android-25;google_apis;x86" "system-images;android-24;google_apis;x86" "system-images;android-25;default;x86" "system-images;android-24;default;x86" "system-images;android-25;google_apis;x86_64" "system-images;android-30;google_apis;x86_64"; do
+          for CAND in "system-images;android-31;google_apis;x86_64" "system-images;android-30;google_apis;x86_64" "system-images;android-25;google_apis;x86"; do
             if grep -qxF "$CAND" /tmp/x86-images.txt; then PICK="$CAND"; break; fi
           done
           [ -n "$PICK" ] || { echo "NO_X86_IMAGE_AVAILABLE"; cat /tmp/x86-images.txt; exit 1; }
@@ -62,9 +62,16 @@ jobs:
           IMG=${IMG/x86_64/x86_64}
           echo "IMG=$IMG"
           ls "$IMG" | head -20
-          echo "--- houdini files ---"
+          echo "--- translation layer files ---"
           find "$ANDROID_HOME/system-images" -iname '*houdini*' | head -20 || true
           find "$ANDROID_HOME/system-images" -iname '*ndk_translation*' | head -10 || true
+          echo "--- image abilist ---"
+          BP=$(find "$IMG" -name build.prop | head -1)
+          echo "build.prop: $BP"
+          grep -a 'cpu.abilist' "$BP" || echo "NO_ABILIST_PROP"
+          if ! grep -qa 'cpu.abilist' "$BP" | grep -q arm; then
+            echo "NO_ARM_IN_ABILIST_TRANSLATION_UNLIKELY"
+          fi
 
       - name: Create AVD (x86_64 Google Play, houdini ARM translation)
         run: |
@@ -92,7 +99,7 @@ jobs:
           "$EMU" -list-avds || true
           set +e
           # -no-accel: runners have no KVM; x86_64 TCG is far faster than ARM32 TCG
-          "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu off -memory 2048 -show-kernel > emulator.log 2>&1 &
+          "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu swiftshader_indirect -memory 3072 -show-kernel > emulator.log 2>&1 &
           EMUPID=$!
           sleep 45
           echo "--- emulator log head ---"
@@ -114,7 +121,7 @@ jobs:
                 break
               fi
             fi
-            if [ $((SECONDS - START)) -gt 900 ]; then
+            if [ $((SECONDS - START))  -gt 2400 ]; then
               echo "BOOT_TIMEOUT_15MIN"
               tail -120 emulator.log || true
               exit 1

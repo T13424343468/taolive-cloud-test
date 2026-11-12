@@ -1342,7 +1342,7 @@ public class MainActivity : Activity
 
         // B 包第 12 项：抽屉头部——标题 + 台数 + 五标签行（当前标签朱砂底高亮，确认/左右键切换）
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        header.SetPadding(DrawerPad, 40, DrawerPad, 8);
+        header.SetPadding(Dp(DrawerPad), Dp(40), Dp(DrawerPad), Dp(8)); // UI③对齐修根：边距基准统一走 Dp，裸 48px 在高密度机上比频道行 Dp(48) 小一倍
         var title = new TextView(this) { Text = "TaoLive 频道", TextSize = 24 };
         title.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(title);
@@ -1360,12 +1360,13 @@ public class MainActivity : Activity
         // 1.0.12 UI③：行边距统一走 DrawerPad 基准，与页头/列表项同一水平对齐线；
         // 首标签 LeftMargin=0（其余 8），标签行最左与页头文字严格对齐
         var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        tabRow.SetPadding(DrawerPad, 24, DrawerPad, 12);
+        tabRow.SetPadding(Dp(DrawerPad), Dp(24), Dp(DrawerPad), Dp(12)); // UI③对齐修根：同 header，基准统一走 Dp
         _tabViews = new List<TextView>();
         int tabIndex = 0;
         foreach (DrawerSupport.Tab t in Enum.GetValues(typeof(DrawerSupport.Tab)))
         {
             var tv = new TextView(this) { Text = DrawerSupport.Label(t), TextSize = 16 };
+            tv.SetSingleLine(true); // UI④折行修根（老板 16:17 拍板）：分类签禁折行，无省略号（默认即不裁），宽度由 ApplyListWidth 估算保证完整显示
             tv.SetPadding(Dp(12), Dp(10), Dp(12), Dp(10));
             InkTranslucency.ApplyReadabilityShadow(tv);
             var lpTab = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = tabIndex == 0 ? 0 : Dp(8) };
@@ -1624,11 +1625,21 @@ public class MainActivity : Activity
             {
                 // 行宽 = 左右 padding(48×2) + 号(3字符) + 间距(32) + 星(1字符) + 间距(24) + 台名 + 状态标识
                 var w = 96 + Estimate(new string('0', 3), 20) + 32
-                        + Estimate("★", 20) + 24 + Estimate(r.Channel.Name, 22)
+                        + Estimate("★", 20) + 24 + Estimate(r.Channel.Name, 22) * 1.12f // UI④：台名禁折行后必须放得下，估宽留 12% 余量（当前行加粗更宽）
                         + Estimate("●", 20) + 24;
                 max = Math.Max(max, w);
             }
         }
+        // UI④：五分类签行宽一并计入——签禁折行后整行必须放得下（左右页边距 + 每签左右 padding + 签间距），
+        // 否则面板窄于签行时最后一签被裁（「地方台」竖排三行的根子之一）
+        var tabs = (DrawerSupport.Tab[])Enum.GetValues(typeof(DrawerSupport.Tab));
+        float tabRowW = 2 * Dp(DrawerPad);
+        for (int i = 0; i < tabs.Length; i++)
+        {
+            tabRowW += Estimate(DrawerSupport.Label(tabs[i]), 16) + 2 * Dp(12);
+            if (i > 0) tabRowW += Dp(8);
+        }
+        max = Math.Max(max, tabRowW);
         int width = ListMetrics.ComputeWidthPx(max - 96 * density, density, Resources.DisplayMetrics.WidthPixels);
         _listPanel.LayoutParameters = new FrameLayout.LayoutParams(width, -1, GravityFlags.Left);
     }
@@ -1751,6 +1762,7 @@ public class MainActivity : Activity
             line.AddView(star);
 
             var name = new TextView(ctx) { Text = ch.Name };
+            name.SetSingleLine(true); // UI④折行修根（老板 16:17 拍板）：频道名禁折行、禁省略号，宽度由 ApplyListWidth 估算保证超长完整显示
             var isCur = _current?.Number == ch.Number;
             Style(name, isCur ? "#FFFFFF" : InkTranslucency.TextSecondary, 22);
             InkTranslucency.ApplyReadabilityShadow(name);

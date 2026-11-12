@@ -45,12 +45,16 @@ public static class FallbackSourceRegistry
     private static readonly FallbackEntry[] Cctv =
     {
         new("CCTV1综合", "http://74.91.26.218:82/cctv1/index.m3u8"),
+        // 17:18 支援摸排收录（老板 17:30 令）：全链实测 清单200→首分片206 实数据；与 CCTV1 同源族单点，
+        // 评分侧按单点降权；纯 IP 字面量不走系统解析，对解析僵死场景天然免疫（与⑤网络自愈互为逃生线）
+        new("CCTV2财经", "http://74.91.26.218:82/live/cctv2hd.m3u8"),
+        new("CCTV6电影", "http://74.91.26.218:82/live/cctv6hd.m3u8"),
         new("CCTV4中文国际", "https://dash2.antik.sk/cctv4/index.m3u8"),
         new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8"),
         new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8"),
     };
 
-    /// <summary>全量备援表（15 卫视 + 4 央视，共 19 路）。</summary>
+    /// <summary>全量备援表（15 卫视 + 6 央视，共 21 路）。</summary>
     public static readonly FallbackEntry[] Table =
         Satellites.Concat(Cctv).ToArray();
 

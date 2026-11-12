@@ -153,18 +153,32 @@ public static class HlsRewriter
     public const string ProxyHost = "127.0.0.1";
     public const int ProxyPort = 47618;
 
-    /// <summary>把正文中所有 http(s) 绝对 URL 包进代理（已代理过的跳过）；相对路径行原样保留（代理侧按 Referer 还原）。</summary>
-    public static string RewritePlaylist(string playlist)
+    /// <summary>
+    /// 把正文中所有 http(s) 绝对 URL 包进代理（已代理过的跳过）；
+    /// 相对路径行（评审观察②修法）：给了 baseUrl 时先按子清单自身地址转绝对再包——VLC 默认不发 Referer，
+    /// 代理侧 Referer 还原兜不住，必须在改写时一次做对，零状态。
+    /// </summary>
+    public static string RewritePlaylist(string playlist, string? baseUrl = null)
     {
         if (string.IsNullOrEmpty(playlist)) return playlist;
+        Uri? baseUri = null;
+        if (!string.IsNullOrEmpty(baseUrl)) Uri.TryCreate(baseUrl, UriKind.Absolute, out baseUri);
         var lines = playlist.Split('\n');
         for (int i = 0; i < lines.Length; i++)
         {
             var line = lines[i].TrimEnd('\r');
-            if (!line.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-                && !line.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) continue;
-            if (line.Contains($":{ProxyPort}/?u=")) continue; // 已是代理 URL：不二次包裹
-            lines[i] = Wrap(line);
+            if (line.Length == 0 || line.StartsWith("#")) continue; // 标签行不动
+            if (line.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                if (line.Contains($":{ProxyPort}/?u=")) continue; // 已是代理 URL：不二次包裹
+                lines[i] = Wrap(line);
+                continue;
+            }
+            if (baseUri != null)
+            {
+                try { lines[i] = Wrap(new Uri(baseUri, line).ToString()); } catch { /* 解不了原样保留 */ }
+            }
         }
         return string.Join("\n", lines);
     }
@@ -220,17 +234,67 @@ public class SelfHealProxyKernel : IDisposable
 
     private System.Net.HttpListener? _listener;
     private CancellationTokenSource? _cts;
-    private readonly StreamDnsPicker _dns;
-    private static readonly System.Net.Http.HttpClient Forward = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+    // 评审观察①修法（最重红）：回源 HttpClient 不得走系统解析——SystemDnsBroken 场景裸 HttpClient 同样 502，
+    // ⑤在目标病根下等于没生效。SocketsHttpHandler.ConnectCallback 按 DoH 择优解析拿 IP 直连（SNI 由 handler
+    // 按原请求主机补齐，TLS 不受影响）；连接超时 5 秒，IP 逐个试不连坏 IP 死磕。
+    private static readonly System.Net.Http.HttpClient Forward = CreateForwardClient();
+
+    private static System.Net.Http.HttpClient CreateForwardClient()
+    {
+        var dns = new StreamDnsPicker();
+        var handler = new System.Net.Http.SocketsHttpHandler
+        {
+            ConnectTimeout = TimeSpan.FromSeconds(5),
+            ConnectCallback = async (ctx, ct) =>
+            {
+                var host = ctx.DnsEndPoint.Host;
+                int port = ctx.DnsEndPoint.Port;
+                IPAddress[] ips;
+                try { ips = await dns.ResolveAsync(host); }
+                catch { ips = Array.Empty<IPAddress>(); }
+                Exception? last = null;
+                foreach (var ip in ips)
+                {
+                    try
+                    {
+                        var sock = new System.Net.Sockets.Socket(ip.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+                        await sock.ConnectAsync(new IPEndPoint(ip, port), ct);
+                        return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true);
+                    }
+                    catch (Exception ex) { last = ex; }
+                }
+                throw last ?? new System.IO.IOException($"自愈代理回源无可用 IP：{host}");
+            },
+        };
+        return new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+    }
 
     public SelfHealProxyKernel(StreamDnsPicker? dns = null)
     {
-        _dns = dns ?? new StreamDnsPicker();
+        _ = dns; // 回源解析已统一下沉到 Forward 的 ConnectCallback（构造注入仅为兼容签名保留）
         _listener = new System.Net.HttpListener();
         _listener.Prefixes.Add($"http://{HlsRewriter.ProxyHost}:{HlsRewriter.ProxyPort}/");
     }
 
     public bool IsRunning { get; private set; }
+
+    /// <summary>评审观察③修法：127.0.0.1 假活陷阱——IsRunning 只代表监听起过，运行中可能僵死。
+    /// 切代理前实测本机回环可达，探不通按未启用处理（不把播放链切进死代理）。</summary>
+    public bool IsAlive
+    {
+        get
+        {
+            if (!IsRunning) return false;
+            try
+            {
+                using var tcp = new System.Net.Sockets.TcpClient();
+                var connect = tcp.ConnectAsync(IPAddress.Loopback, HlsRewriter.ProxyPort);
+                return connect.Wait(500) && tcp.Connected;
+            }
+            catch { return false; }
+        }
+    }
 
     public void Start()
     {
@@ -289,9 +353,8 @@ public class SelfHealProxyKernel : IDisposable
             else { ctx.Response.StatusCode = 400; ctx.Response.Close(); return; }
         }
 
-        var host = new Uri(target).Host;
-        // 回源解析走存活通道（StreamDnsPicker 内部系统+DoH 并发择优，系统解析坏时 DoH 独立撑住）
-        await _dns.ResolveAsync(host);
+        // 评审观察①修法：回源解析已下沉到 Forward 的 ConnectCallback（DoH 择优 IP 直连），
+        // 此处不再空跑 ResolveAsync（旧写法结果丢弃，SystemDnsBroken 场景照样 502）
 
         using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, target);
         // 透传关键头：Range（分片续传）、UA/Referer（防盗链）、Host 由 HttpClient 按目标 URL 自带
@@ -308,9 +371,10 @@ public class SelfHealProxyKernel : IDisposable
         bool isPlaylist = media.Contains("mpegurl") || target.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
         if (isPlaylist)
         {
-            // 子清单/主清单：正文域名 URL 全改写为代理 URL（播放链后续请求继续走代理）
+            // 子清单/主清单：正文域名 URL 全改写为代理 URL（播放链后续请求继续走代理）；
+            // 相对路径按本清单自身地址转绝对再包（评审观察②修法，零状态）
             var body = await resp.Content.ReadAsStringAsync(ct);
-            var rewritten = HlsRewriter.RewritePlaylist(body);
+            var rewritten = HlsRewriter.RewritePlaylist(body, target);
             var buf = System.Text.Encoding.UTF8.GetBytes(rewritten);
             ctx.Response.ContentLength64 = buf.Length;
             await ctx.Response.OutputStream.WriteAsync(buf, ct);

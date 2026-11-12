@@ -564,7 +564,7 @@ public class LiveVideoHost : IDisposable
         // vc39 ⑤：门控启用且代理存活 → 播本地代理 URL（127.0.0.1/?u=原URL），代理按存活通道（DoH 择优）回源；
         // _currentUrl 保持原 URL（换票比较/换台逻辑不受影响），只在起播这一层换地址
         string playUrl = _currentUrl!;
-        if (HealGate.IsEngaged && HealKernel.IsRunning && !HlsRewriter.TryUnwrap(playUrl, out _))
+        if (HealGate.IsEngaged && HealKernel.IsAlive && !HlsRewriter.TryUnwrap(playUrl, out _))
         {
             playUrl = HlsRewriter.Wrap(playUrl);
             try { CrashNet.Record($"[LiveVideoHost] 网络自愈门控启用中：本次起播走本地代理（原源 {MaskUrl(_currentUrl)}）"); } catch { }
@@ -709,7 +709,7 @@ public class LiveVideoHost : IDisposable
                     int port = uri.IsDefaultPort ? (uri.Scheme == "https" ? 443 : 80) : uri.Port;
                     var verdict = await HealTriage.TriageAsync(uri.Host, port: port);
                     try { CrashNet.Record($"[LiveVideoHost] 网络自愈三分判别（{via} 连败 {SelfHealGate.FailThreshold} 起）：{verdict.Detail}"); } catch { }
-                    if (HealGate.ReportTriage(verdict) && HealKernel.IsRunning)
+                    if (HealGate.ReportTriage(verdict) && HealKernel.IsAlive)
                     {
                         try { CrashNet.Record("[LiveVideoHost] 网络自愈门控启用：播放链切本地代理，按存活通道（DoH 择优）回源"); } catch { }
                         RestartKernel(); // 立即按代理链重播当前台（不等 2/4/6 秒阶梯走完）

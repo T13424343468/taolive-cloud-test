@@ -239,14 +239,15 @@ public static class ListMetrics
     /// <summary>面板宽（像素）= 屏宽 × 2/3。</summary>
     public static int ComputePanelWidthPx(int screenW) => (int)(screenW * PanelRatio);
 
-    /// <summary>频道行内容宽（U 单位）：双边距(1.5×2) + 台标(2.5) + 台标右(0.5) + 数字(3×0.55×1.25)
-    /// + 数字右(1) + 星(1.25) + 星右(0.75) + 台名(len×mul×1.12，当前行加粗余量) + 状态点(1.125) + 点左(0.75)。</summary>
+    /// <summary>频道行内容宽（U 单位，vc41 常量与 UI 行布局逐项对齐）：双边距(0.75×2) + 台标(2.5) + 台标右(0.25)
+    /// + 数字(3×0.55×1.25) + 数字右(0.5) + 星(1.25) + 星右(0.375) + 台名(len×mul×1.12，当前行加粗余量)
+    /// + 状态点(1.125) + 点左(0.375)，固定项和=9.9375U。</summary>
     public static float RowContentU(int nameLen, float nameMulU) =>
-        3f + 2.5f + 0.5f + 3 * 0.55f * 1.25f + 1f + 1.25f + 0.75f
-        + nameLen * nameMulU * 1.12f + 1.125f + 0.75f;
+        1.5f + 2.5f + 0.25f + 3 * 0.55f * 1.25f + 0.5f + 1.25f + 0.375f
+        + nameLen * nameMulU * 1.12f + 1.125f + 0.375f;
 
-    /// <summary>面板内宽（U 单位）= 40 × 2/3 − 双边距 3。</summary>
-    public static float PanelInnerU() => 40f * PanelRatio - 3f;
+    /// <summary>面板内宽（U 单位）= 40 × 2/3 − 行双边距 1.5（vc41 行边距 24px=0.75U×2）。</summary>
+    public static float PanelInnerU() => 40f * PanelRatio - 1.5f;
 
     /// <summary>一行完整判定：最坏台名行内容 ≤ 面板内宽（禁折行禁省略号的唯一放行条件）。</summary>
     public static bool FitsPanel(int worstNameLen, float nameMulU) =>

@@ -486,7 +486,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(ListMetrics.ComputePanelWidthPx(3840) == 2560, "大屏同比放大（自适应等比缩放）");
     Check(ListMetrics.FitsPanel(7, 1.375f), "常规台名一行装得下（面板内宽）");
     Check(!ListMetrics.FitsPanel(30, 1.375f), "超长台名当前档装不下（触发降档）");
-    Check(ListMetrics.FitsPanel(30, 0.875f), "降档后一行完整（面板宽度不动）");
+    Check(ListMetrics.FitsPanel(14, 0.875f), "降档后一行完整（面板宽度不动）"); // 几何可达最坏台名：0.875U 档上限 15 字（30 字@0.875 单台名 29.4U>内宽 25.17U 不可能成立，修红改 14 字实证）
 }
 
 // 追加：强制刷新取票（v1.0.8 重连前换票的取流侧口径）——force 绕过缓存仍出票

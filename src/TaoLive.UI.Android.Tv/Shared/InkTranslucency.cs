@@ -24,6 +24,10 @@ public static class InkTranslucency
     /// 亮画面上文字仍清晰可读，同时保持半透明水墨质感。</summary>
     public const int PanelAlpha = 76;
 
+    /// <summary>深面板底色透明度：进阶调优页专用（vc41，老板 20:23 令「底色加深一档，不跟画面亮度走」，
+    /// 吸收此前「底色加深/选中态加重」遗留三点）。</summary>
+    public const int PanelDeepAlpha = 120;
+
     /// <summary>焦点/确认效果层底色透明度：v1.0.9 第③项加深（40→64），高亮更醒目。</summary>
     public const int FocusFillAlpha = 64;
 
@@ -62,6 +66,10 @@ public static class InkTranslucency
     /// <summary>自适应面板/列表底色：暗屏时加深一档，文字更容易看清。</summary>
     public static Color PanelColor(Context ctx) =>
         Color.Argb(Boost(ctx, PanelAlpha), InkR, InkG, InkB);
+
+    /// <summary>深面板底色（vc41 进阶调优页专用）：底色加深一档且不跟画面亮度走，文字不再叠在亮画面上。</summary>
+    public static Color PanelColorDeep(Context ctx) =>
+        Color.Argb(Boost(ctx, PanelDeepAlpha), InkR, InkG, InkB);
 
     /// <summary>自适应信息条底色：暗屏时加深一档，文字保持可读。</summary>
     public static Color InfoColor(Context ctx) => Color.Argb(Boost(ctx, InfoAlpha), InkR, InkG, InkB);

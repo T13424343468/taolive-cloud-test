@@ -1172,7 +1172,14 @@ public class MainActivity : Activity
     {
         for (int i = 0; i < steps.Length; i++)
             if (steps[i] > current) return steps[i];
-        return steps[0]; // 到顶循环回最小档
+        return steps[^1]; // 到最大档即停（老板 20:27 令：边界限位，不循环回绕）
+    }
+
+    private static int PrevStep(int[] steps, int current)
+    {
+        for (int i = steps.Length - 1; i >= 0; i--)
+            if (steps[i] < current) return steps[i];
+        return steps[0]; // 到最小档即停（同上，边界限位）
     }
 
     private void ShowAdvancedTuningPanel()
@@ -1182,72 +1189,105 @@ public class MainActivity : Activity
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int pad = Dp(24);
             box.SetPadding(pad, pad, pad, pad);
-            box.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            var title = new TextView(this) { Text = "进阶调优", TextSize = 22 };
+            box.SetBackgroundColor(InkTranslucency.PanelColorDeep(this)); // vc41：底色加深一档，不跟画面亮度走（老板 20:23 令）
+            var title = new TextView(this) { Text = "进阶调优", TextSize = Shared.UiScale.T(1.5f) };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = Dp(10) });
 
-            void AddKnob(string label, string desc, Action onClick)
+            // vc41：内容区套滚动+权重撑开，按钮行固定沉底（照自诊断/崩溃日志窗口径，老板 20:23 拍板「按钮沉底」）
+            var scroll = new ScrollView(this) { };
+            var body = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            scroll.AddView(body);
+            box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            var refreshers = new List<Action>();
+
+            // vc41 加减号交互（老板 20:25-20:27 定稿）：每项「− 当前值 +」——值纯展示不落光标，
+            // 光标只在 −/+ 两个焦点位间移（左右切加减、上下跨项、确认键减/加）；
+            // 加减真改值且有界：预设最大/最小档，到边界即停不回绕，边界处对应钮灰显失效——彻底避开输入法/无数字键遥控。
+            void AddKnob(string desc, int[] steps, Func<string> valueText, Action<int> set, Func<int> cur)
             {
-                var row = new TextView(this) { Text = label, TextSize = 19 };
-                row.SetTextColor(Color.ParseColor("#F7F5EE"));
-                row.SetPadding(Dp(24), Dp(20), Dp(24), Dp(2));
-                row.Focusable = true;
-                var focusDrawable = InkTranslucency.FocusDrawable();
-                row.FocusChange += (_, ev) =>
+                var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+                row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(2)); // vc41：紧凑对齐自诊断（上 20→12、缩进统一 24）
+
+                var minus = new TextView(this) { Text = "−", Gravity = GravityFlags.Center };
+                var value = new TextView(this) { Gravity = GravityFlags.Center };
+                var plus = new TextView(this) { Text = "+", Gravity = GravityFlags.Center };
+
+                int btn = Dp(40); // 2.5U 方块
+                void StyleKnob(TextView b)
                 {
-                    if (ev.HasFocus) row.Background = focusDrawable;
-                    else if (row.Background == focusDrawable) row.Background = null;
-                };
-                row.Click += (_, _) => { onClick(); SaveAdvancedTuning(); RefreshAdvancedRows(); };
-                box.AddView(row);
-                var sub = new TextView(this) { Text = desc, TextSize = 15 };
+                    StyleOverlayButton(b, InkTranslucency.AccentFocusDrawable()); // 选中态加重：朱砂底（vc41 吸收遗留三点）
+                    b.TextSize = Shared.UiScale.T(1.25f);
+                }
+                StyleKnob(minus);
+                StyleKnob(plus);
+                value.Focusable = false;
+                value.TextSize = Shared.UiScale.T(1.25f);
+                value.SetTextColor(Color.ParseColor("#F7F5EE"));
+                value.SetPadding(Dp(12), 0, Dp(12), 0);
+                InkTranslucency.ApplyReadabilityShadow(value);
+
+                minus.Click += (_, _) => { if (cur() > steps[0]) { set(PrevStep(steps, cur())); SaveAdvancedTuning(); Refresh(); } };
+                plus.Click += (_, _) => { if (cur() < steps[^1]) { set(NextStep(steps, cur())); SaveAdvancedTuning(); Refresh(); } };
+                row.AddView(minus, new LinearLayout.LayoutParams(btn, btn));
+                row.AddView(value, new LinearLayout.LayoutParams(0, -2, 1f));
+                row.AddView(plus, new LinearLayout.LayoutParams(btn, btn));
+                body.AddView(row);
+
+                var sub = new TextView(this) { Text = desc, TextSize = Shared.UiScale.T(0.9375f) };
                 sub.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
                 InkTranslucency.ApplyReadabilityShadow(sub);
-                sub.SetPadding(Dp(30), 0, Dp(24), Dp(10));
-                box.AddView(sub);
+                sub.SetPadding(Dp(24), 0, Dp(24), Dp(8));
+                body.AddView(sub);
+
+                void Refresh()
+                {
+                    value.Text = valueText();
+                    minus.Alpha = cur() <= steps[0] ? 0.35f : 1f;   // 边界灰显：到头即停
+                    plus.Alpha = cur() >= steps[^1] ? 0.35f : 1f;
+                }
+                refreshers.Add(Refresh);
+                Refresh();
             }
-            // 5 个旋钮行（确认键循环档位；每项下挂一行人话作用说明——老板令：讲清楚每一项是什么作用）
-            void Knob(int[] steps, Action<int> set, Func<string> label, string desc, Func<int> cur)
-            {
-                AddKnob(label(), desc, () => set(NextStep(steps, cur())));
-            }
-            Knob(AdvGateSteps,
+
+            // 5 个旋钮（每项下挂一行人话作用说明——老板令：讲清楚每一项是什么作用）
+            AddKnob("网络解析出毛病时，撑几次失败才启动本地中转自救——调低自救快但易误伤，调高稳但自救慢",
+                AdvGateSteps,
+                () => $"自愈门槛：连败 {AdvancedTuning.SelfHealFailGate} 次（默认 3）",
                 v => AdvancedTuning.Apply(v, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
-                () => $"自愈门槛：连败 {AdvancedTuning.SelfHealFailGate} 次（默认 3 · 确认键调）",
-                "网络解析出毛病时，撑几次失败才启动本地中转自救——调低自救快但易误伤，调高稳但自救慢",
                 () => AdvancedTuning.SelfHealFailGate);
-            Knob(AdvReprobeMinSteps,
+            AddKnob("自救起来之后，隔多久偷偷试一次能否回直连——调低回得快但探测勤，调高省流量回得慢",
+                AdvReprobeMinSteps,
+                () => $"自愈回探：{AdvancedTuning.SelfHealReprobeMs / 60_000} 分钟（默认 5）",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, v * 60_000L, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
-                () => $"自愈回探：{AdvancedTuning.SelfHealReprobeMs / 60_000} 分钟（默认 5 · 确认键调）",
-                "自救起来之后，隔多久偷偷试一次能否回直连——调低回得快但探测勤，调高省流量回得慢",
                 () => (int)(AdvancedTuning.SelfHealReprobeMs / 60_000));
-            Knob(AdvCacheSecSteps,
+            AddKnob("频道清单数据在手上留多久不重取——留久省流量，留短换台信息更新鲜",
+                AdvCacheSecSteps,
+                () => $"清单缓存：{AdvancedTuning.ListCacheSec} 秒（默认 60）",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, v, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
-                () => $"清单缓存：{AdvancedTuning.ListCacheSec} 秒（默认 60 · 确认键调）",
-                "频道清单数据在手上留多久不重取——留久省流量，留短换台信息更新鲜",
                 () => AdvancedTuning.ListCacheSec);
-            Knob(AdvRetrySecSteps,
+            AddKnob("被源服务器拒绝后退多远再试——跟风控博弈的分寸：调急了容易挨打，调钝了台恢复慢（封顶恒 2 小时）",
+                AdvRetrySecSteps,
+                () => $"重试节奏：起步 {AdvancedTuning.RetryBaseMs / 1000} 秒（默认 120）",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, v * 1000L, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
-                () => $"重试节奏：起步 {AdvancedTuning.RetryBaseMs / 1000} 秒（默认 120 · 确认键调）",
-                "被源服务器拒绝后退多远再试——跟风控博弈的分寸：调急了容易挨打，调钝了台恢复慢（封顶恒 2 小时）",
                 () => (int)(AdvancedTuning.RetryBaseMs / 1000));
-            Knob(AdvPortSteps,
+            AddKnob("自救中转走的内部通道口——只有跟其他软件撞号才需要改；改动下次播放生效",
+                AdvPortSteps,
+                () => $"自救端口：{AdvancedTuning.ProxyPort}（默认 47618）",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, v),
-                () => $"自救端口：{AdvancedTuning.ProxyPort}（默认 47618 · 确认键调）",
-                "自救中转走的内部通道口——只有跟其他软件撞号才需要改；改动下次播放生效",
                 () => AdvancedTuning.ProxyPort);
 
             var tip = new TextView(this)
             {
-                Text = "改坏了随时点「一键还原默认」回出厂值。\n端口项改动下次播放生效，其余即时生效。",
-                TextSize = 15,
+                Text = "左右键切 − / +，确认键调档；到头即停。\n改坏了随时点「一键还原默认」回出厂值。端口项改动下次播放生效，其余即时生效。",
+                TextSize = Shared.UiScale.T(0.9375f),
             };
             tip.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(tip);
-            tip.SetPadding(Dp(30), Dp(6), Dp(24), Dp(10));
-            box.AddView(tip);
+            tip.SetPadding(Dp(24), Dp(6), Dp(24), Dp(10));
+            body.AddView(tip);
 
             var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             var reset = new TextView(this) { Text = "一键还原默认", Gravity = GravityFlags.Center };
@@ -1256,7 +1296,7 @@ public class MainActivity : Activity
             {
                 AdvancedTuning.ResetToDefaults();
                 SaveAdvancedTuning();
-                RefreshAdvancedRows();
+                foreach (var rf in refreshers) rf(); // vc41：原位刷新值与灰显，不再整页重建（焦点不丢）
                 FlashInfo("进阶调优：已全部还原出厂默认");
             };
             var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
@@ -1268,13 +1308,13 @@ public class MainActivity : Activity
             close.NextFocusLeftId = reset.Id;
             StyleOverlayButton(reset, InkTranslucency.AccentFocusDrawable()); // 还原=朱砂（改动性按钮）
             StyleOverlayButton(close, InkTranslucency.FocusDrawable());
-            int btnH = Dp(52);
+            int btnH = Dp(52); // 3.25U
             btns.AddView(reset, new LinearLayout.LayoutParams(0, btnH, 1f));
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
             box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
 
             var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
-            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
+            overlay.SetBackgroundColor(InkTranslucency.PanelColorDeep(this));
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
             _advOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1282,13 +1322,6 @@ public class MainActivity : Activity
             close.RequestFocus(); // 默认焦点落「关闭」，防误改
         }
         catch (Exception ex) { CrashNet.Record($"[进阶调优] 打开失败：{ex.Message}"); FlashInfo("进阶调优打开失败"); }
-    }
-
-    private void RefreshAdvancedRows() // 简化刷新：整体重建面板（行数固定，焦点随重建回默认，与设置面板同口径）
-    {
-        if (_advOverlay is null) return;
-        CloseAdvancedPanel(reopenSettings: false);
-        ShowAdvancedTuningPanel();
     }
 
     private void CloseAdvancedPanel(bool reopenSettings = true)

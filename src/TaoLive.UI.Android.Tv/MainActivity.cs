@@ -146,7 +146,7 @@ public class MainActivity : Activity
         base.OnCreate(savedInstanceState);
         TaoPalette.Select(0); // 水墨默认
         // vc42 显示大小：档位系数随偏好（大=4/3/中=1/小=2/3，老板 21:08 定稿），重建后清冻结重定标
-        float dispFactor = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!.GetFloat("ui_scale", 1f);
+        float dispFactor = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!.GetFloat("ui_scale", 4f / 9f);
         Shared.UiScale.Reset();
         Shared.UiScale.Init(Resources!.DisplayMetrics!, dispFactor); // vc41 自适应体系：启动定标一次，全套令牌冻结
 
@@ -984,8 +984,9 @@ public class MainActivity : Activity
         FlashInfo(_warmupEnabled ? "后台预热：开" : "后台预热：关");
     }
 
-    // vc42 显示大小（老板 21:08 定稿）：中=1（=原尺寸，默认）、大=4/3、小=2/3；面板/字/间距同一系数整体缩放
-    private static readonly float[] DisplaySizeSteps = { 4f / 3f, 1f, 2f / 3f };
+    // vc42 显示大小（老板 21:08 定稿；21:47 令调整梯子）：以 vc42 小档（2/3）为新大档基准，中/小各再减自身 1/3
+    // → 大=2/3、中=4/9、小=8/27；面板/字/间距同一系数整体缩放，默认仍「中」
+    private static readonly float[] DisplaySizeSteps = { 2f / 3f, 4f / 9f, 8f / 27f };
     private static readonly string[] DisplaySizeLabels = { "大", "中", "小" };
 
     private static int DisplaySizeIndex(float f)
@@ -996,13 +997,13 @@ public class MainActivity : Activity
     }
 
     private string DisplaySizeLabel() => DisplaySizeLabels[DisplaySizeIndex(
-        GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!.GetFloat("ui_scale", 1f))];
+        GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!.GetFloat("ui_scale", 4f / 9f))];
 
     /// <summary>vc42 显示大小：大→中→小循环，档位记忆；整界面重建即时生效（正在看的台自动接回）。</summary>
     private void CycleDisplaySize()
     {
         var prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
-        int next = (DisplaySizeIndex(prefs.GetFloat("ui_scale", 1f)) + 1) % DisplaySizeSteps.Length;
+        int next = (DisplaySizeIndex(prefs.GetFloat("ui_scale", 4f / 9f)) + 1) % DisplaySizeSteps.Length;
         prefs.Edit()?.PutFloat("ui_scale", DisplaySizeSteps[next])?.Apply();
         Recreate(); // 重建走 OnCreate 重定标，全套令牌按新档位重算
     }

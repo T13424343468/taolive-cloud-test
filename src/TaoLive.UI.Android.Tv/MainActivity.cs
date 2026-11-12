@@ -143,6 +143,7 @@ public class MainActivity : Activity
     {
         base.OnCreate(savedInstanceState);
         TaoPalette.Select(0); // 水墨默认
+        Shared.UiScale.Init(Resources!.DisplayMetrics!); // vc41 自适应体系：启动定标一次，全套令牌冻结
 
         // 全局兜底：未捕获异常先落日志再放行，崩溃原因可查可报，不再无声闪退（v1.0.7）
         Java.Lang.Thread.DefaultUncaughtExceptionHandler =
@@ -393,7 +394,7 @@ public class MainActivity : Activity
         _loadingText = new TextView(this)
         {
             Gravity = GravityFlags.Center,
-            TextSize = 24,
+            TextSize = UiScale.T(1.5f),
         };
         _loadingText.SetTextColor(InkTranslucency.TextPrimary(this));
         _loadingPanel.AddView(_loadingText, new FrameLayout.LayoutParams(-1, -2)
@@ -413,7 +414,7 @@ public class MainActivity : Activity
         _infoBar.SetBackgroundColor(InkTranslucency.InfoColor(this)); // v1.0.9 第③项：底色随亮度自适应
         InkTranslucency.ApplyReadabilityShadow(_infoBar);
         _infoBar.SetPadding(Dp(36), Dp(16), Dp(36), Dp(16));
-        _infoBar.TextSize = 22;
+        _infoBar.TextSize = UiScale.T(1.375f);
         _root.AddView(_infoBar, new FrameLayout.LayoutParams(-2, -2)
         {
             Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal,
@@ -426,10 +427,10 @@ public class MainActivity : Activity
         _epgPanel.SetBackgroundColor(InkTranslucency.PanelColor(this));
         _epgPanel.SetPadding(Dp(36), Dp(18), Dp(36), Dp(22));
         _epgPanel.Visibility = ViewStates.Gone;
-        _epgNow = new TextView(this) { TextSize = 18 };
+        _epgNow = new TextView(this) { TextSize = UiScale.T(1.125f) };
         _epgNow.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(_epgNow);
-        _epgNext = new TextView(this) { TextSize = 15 };
+        _epgNext = new TextView(this) { TextSize = UiScale.T(0.9375f) };
         _epgNext.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(_epgNext);
         _epgPanel.AddView(_epgNow);
@@ -852,7 +853,7 @@ public class MainActivity : Activity
         var panel = new LinearLayout(this) { Orientation = Orientation.Vertical };
         panel.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v1.0.9 第③项：底色加深并随亮度自适应
         panel.SetPadding(Dp(40), Dp(28), Dp(40), Dp(36));
-        panel.SetMinimumWidth((int)(360 * Resources!.DisplayMetrics!.Density));
+        panel.SetMinimumWidth(Dp(360)); // vc41 自适应体系：定比令牌
         panel.Visibility = ViewStates.Gone;
         _root.AddView(panel, new FrameLayout.LayoutParams(-2, -2)
         {
@@ -874,7 +875,7 @@ public class MainActivity : Activity
 
         void AddLabel(string text)
         {
-            var tv = new TextView(this) { Text = text, TextSize = 15 };
+            var tv = new TextView(this) { Text = text, TextSize = UiScale.T(0.9375f) };
             tv.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(tv);
             tv.SetPadding(Dp(24), Dp(18), Dp(24), Dp(6));
@@ -882,7 +883,7 @@ public class MainActivity : Activity
         }
         void AddRow(string text, Action onClick, string color, Action? onLongClick = null)
         {
-            var tv = new TextView(this) { Text = text, TextSize = 19 };
+            var tv = new TextView(this) { Text = text, TextSize = UiScale.T(1.1875f) };
             tv.SetTextColor(Color.ParseColor(color));
             tv.SetPadding(Dp(24), Dp(24), Dp(24), Dp(24));
             tv.Focusable = true;
@@ -990,15 +991,15 @@ public class MainActivity : Activity
             // 不再露 ROM 钢蓝灰；「一键清理」=朱砂（危险项，同退出钮口径）、「关闭」=纸白；常驻=水墨深底+次色字；
             // 字体统一 TextPrimary/TextSecondary+可读性阴影；默认焦点落「关闭」（防误清日志）；返回键=关闭。
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            int pad = (int)(24 * Resources!.DisplayMetrics!.Density);
+            int pad = Dp(24); // vc41 自适应体系
             box.SetPadding(pad, pad, pad, pad);
             box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // 与列表页面板同源同号
-            var title = new TextView(this) { Text = "崩溃日志（全屏）", TextSize = 22 };
+            var title = new TextView(this) { Text = "崩溃日志（全屏）", TextSize = UiScale.T(1.375f) };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = pad });
             var scroll = new ScrollView(this) { };
-            var body = new TextView(this) { Text = text, TextSize = 15 };
+            var body = new TextView(this) { Text = text, TextSize = UiScale.T(0.9375f) };
             body.SetTextIsSelectable(false);
             body.Focusable = false; // 日志正文不抢焦点，焦点只在两键间转
             body.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
@@ -1007,7 +1008,7 @@ public class MainActivity : Activity
             box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f)); // 权重铺满
             var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             var clean = new TextView(this) { Text = "一键清理", Gravity = GravityFlags.Center }; // TextView 自绘，去 ROM 系统着色
-            clean.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
+            clean.SetPadding(pad / 2, Dp(14), pad / 2, Dp(14));
             clean.Click += (_, _) =>
             {
                 try { System.IO.File.Delete(path.AbsolutePath); FlashInfo("崩溃日志已清空"); }
@@ -1015,7 +1016,7 @@ public class MainActivity : Activity
                 CloseCrashPanel();
             };
             var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
-            close.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
+            close.SetPadding(pad / 2, Dp(14), pad / 2, Dp(14));
             close.Click += (_, _) => CloseCrashPanel();
             clean.Id = View.GenerateViewId();
             close.Id = View.GenerateViewId();
@@ -1024,7 +1025,7 @@ public class MainActivity : Activity
             StyleOverlayButton(clean, InkTranslucency.AccentFocusDrawable()); // 一键清理=朱砂（危险项）
             StyleOverlayButton(close, InkTranslucency.FocusDrawable()); // 关闭=纸白
             // 1.0.12 UI①：按钮行固定底栏——固定行高常驻占位，不论日志多少行按钮始终在屏幕底部固定位置
-            int btnH = (int)(52 * Resources.DisplayMetrics.Density);
+            int btnH = Dp(52);
             btns.AddView(clean, new LinearLayout.LayoutParams(0, btnH, 1f));
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
             box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
@@ -1099,12 +1100,12 @@ public class MainActivity : Activity
             int pad = Dp(24);
             box.SetPadding(pad, pad, pad, pad);
             box.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            var title = new TextView(this) { Text = "自诊断（只读）", TextSize = 22 };
+            var title = new TextView(this) { Text = "自诊断（只读）", TextSize = UiScale.T(1.375f) };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = pad });
             var scroll = new ScrollView(this) { };
-            var body = new TextView(this) { Text = BuildDiagSnapshot(), TextSize = 15 };
+            var body = new TextView(this) { Text = BuildDiagSnapshot(), TextSize = UiScale.T(0.9375f) };
             body.SetTextIsSelectable(false);
             body.Focusable = false; // 焦点只在两钮间转，正文不抢
             body.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
@@ -2109,31 +2110,31 @@ public class MainActivity : Activity
     {
         if (_exitDialog != null) return; // 弹窗已开着：不重复弹
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        int pad = (int)(20 * Resources!.DisplayMetrics!.Density);
+        int pad = Dp(20); // vc41 自适应体系
         box.SetPadding(pad * 2, pad * 2, pad * 2, pad);
         box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v22 第 11 项：半透明水墨底，与列表页面板同源同号
-        box.SetMinimumWidth((int)(480 * Resources!.DisplayMetrics!.Density)); // 居中浮层不因文案缩成窄条
+        box.SetMinimumWidth(Dp(480)); // 居中浮层不因文案缩成窄条
 
-        var msg = new TextView(this) { Text = "确认退出 TaoLive？", TextSize = 20 };
+        var msg = new TextView(this) { Text = "确认退出 TaoLive？", TextSize = UiScale.T(1.25f) };
         msg.SetTextColor(InkTranslucency.TextPrimary(this)); // v22 第 11 项：统一 Token，暗屏自动提白
         InkTranslucency.ApplyReadabilityShadow(msg);
         box.AddView(msg);
 
         // 15:01 老板拍板：退出后后台保活继续跑——弹窗讲清楚，免得用户以为关干净了
-        var note = new TextView(this) { Text = "退出后后台保活继续运行，随时回来看", TextSize = 13 };
+        var note = new TextView(this) { Text = "退出后后台保活继续运行，随时回来看", TextSize = UiScale.T(0.8125f) };
         note.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(note);
-        var noteLp = new LinearLayout.LayoutParams(-2, -2) { TopMargin = (int)(8 * Resources!.DisplayMetrics!.Density) };
+        var noteLp = new LinearLayout.LayoutParams(-2, -2) { TopMargin = Dp(8) };
         box.AddView(note, noteLp);
 
         var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var lp = new LinearLayout.LayoutParams(0, -2, 1f) { TopMargin = pad, LeftMargin = pad / 2, RightMargin = pad / 2 };
         // v22 第 11 项：按钮改 TextView 自绘——ROM Material 按钮的焦点高亮/系统着色从根上去掉
         var no = new TextView(this) { Text = "取消（继续看）", Gravity = GravityFlags.Center };
-        no.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
+        no.SetPadding(pad / 2, Dp(14), pad / 2, Dp(14));
         no.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; };
         var yes = new TextView(this) { Text = "退出", Gravity = GravityFlags.Center };
-        yes.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
+        yes.SetPadding(pad / 2, Dp(14), pad / 2, Dp(14));
         yes.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; ExitAppCompletely(); };
         // v1.0.10 修复④：左右键在「退出」与「取消（继续看）」间切换——显式指路，不靠焦点搜索碰运气
         no.Id = View.GenerateViewId();
@@ -2286,7 +2287,7 @@ public class MainActivity : Activity
                     if (e is { RepeatCount: 0 })
                         _crashScroll.SmoothScrollBy(0, dir * (int)(_crashScroll.Height * 0.8f)); // 单按滚近一屏
                     else
-                        _crashScroll.ScrollBy(0, dir * (int)(56 * Resources!.DisplayMetrics!.Density)); // 长按连滚
+                        _crashScroll.ScrollBy(0, dir * Dp(56)); // 长按连滚
                     return true;
                 }
                 case Keycode.DpadLeft or Keycode.DpadRight when _crashCleanBtn != null && _crashCloseBtn != null:

@@ -2292,7 +2292,9 @@ public class MainActivity : Activity
             return true;
         }
 
-        // 进阶调优面板（调参档接线）：返回/菜单=关闭；确认=点当前行；其余不穿透（旋钮行焦点导航系统自走）
+        // 进阶调优面板（调参档接线）：返回/菜单=关闭；确认=点当前行；
+        // 方向键必须放行（return false）——系统焦点导航在 Activity 消费之后才走，这里吞掉光标就冻结（真机实锤 1.0.9）；
+        // 其余键不穿透，防误触底层键位。
         if (_advOverlay != null)
         {
             switch (keyCode)
@@ -2303,8 +2305,10 @@ public class MainActivity : Activity
                 case Keycode.DpadCenter or Keycode.Enter:
                     (CurrentFocus as TextView)?.PerformClick();
                     return true;
+                case Keycode.DpadUp or Keycode.DpadDown or Keycode.DpadLeft or Keycode.DpadRight:
+                    return false; // 交还系统走焦点导航（含面板内行间移动与 ScrollView 光标行滚入可视区）
                 default:
-                    return true; // 不穿透
+                    return true; // 其余不穿透
             }
         }
 

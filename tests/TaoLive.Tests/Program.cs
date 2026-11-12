@@ -1524,16 +1524,16 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
 
 // ==================== 治顿批①·备援源注册表（fallback_sources） ====================
 {
-    // ① 表完整性：21 路（15 卫视 + 6 央视，vc39 ①c 收录 CCTV2财经/CCTV6电影），URL 全 http(s) 绝对地址
-    Check(FallbackSourceRegistry.Table.Length == 21, "治①①备援表 21 路（15 卫视+6 央视）");
+    // ① 表完整性：24 路（15 卫视 + 9 央视，vc39 ①c 收录 CCTV2/6、19:2x 收录 CCTV3/5/8），URL 全 http(s) 绝对地址
+    Check(FallbackSourceRegistry.Table.Length == 24, "治①①备援表 24 路（15 卫视+9 央视）");
     Check(FallbackSourceRegistry.Table.All(e => e.Url.StartsWith("http")),
         "治①①备援表 URL 全绝对地址");
 
-    // ② 频道覆盖：央视频 63 路目录 19 台（vc39 ①c 后含 CCTV2财经/CCTV6电影）+ 浙江台目录 2 台，共 21 全命中
+    // ② 频道覆盖：央视频 63 路目录 22 台（vc39 ①c 后含 CCTV2/6、19:2x 后含 CCTV3/5/8）+ 浙江台目录 2 台，共 24 全命中
     {
         var yspHit = new YangshipinSource().FetchChannels().Count(c => FallbackSourceRegistry.Has(c.Name));
         var cztvHit = new CztvSource().FetchChannels().Count(c => FallbackSourceRegistry.Has(c.Name));
-        Check(yspHit == 19 && cztvHit == 2, $"治①②目录覆盖 21 台（央视频 {yspHit}+浙江 {cztvHit}）");
+        Check(yspHit == 22 && cztvHit == 2, $"治①②目录覆盖 24 台（央视频 {yspHit}+浙江 {cztvHit}）");
     }
 
     // ③ 主源失败 → 备援表直连（不依赖 UserFallback）：湖南卫视主源取流为空（未知源+空流地址=失败），应返回备援 URL

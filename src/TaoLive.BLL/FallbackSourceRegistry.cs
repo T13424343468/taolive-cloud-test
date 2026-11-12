@@ -49,6 +49,12 @@ public static class FallbackSourceRegistry
         // 评分侧按单点降权；纯 IP 字面量不走系统解析，对解析僵死场景天然免疫（与⑤网络自愈互为逃生线）
         new("CCTV2财经", "http://74.91.26.218:82/live/cctv2hd.m3u8"),
         new("CCTV6电影", "http://74.91.26.218:82/live/cctv6hd.m3u8"),
+        // 19:2x 支援摸排收录（老板 19:28 令「全部干完」）：CCTV3/5/8 同 74.91 家族全链实测活
+        // （清单→相对分片按重定向后最终基址 5.5MB 实 TS）；cctv5plushd 已死（「没有配置任何服务器」）不收。
+        // 同源族单点特性不变，评分侧按单点降权；央视备援 6→9 路
+        new("CCTV3综艺", "http://74.91.26.218:82/live/cctv3hd.m3u8"),
+        new("CCTV5体育", "http://74.91.26.218:82/live/cctv5hd.m3u8"),
+        new("CCTV8电视剧", "http://74.91.26.218:82/live/cctv8hd.m3u8"),
         new("CCTV4中文国际", "https://dash2.antik.sk/cctv4/index.m3u8"),
         new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8"),
         new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8"),

@@ -226,21 +226,29 @@ public class ChannelPrecheck
 }
 
 /// <summary>
-/// 频道列表宽度度量（v1.0.8，用户拍板「保证信息完整前提下越小越好」）：
-/// - 常态按内容实际宽度 + 左右留白，越小越好；
-/// - 内容再窄也有下限兜底（360dp，保证台名/状态可读）；
-/// - 内容再宽也钳在半屏内（绝不盖住整屏）。
+/// 频道列表宽度度量（vc41 自适应体系，老板 2026-11-12 20:17/20:33 拍板）：
+/// - 面板宽 = 屏宽定比 2/3：每次打开一样宽，运行期位置不变；
+/// - 旧「内容自适应+半屏钳制+下限 360dp」口径退役；
+/// - 一行完整验算：最坏台名在当前字号档装不下面板内宽 → 整行字号降档，面板宽度永不动。
 /// </summary>
 public static class ListMetrics
 {
-    public const float MinWidthDp = 360f;
+    /// <summary>面板宽比例（与 UI 层 UiScale.PanelRatio 同源）。</summary>
+    public const float PanelRatio = 2f / 3f;
 
-    /// <summary>maxRowTextPx：最宽一行的内容像素宽；density：屏幕密度；screenW：屏幕像素宽。</summary>
-    public static int ComputeWidthPx(float maxRowTextPx, float density, int screenW)
-    {
-        float total = Math.Max(0, maxRowTextPx) + 48 * density; // 行内容 + 左右留白
-        float lo = MinWidthDp * density;
-        float hi = screenW / 2f;
-        return (int)Math.Clamp(total, Math.Min(lo, hi), Math.Max(lo, hi));
-    }
+    /// <summary>面板宽（像素）= 屏宽 × 2/3。</summary>
+    public static int ComputePanelWidthPx(int screenW) => (int)(screenW * PanelRatio);
+
+    /// <summary>频道行内容宽（U 单位）：双边距(1.5×2) + 台标(2.5) + 台标右(0.5) + 数字(3×0.55×1.25)
+    /// + 数字右(1) + 星(1.25) + 星右(0.75) + 台名(len×mul×1.12，当前行加粗余量) + 状态点(1.125) + 点左(0.75)。</summary>
+    public static float RowContentU(int nameLen, float nameMulU) =>
+        3f + 2.5f + 0.5f + 3 * 0.55f * 1.25f + 1f + 1.25f + 0.75f
+        + nameLen * nameMulU * 1.12f + 1.125f + 0.75f;
+
+    /// <summary>面板内宽（U 单位）= 40 × 2/3 − 双边距 3。</summary>
+    public static float PanelInnerU() => 40f * PanelRatio - 3f;
+
+    /// <summary>一行完整判定：最坏台名行内容 ≤ 面板内宽（禁折行禁省略号的唯一放行条件）。</summary>
+    public static bool FitsPanel(int worstNameLen, float nameMulU) =>
+        RowContentU(worstNameLen, nameMulU) <= PanelInnerU();
 }

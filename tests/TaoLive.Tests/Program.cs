@@ -480,15 +480,13 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     }
 }
 
-// 追加：列表宽度度量（v1.0.8，越小越好）——不超半屏、下限兜底、内容自适应
+// vc41：列表宽度度量（自适应体系，老板 20:17/20:33 拍板）——面板=屏宽定比 2/3，一行完整降档验算
 {
-    float d = 2f; int sw = 1920;
-    Check(ListMetrics.ComputeWidthPx(0, d, sw) == 720, "内容极窄时取下限 360dp（信息完整兜底）");
-    Check(ListMetrics.ComputeWidthPx(2000, d, sw) == 960, "超宽内容钳到半屏（绝不盖住整屏）");
-    Check(ListMetrics.ComputeWidthPx(800, d, sw) == (int)(800 + 48 * 2), "中等内容=内容宽+留白（越小越好）");
-    Check(ListMetrics.ComputeWidthPx(-5, d, sw) == 720, "负值输入不越界（按下限兜底）");
-    int mid = ListMetrics.ComputeWidthPx(700, d, 3840);
-    Check(mid < 3840 / 2, "大屏上半屏上限仍然成立");
+    Check(ListMetrics.ComputePanelWidthPx(1920) == 1280, "面板宽=屏宽 2/3（定比，每次打开一样宽）");
+    Check(ListMetrics.ComputePanelWidthPx(3840) == 2560, "大屏同比放大（自适应等比缩放）");
+    Check(ListMetrics.FitsPanel(7, 1.375f), "常规台名一行装得下（面板内宽）");
+    Check(!ListMetrics.FitsPanel(30, 1.375f), "超长台名当前档装不下（触发降档）");
+    Check(ListMetrics.FitsPanel(30, 0.875f), "降档后一行完整（面板宽度不动）");
 }
 
 // 追加：强制刷新取票（v1.0.8 重连前换票的取流侧口径）——force 绕过缓存仍出票

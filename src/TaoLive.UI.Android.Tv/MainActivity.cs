@@ -54,7 +54,7 @@ public class MainActivity : Activity
     // B 包第 12 项：列表页改五标签抽屉（1.0.12 UI② 改序：全部/收藏/央视/卫视/地方台），左右键切标签
     private DrawerSupport.Tab _drawerTab = DrawerSupport.Tab.All;
     private List<TextView>? _tabViews;
-    private const int DrawerPad = 48; // 1.0.12 UI③：频道列表页统一边距基准（页头/画面信息/标签行同口径对齐）
+    private const int DrawerPad = 24; // vc41 自适应体系：页边距=1.5U（48→24，老板 20:17 拍板「左侧留白太大」收半，三层同口径）
     // B 包第 14 项：底部节目单（央视网官方接口，没数据不硬造）；v22 第 12 项：亮出 7 秒无操作自动收起
     private LinearLayout? _epgPanel;
     private TextView? _epgNow;
@@ -1512,12 +1512,12 @@ public class MainActivity : Activity
 
         // B 包第 12 项：抽屉头部——标题 + 台数 + 五标签行（当前标签朱砂底高亮，确认/左右键切换）
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        header.SetPadding(Dp(DrawerPad), Dp(40), Dp(DrawerPad), Dp(8)); // UI③对齐修根：边距基准统一走 Dp，裸 48px 在高密度机上比频道行 Dp(48) 小一倍
-        var title = new TextView(this) { Text = "TaoLive 频道", TextSize = 24 };
+        header.SetPadding(Dp(DrawerPad), Dp(16), Dp(DrawerPad), Dp(8)); // vc41 自适应体系：顶部贴顶 40→16（老板 20:20 令），面板本就满高盖板，遮挡范围不变
+        var title = new TextView(this) { Text = "TaoLive 频道", TextSize = Shared.UiScale.T(1.5f) };
         title.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(title);
         header.AddView(title);
-        var count = new TextView(this) { Text = $"  共 {_catalog.All.Count()} 路", TextSize = 15 };
+        var count = new TextView(this) { Text = $"  共 {_catalog.All.Count()} 路", TextSize = Shared.UiScale.T(0.9375f) };
         count.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(count);
         header.AddView(count);
@@ -1527,19 +1527,19 @@ public class MainActivity : Activity
         // 后台帧统计逻辑（LiveVideoHost 内）保留，只砍显示。
 
         // 五分类标签行（第二块，v22 第 9 项换位后随画面信息块之后）；
-        // 1.0.12 UI③：行边距统一走 DrawerPad 基准，与页头/列表项同一水平对齐线；
-        // 首标签 LeftMargin=0（其余 8），标签行最左与页头文字严格对齐
+        // vc41 自适应体系：签行上 24→12（贴顶），签内边距 12→8、签间距 8→6（老板 20:17 拍板）；
+        // 首标签 LeftMargin=0（其余 6），标签行最左与页头文字严格对齐
         var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        tabRow.SetPadding(Dp(DrawerPad), Dp(24), Dp(DrawerPad), Dp(12)); // UI③对齐修根：同 header，基准统一走 Dp
+        tabRow.SetPadding(Dp(DrawerPad), Dp(12), Dp(DrawerPad), Dp(8));
         _tabViews = new List<TextView>();
         int tabIndex = 0;
         foreach (DrawerSupport.Tab t in Enum.GetValues(typeof(DrawerSupport.Tab)))
         {
-            var tv = new TextView(this) { Text = DrawerSupport.Label(t), TextSize = 16 };
-            tv.SetSingleLine(true); // UI④折行修根（老板 16:17 拍板）：分类签禁折行，无省略号（默认即不裁），宽度由 ApplyListWidth 估算保证完整显示
-            tv.SetPadding(Dp(12), Dp(10), Dp(12), Dp(10));
+            var tv = new TextView(this) { Text = DrawerSupport.Label(t), TextSize = Shared.UiScale.T(1f) };
+            tv.SetSingleLine(true); // UI④折行修根（老板 16:17 拍板）：分类签禁折行，无省略号，宽度由定比面板+降档验算保证完整显示
+            tv.SetPadding(Dp(8), Dp(10), Dp(8), Dp(10));
             InkTranslucency.ApplyReadabilityShadow(tv);
-            var lpTab = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = tabIndex == 0 ? 0 : Dp(8) };
+            var lpTab = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = tabIndex == 0 ? 0 : Dp(6) };
             tabRow.AddView(tv, lpTab);
             _tabViews.Add(tv);
             tv.Click += (_, _) => { _drawerTab = t; OpenChannelList(); };
@@ -1775,43 +1775,22 @@ public class MainActivity : Activity
         return sb.ToString();
     }
 
-    /// <summary>列表宽度随内容（越小越好）：行宽估算含状态标识，经 ListMetrics 钳制（下限 360dp，上限半屏）。</summary>
+    /// <summary>vc41 自适应体系：面板=屏宽定比 2/3（每次打开一样宽）；降档验算保证一行完整（面板宽永不动）。</summary>
     private void ApplyListWidth(List<Row> rows)
     {
-        float density = Resources!.DisplayMetrics!.Density;
-        float Estimate(string s, float sizeDp)
-        {
-            float px = sizeDp * density;
-            float w = 0;
-            foreach (var ch in s) w += ch > 127 ? px : px * 0.55f;
-            return w;
-        }
-        float max = 0;
+        // vc41 自适应体系（老板 20:17/20:33 拍板）：面板宽=屏宽定比 2/3，每次打开一样宽、运行期位置不变；
+        // 旧「按内容自适应+半屏钳制」口径退役（ListMetrics 断言同步改）。
+        // 一行完整验算（老板原则）：最坏台名在当前字号档装不下面板内宽就整行降档（1.375U→1U→0.875U），面板宽度永不动。
+        int screenW = Resources!.DisplayMetrics!.WidthPixels;
+        _listPanel.LayoutParameters = new FrameLayout.LayoutParams(
+            Shared.UiScale.PanelWidthPx(screenW), -1, GravityFlags.Left);
+
+        int worstLen = 0;
         foreach (var r in rows)
         {
-            if (r.Header != null)
-                max = Math.Max(max, Estimate(r.Header, 20));
-            else if (r.Channel != null)
-            {
-                // 行宽 = 左右 padding(48×2) + 号(3字符) + 间距(32) + 星(1字符) + 间距(24) + 台名 + 状态标识
-                var w = 96 + Estimate(new string('0', 3), 20) + 32
-                        + Estimate("★", 20) + 24 + Estimate(r.Channel.Name, 22) * 1.12f // UI④：台名禁折行后必须放得下，估宽留 12% 余量（当前行加粗更宽）
-                        + Estimate("●", 20) + 24;
-                max = Math.Max(max, w);
-            }
+            _rowTextMul = mul;
+            if (ListMetrics.FitsPanel(worstLen, mul)) break;
         }
-        // UI④：五分类签行宽一并计入——签禁折行后整行必须放得下（左右页边距 + 每签左右 padding + 签间距），
-        // 否则面板窄于签行时最后一签被裁（「地方台」竖排三行的根子之一）
-        var tabs = (DrawerSupport.Tab[])Enum.GetValues(typeof(DrawerSupport.Tab));
-        float tabRowW = 2 * Dp(DrawerPad);
-        for (int i = 0; i < tabs.Length; i++)
-        {
-            tabRowW += Estimate(DrawerSupport.Label(tabs[i]), 16) + 2 * Dp(12);
-            if (i > 0) tabRowW += Dp(8);
-        }
-        max = Math.Max(max, tabRowW);
-        int width = ListMetrics.ComputeWidthPx(max - 96 * density, density, Resources.DisplayMetrics.WidthPixels);
-        _listPanel.LayoutParameters = new FrameLayout.LayoutParams(width, -1, GravityFlags.Left);
     }
 
     private void CloseChannelList()
@@ -1822,6 +1801,8 @@ public class MainActivity : Activity
         _lastListSig = null; // vc38：收列表清签名，重开列表首帧必刷
         _listPanel.Visibility = ViewStates.Gone;
         _listView = null;
+            if (r.Channel != null) worstLen = Math.Max(worstLen, r.Channel.Name?.Length ?? 0);
+        foreach (var mul in RowTextMulSteps)
         // v22 第 13 项：关抽屉后重新亮出节目单条（本台拉到过数据才亮），按 7 秒计时收起
         if (_epgHasData) ShowEpgBar();
     }
@@ -1848,6 +1829,10 @@ public class MainActivity : Activity
 
         /// <summary>预检状态实时刷新：换行数据通知重绘（滚动位置尽量保留）。</summary>
         public void ReplaceRows(List<Row> rows)
+    /// <summary>频道行主字号档（U 倍率）：默认 1.375U=22，一行装不下逐档降，面板宽不动。</summary>
+    private static readonly float[] RowTextMulSteps = { 1.375f, 1f, 0.875f };
+    private float _rowTextMul = 1.375f;
+
         {
             _rows = rows;
             NotifyDataSetChanged();
@@ -1862,7 +1847,7 @@ public class MainActivity : Activity
             var row = _rows[position];
             var ctx = _owner;
             var line = new LinearLayout(ctx) { Orientation = Orientation.Horizontal };
-            line.SetPadding(_owner.Dp(48), _owner.Dp(20), _owner.Dp(48), _owner.Dp(20));
+            line.SetPadding(_owner.Dp(24), _owner.Dp(20), _owner.Dp(24), _owner.Dp(20)); // vc41：左右 1.5U 边距（48→24），上下 1.25U 不变
 
             void Style(TextView tv, string color, float size)
             {
@@ -1874,7 +1859,7 @@ public class MainActivity : Activity
             {
                 var h = new TextView(ctx) { Text = row.Header };
                 bool isNote = row.HeaderKey == "__note__"; // v22 第 15 项：空态行次色平铺，不作分组标题渲染
-                Style(h, isNote ? InkTranslucency.TextSecondary : "#A9CFEC", isNote ? 15 : 18);
+                Style(h, isNote ? InkTranslucency.TextSecondary : "#A9CFEC", isNote ? Shared.UiScale.T(0.9375f) : Shared.UiScale.T(1.125f));
                 InkTranslucency.ApplyReadabilityShadow(h);
                 line.AddView(h);
                 return line;
@@ -1893,10 +1878,10 @@ public class MainActivity : Activity
                     {
                         var img = new ImageView(ctx);
                         img.SetAdjustViewBounds(true);
-                        img.SetMaxHeight((int)(28 * ctx.Resources.DisplayMetrics.Density));
+                        img.SetMaxHeight(Shared.UiScale.P(1.75f));
                         img.SetImageResource(resId);
-                        var lpLogo = new LinearLayout.LayoutParams(-2, (int)(28 * ctx.Resources.DisplayMetrics.Density))
-                        { RightMargin = _owner.Dp(16), Gravity = GravityFlags.CenterVertical };
+                        var lpLogo = new LinearLayout.LayoutParams(-2, Shared.UiScale.P(1.75f))
+                        { RightMargin = _owner.Dp(8), Gravity = GravityFlags.CenterVertical };
                         line.AddView(img, lpLogo);
                     }
                 }
@@ -1905,36 +1890,36 @@ public class MainActivity : Activity
             if (!dead && logoRes == null)
             {
                 var ph = new TextView(ctx) { Text = ch.Name.Substring(0, 1) };
-                Style(ph, InkTranslucency.TextSecondary, 14);
+                Style(ph, InkTranslucency.TextSecondary, Shared.UiScale.T(0.875f));
                 ph.Gravity = GravityFlags.Center;
                 ph.SetBackgroundColor(Color.ParseColor("#3A4750"));
-                var lpPh = new LinearLayout.LayoutParams((int)(40 * ctx.Resources.DisplayMetrics.Density), (int)(28 * ctx.Resources.DisplayMetrics.Density))
-                { RightMargin = _owner.Dp(16), Gravity = GravityFlags.CenterVertical };
+                var lpPh = new LinearLayout.LayoutParams(Shared.UiScale.P(2.5f), Shared.UiScale.P(1.75f))
+                { RightMargin = _owner.Dp(8), Gravity = GravityFlags.CenterVertical };
                 line.AddView(ph, lpPh);
             }
             if (dead)
             {
                 var spacer = new View(ctx) { };
-                var lpSp = new LinearLayout.LayoutParams(0, 1) { RightMargin = _owner.Dp(16) };
+                var lpSp = new LinearLayout.LayoutParams(0, 1) { RightMargin = _owner.Dp(8) };
                 line.AddView(spacer, lpSp); // 无信号行行首不放台标（v4 定稿状态2）
             }
 
             var num = new TextView(ctx) { Text = $"{ch.Number,3}", Gravity = GravityFlags.Right };
-            Style(num, InkTranslucency.TextSecondary, 20);
+            Style(num, InkTranslucency.TextSecondary, Shared.UiScale.T(1.25f));
             InkTranslucency.ApplyReadabilityShadow(num);
-            num.SetPadding(0, 0, _owner.Dp(32), 0);
+            num.SetPadding(0, 0, _owner.Dp(16), 0); // vc41：数字-星标-台名 56→28（老板 20:17 拍板）
             line.AddView(num);
 
             var star = new TextView(ctx) { Text = _isFav(ch.Number) ? "★" : " " };
-            Style(star, "#F0C563", 20);
+            Style(star, "#F0C563", Shared.UiScale.T(1.25f));
             InkTranslucency.ApplyReadabilityShadow(star);
-            star.SetPadding(0, 0, _owner.Dp(24), 0);
+            star.SetPadding(0, 0, _owner.Dp(12), 0);
             line.AddView(star);
 
             var name = new TextView(ctx) { Text = ch.Name };
-            name.SetSingleLine(true); // UI④折行修根（老板 16:17 拍板）：频道名禁折行、禁省略号，宽度由 ApplyListWidth 估算保证超长完整显示
+            name.SetSingleLine(true); // UI④折行修根（老板 16:17 拍板）：频道名禁折行、禁省略号，一行完整由定比面板+降档验算保证
             var isCur = _current?.Number == ch.Number;
-            Style(name, isCur ? "#FFFFFF" : InkTranslucency.TextSecondary, 22);
+            Style(name, isCur ? "#FFFFFF" : InkTranslucency.TextSecondary, Shared.UiScale.T(_owner._rowTextMul));
             InkTranslucency.ApplyReadabilityShadow(name);
             if (isCur)
             {
@@ -1953,9 +1938,9 @@ public class MainActivity : Activity
                 _ => ("●", "#8894A0"),
             };
             var dot = new TextView(ctx) { Text = mark };
-            Style(dot, color, 18);
+            Style(dot, color, Shared.UiScale.T(1.125f));
             InkTranslucency.ApplyReadabilityShadow(dot);
-            dot.SetPadding(_owner.Dp(24), 0, 0, 0);
+            dot.SetPadding(_owner.Dp(12), 0, 0, 0); // vc41：点-台名 24→12，与行内收窄同口径
             line.AddView(dot);
             return line;
         }

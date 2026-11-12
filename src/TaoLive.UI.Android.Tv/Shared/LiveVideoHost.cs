@@ -77,6 +77,14 @@ public class LiveVideoHost : IDisposable
     private System.Threading.Timer? _firstFrameTimer;    // PL2: 首帧超时兜底定时器
     private int _firstFrameExtends;                      // vc37: 首帧查活续期轮次（起播重置，封顶 2）
     private const int FirstFrameTimeoutMs = 20_000;      // PL2: 首帧硬超时=问热备→自救阶梯；vc37 12s→20s（真机 11-12：慢网络起播被 12s 自救打断循环）
+
+    // vc39 ⑤深版网络自愈：门控+三分判别+本地代理内核（BLL 纯逻辑），宿主只做触发与播放链接线。
+    // 进程级单例：内核端口监听全局一份；门控为全局态（系统解析坏是整机事实，不按台隔离）。
+    private static readonly SelfHealGate HealGate = new();
+    private static readonly SelfHealProxyKernel HealKernel = new();
+    private static readonly ResolutionTriage HealTriage = new();
+    private static int _healStarted;              // 内核 CAS 启动旗标（幂等）
+    private static int _triageBusy;               // 判别互斥（失败风暴下不并发判别）
     /// <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
     public long TotalMemBytes { get; set; }
 
@@ -154,6 +162,9 @@ public class LiveVideoHost : IDisposable
     {
         _videoCarrier = videoView;
         Core.Initialize();
+        // vc39 ⑤：自愈打点接崩溃日志通道（BLL 不反引 UI，委托注入）；代理内核进程内只起一次
+        SelfHealProxyKernel.Reporter ??= msg => { try { CrashNet.Record(msg); } catch { } };
+        if (Interlocked.CompareExchange(ref _healStarted, 1, 0) == 0) HealKernel.Start();
         // vc38（92条 playback P2）：载体重挂与软重启共用同一互斥——重挂撞上软重启进行中时
         // 不再并行双建内核（旧病：Attach 直进 BuildKernel 不占 _kernelRebuilding，
         // 与看门狗线程 RestartKernel 并发会造出两个 MediaPlayer 抢同一载体）；
@@ -195,6 +206,7 @@ public class LiveVideoHost : IDisposable
             if (_frameShown) return;
             _frameShown = true;
             _earlyRescueStreak = 0; // v23 第 5 条：首帧清零（真首帧才算，微动不清）
+            HealGate.OnPlayOk(); // vc39 ⑤：起播成功记账（清连续失败；门控过保持窗自动退出）
             // 1.0.12 发现 B·静默重接补库存档：首帧出画后静默重接一次，把库存补到 3 秒（先开画后补库存，
             // 换台首帧不慢）；默认「起播即 3 秒」档不需要这步
             // v25 修法五：补库存 CAS 占位——与 Buffering/看门狗自救并发时，自救不检查不置位（gen 作废天然抢占），
@@ -243,6 +255,7 @@ public class LiveVideoHost : IDisposable
     private void OnWatchdogTick(object? state)
     {
         if (_userStopped || _currentUrl is null) return;
+        MaybeRetestHealGate(); // vc39 ⑤：门控启用期每 5 分钟复测系统解析，恢复自动退出
         if (!_frameShown) return;                 // 还没出首帧：连接流程自己管理，不看门狗
         long last = Volatile.Read(ref _lastTickMs);
         long age = Environment.TickCount64 - last;
@@ -548,7 +561,15 @@ public class LiveVideoHost : IDisposable
         if (!silent) StatusChanged?.Invoke("连接中…");
         _player.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
         _currentMedia?.Dispose(); // ④旧媒体统计源释放
-        var media = new Media(_libVlc!, new Uri(_currentUrl));
+        // vc39 ⑤：门控启用且代理存活 → 播本地代理 URL（127.0.0.1/?u=原URL），代理按存活通道（DoH 择优）回源；
+        // _currentUrl 保持原 URL（换票比较/换台逻辑不受影响），只在起播这一层换地址
+        string playUrl = _currentUrl!;
+        if (HealGate.IsEngaged && HealKernel.IsRunning && !HlsRewriter.TryUnwrap(playUrl, out _))
+        {
+            playUrl = HlsRewriter.Wrap(playUrl);
+            try { CrashNet.Record($"[LiveVideoHost] 网络自愈门控启用中：本次起播走本地代理（原源 {MaskUrl(_currentUrl)}）"); } catch { }
+        }
+        var media = new Media(_libVlc!, new Uri(playUrl));
         _currentMedia = media; // ④保留引用：Media.Statistics 提供帧统计
         // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）；
         // 1.0.12 发现 B：3 秒库存两档——默认「起播即 3 秒」（库存档兜底，修正②：重连缓存递增口径并入固定库存档，
@@ -630,6 +651,7 @@ public class LiveVideoHost : IDisposable
     private void OnStreamErrorFallthrough()
     {
         if (_userStopped) return;
+        NotePlayFailure("断流"); // vc39 ⑤：起播失败记账（≥3 连败+系统解析坏证据链成立才启用门控）
         if (_retriesLeft <= 0)
         {
             if (_exhaustedNotified) return;
@@ -667,6 +689,65 @@ public class LiveVideoHost : IDisposable
     private System.Threading.Timer? _exhaustedRecoveryTimer; // v25 真机修复：耗尽后常驻兜底
     private int _exhaustedCycle;                             // 兜底重试轮次（每 N 轮升一次软重启内核）
     private int _recoveryBusy;                               // 兜底重试互斥（上轮未完不叠发）
+
+    /// <summary>
+    /// vc39 ⑤起播失败记账：达到阈值（连续 3 次）时做三分判别——系统解析坏才启用门控并切代理重播；
+    /// 路由死/出网断只落日志如实告示（不可自愈，不自欺）。判别互斥：失败风暴下不并发。
+    /// </summary>
+    private void NotePlayFailure(string via)
+    {
+        try
+        {
+            if (!HealGate.OnPlayFailed()) return;
+            if (Interlocked.CompareExchange(ref _triageBusy, 1, 0) != 0) return;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (_currentUrl is null) return;
+                    var uri = new Uri(_currentUrl);
+                    int port = uri.IsDefaultPort ? (uri.Scheme == "https" ? 443 : 80) : uri.Port;
+                    var verdict = await HealTriage.TriageAsync(uri.Host, port: port);
+                    try { CrashNet.Record($"[LiveVideoHost] 网络自愈三分判别（{via} 连败 {SelfHealGate.FailThreshold} 起）：{verdict.Detail}"); } catch { }
+                    if (HealGate.ReportTriage(verdict) && HealKernel.IsRunning)
+                    {
+                        try { CrashNet.Record("[LiveVideoHost] 网络自愈门控启用：播放链切本地代理，按存活通道（DoH 择优）回源"); } catch { }
+                        RestartKernel(); // 立即按代理链重播当前台（不等 2/4/6 秒阶梯走完）
+                    }
+                }
+                catch (Exception ex) { try { CrashNet.Record($"[LiveVideoHost] 网络自愈判别异常：{ex.Message}"); } catch { } }
+                finally { Volatile.Write(ref _triageBusy, 0); }
+            });
+        }
+        catch { } // 记账路径绝不干扰主自救阶梯
+    }
+
+    /// <summary>vc39 ⑤门控启用期复测：每 RetestMs 由看门狗驱动一次判别，系统恢复（过保持窗）自动退出门控。</summary>
+    private void MaybeRetestHealGate()
+    {
+        if (!HealGate.ShouldRetest()) return;
+        if (Interlocked.CompareExchange(ref _triageBusy, 1, 0) != 0) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (_currentUrl is null) return;
+                var uri = new Uri(_currentUrl);
+                int port = uri.IsDefaultPort ? (uri.Scheme == "https" ? 443 : 80) : uri.Port;
+                var verdict = await HealTriage.TriageAsync(uri.Host, port: port);
+                try { CrashNet.Record($"[LiveVideoHost] 网络自愈复测：{verdict.Detail}"); } catch { }
+                bool wasEngaged = HealGate.IsEngaged;
+                HealGate.ReportTriage(verdict);
+                if (wasEngaged && !HealGate.IsEngaged)
+                {
+                    try { CrashNet.Record("[LiveVideoHost] 网络自愈门控退出：系统解析恢复，回归直连播放链"); } catch { }
+                    RestartKernel(); // 回直连重播（代理只在解析坏期间兜底）
+                }
+            }
+            catch (Exception ex) { try { CrashNet.Record($"[LiveVideoHost] 网络自愈复测异常：{ex.Message}"); } catch { } }
+            finally { Volatile.Write(ref _triageBusy, 0); }
+        });
+    }
 
     /// <summary>
     /// v25 真机修复·耗尽兜底：断流重连阶梯耗尽后原口径永久躺平（首帧已丢、看门狗失明、

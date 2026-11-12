@@ -1,0 +1,327 @@
+using System;
+using System.Collections.Concurrent;
+using System.Linq;
+using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace TaoLive.BLL;
+
+/// <summary>
+/// 三分判别（vc39 ⑤网络自愈·判读书 3.2）：对单个直播域名并发探测三通道——
+/// 系统解析 / DoH / IP 直连，产出定位结论：系统解析坏（可自愈）、路由死（不可自愈，如实告示）、出网全断（不可自愈）。
+/// 纯逻辑可测：三探测委托与时钟注入；无 IO 默认实现由 SelfHealKernel 提供。
+/// </summary>
+public class ResolutionTriage
+{
+    /// <summary>判别结论（有效域=自愈可治；无效域=如实告示不自愈）。</summary>
+    public enum VerdictKind { SystemDnsBroken, RouteDead, NetworkDown, Healthy }
+
+    public readonly record struct Result(VerdictKind Kind, string Detail);
+
+    private readonly Func<string, Task<bool>> _systemResolve;   // host → 系统解析是否成功
+    private readonly Func<string, Task<bool>> _dohResolve;      // host → DoH 解析是否成功
+    private readonly Func<string, IPAddress, int, Task<bool>> _ipConnect; // (host, ip, port) → IP 直连 TCP 是否可达
+    private readonly Func<long> _nowMs;
+    private readonly Func<IPAddress[], IPAddress> _pickIp;
+
+    public ResolutionTriage(
+        Func<string, Task<bool>>? systemResolve = null,
+        Func<string, Task<bool>>? dohResolve = null,
+        Func<string, IPAddress, int, Task<bool>>? ipConnect = null,
+        Func<long>? nowMs = null,
+        Func<IPAddress[], IPAddress>? pickIp = null)
+    {
+        _systemResolve = systemResolve ?? (async host => { try { return await Dns.GetHostAddressesAsync(host).ContinueWith(t => t.Result.Length > 0); } catch { return false; } });
+        _dohResolve = dohResolve ?? (async host => { try { return await new StreamDnsPicker(nowMs).ResolveAsync(host).ContinueWith(t => t.Result.Length > 0); } catch { return false; } });
+        _ipConnect = ipConnect ?? (async (host, ip, port) => await TcpProbeAsync(ip, port));
+        _nowMs = nowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        _pickIp = pickIp ?? (ips => ips[0]);
+    }
+
+    /// <summary>
+    /// 对 host 做三分判别：解析面（系统/DoH）与连通面（IP 直连）各自独立探测，按 3.2 表落结论。
+    /// port=目标服务端口（按当前流 URL 实际端口探，混合端口源 443 探不通不等于路由死）。
+    /// </summary>
+    public async Task<Result> TriageAsync(string host, IPAddress[]? knownIps = null, int port = 443)
+    {
+        try
+        {
+            var ips = knownIps;
+            if (ips is null || ips.Length == 0)
+            {
+                try { ips = await new StreamDnsPicker(_nowMs).ResolveAsync(host); } catch { ips = Array.Empty<IPAddress>(); }
+            }
+            var dohOk = await _dohResolve(host);
+            var sysOk = await _systemResolve(host);
+            bool connOk = ips is { Length: > 0 } && await _ipConnect(host, _pickIp(ips), port);
+
+            if (dohOk && !sysOk) return connOk ? new Result(VerdictKind.SystemDnsBroken, $"DoH 可解析且 IP 直连通：系统解析坏（可自愈）{host}") : new Result(VerdictKind.RouteDead, $"DoH 可解析但 IP 直连不通：路由/网络栈死（不可自愈）{host}");
+            if (!dohOk) return new Result(VerdictKind.NetworkDown, $"DoH 不通：出网全断（不可自愈）{host}");
+            return new Result(sysOk && connOk ? VerdictKind.Healthy : VerdictKind.SystemDnsBroken, $"DoH+系统解析正常：{host}（{(connOk ? "连通正常" : "直连探不通，按解析面复判")}）");
+        }
+        catch (Exception ex) { return new Result(VerdictKind.NetworkDown, $"判别异常按出网全断处理：{ex.Message}"); }
+    }
+
+    /// <summary>IP 直连探针：TCP 连上即视为连通（默认 3 秒超时；按实际端口探连通面，证书面不在此探）。</summary>
+    private static async Task<bool> TcpProbeAsync(IPAddress ip, int port)
+    {
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            var connect = tcp.ConnectAsync(ip, port);
+            var done = await Task.WhenAny(connect, Task.Delay(3000));
+            if (done != connect) return false;
+            await connect; // 观察异常
+            return tcp.Connected;
+        }
+        catch { return false; }
+    }
+}
+
+/// <summary>
+/// 触发式门控（vc39 ⑤·防 v28 ④择路病复发）：平时零介入；只有「起播连续失败 + 系统解析坏」证据链成立才启用代理，
+/// 自愈成功或恢复后自动退出。纯逻辑可测：时钟与失败记账注入。
+/// </summary>
+public class SelfHealGate
+{
+    public const int FailThreshold = 3;          // 连续起播失败达到该数才进入判别
+    public const long GateHoldMs = 10 * 60_000;  // 启用后最短保持时长（防抖动反复开关）
+    public const long RetestMs = 5 * 60_000;     // 启用期间每 5 分钟复测一次系统解析
+
+    private readonly Func<long> _nowMs;
+    private int _consecutiveFails;
+    private long _gateUntilMs;
+    private long _lastRetestMs;
+
+    public SelfHealGate(Func<long>? nowMs = null) { _nowMs = nowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); }
+
+    /// <summary>门控是否已启用（启用后 LibVLC 播放链走本地代理）。</summary>
+    public bool IsEngaged { get; private set; }
+
+    public string? LastVerdict { get; private set; }
+
+    /// <summary>起播失败记账：达到阈值且未启用时，返回 true 提示调用方做三分判别（判别结果经 ReportTriage 落账）。</summary>
+    public bool OnPlayFailed()
+    {
+        _consecutiveFails++;
+        return !IsEngaged && _consecutiveFails >= FailThreshold;
+    }
+
+    /// <summary>起播成功记账：连续失败清零；启用期已过保持窗则退出门控。</summary>
+    public void OnPlayOk()
+    {
+        _consecutiveFails = 0;
+        if (IsEngaged && _nowMs() >= _gateUntilMs) { IsEngaged = false; LastVerdict = "自愈保持期结束，门控退出（回归系统解析）"; }
+    }
+
+    /// <summary>三分判别结论落账：系统解析坏才启用；路由死/出网断不启用（如实告示）。
+    /// 启用期复测得健康（且已过保持窗）即退出——恢复自动退出，不靠播放成功才收。</summary>
+    public bool ReportTriage(ResolutionTriage.Result triage)
+    {
+        LastVerdict = triage.Detail;
+        if (IsEngaged)
+        {
+            if (triage.Kind == ResolutionTriage.VerdictKind.Healthy && _nowMs() >= _gateUntilMs)
+            {
+                IsEngaged = false;
+                LastVerdict = "复测系统解析恢复，门控退出（回归系统解析）";
+            }
+            return false;
+        }
+        if (triage.Kind == ResolutionTriage.VerdictKind.SystemDnsBroken)
+        {
+            IsEngaged = true;
+            _gateUntilMs = _nowMs() + GateHoldMs;
+            _lastRetestMs = _nowMs();
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>启用期复测：到点由调用方重做判别，系统恢复则退出；返回 true 表示需要复测。</summary>
+    public bool ShouldRetest()
+        => IsEngaged && _nowMs() - _lastRetestMs >= RetestMs && (_lastRetestMs = _nowMs()) > 0;
+}
+
+/// <summary>
+/// HLS 清单正文改写（vc39 ⑤·播放链覆盖）：把子清单/分片里的绝对域名 URL 改写为本地代理 URL（127.0.0.1:port/?u=原URL），
+/// 分片流量直过代理不缓存。纯字符串变换可测；改写只发生在门控启用后由代理侧调用。
+/// </summary>
+public static class HlsRewriter
+{
+    public const string ProxyHost = "127.0.0.1";
+    public const int ProxyPort = 47618;
+
+    /// <summary>把正文中所有 http(s) 绝对 URL 包进代理（已代理过的跳过）；相对路径行原样保留（代理侧按 Referer 还原）。</summary>
+    public static string RewritePlaylist(string playlist)
+    {
+        if (string.IsNullOrEmpty(playlist)) return playlist;
+        var lines = playlist.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].TrimEnd('\r');
+            if (!line.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !line.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) continue;
+            if (line.Contains($":{ProxyPort}/?u=")) continue; // 已是代理 URL：不二次包裹
+            lines[i] = Wrap(line);
+        }
+        return string.Join("\n", lines);
+    }
+
+    public static string Wrap(string url) => $"http://{ProxyHost}:{ProxyPort}/?u={Uri.EscapeDataString(url)}";
+
+    /// <summary>查询串解析（手写拆对，避免引 System.Web）：无 ? 时空表；只取第一个等号后的值。</summary>
+    internal static System.Collections.Generic.Dictionary<string, string> ParseQuery(string query)
+    {
+        var map = new System.Collections.Generic.Dictionary<string, string>(StringComparer.Ordinal);
+        if (string.IsNullOrEmpty(query)) return map;
+        var q = query.StartsWith('?') ? query[1..] : query;
+        foreach (var pair in q.Split('&'))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0) continue;
+            var key = Uri.UnescapeDataString(pair[..eq].Replace("+", " "));
+            var val = Uri.UnescapeDataString(pair[(eq + 1)..].Replace("+", " "));
+            if (!map.ContainsKey(key)) map[key] = val;
+        }
+        return map;
+    }
+    public static bool TryUnwrap(string proxyUrl, out string original)
+    {
+        original = "";
+        try
+        {
+            if (!Uri.TryCreate(proxyUrl, UriKind.Absolute, out var uri) || uri.Host != ProxyHost || uri.Port != ProxyPort) return false;
+            if (!ParseQuery(uri.Query).TryGetValue("u", out var inner) || inner is not { Length: > 0 }) return false;
+            original = inner;
+            return true;
+        }
+        catch { return false; }
+    }
+}
+
+/// <summary>
+/// 自愈本地代理内核（vc39 ⑤·播放链覆盖，判读书 3.3 A 路线）：
+/// HttpListener 监听 127.0.0.1:47618；LibVLC 播放链全部请求打代理，代理按存活通道（DoH 择优解析）
+/// 回源转发：子清单正文域名 URL 改写为代理 URL（HlsRewriter），TS/分片字节直过不缓存。
+/// 门控未启用时 Start 后也接受请求但仅透传（不启用改写）——实际由 LiveVideoHost 按门控决定播原始 URL 还是代理 URL。
+/// 生命周期：Start 幂等；Stop 释放监听；起播失败/恢复由 SelfHealGate 记账驱动。
+/// </summary>
+public class SelfHealProxyKernel : IDisposable
+{
+    /// <summary>打点出口（BLL 不反引 UI）：由宿主层注入 CrashNet.Record；未注入只静默。</summary>
+    public static Action<string>? Reporter { get; set; }
+
+    private static void Report(string msg)
+    {
+        try { Reporter?.Invoke($"[网络自愈代理] {msg}"); } catch { }
+    }
+
+    private System.Net.HttpListener? _listener;
+    private CancellationTokenSource? _cts;
+    private readonly StreamDnsPicker _dns;
+    private static readonly System.Net.Http.HttpClient Forward = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+    public SelfHealProxyKernel(StreamDnsPicker? dns = null)
+    {
+        _dns = dns ?? new StreamDnsPicker();
+        _listener = new System.Net.HttpListener();
+        _listener.Prefixes.Add($"http://{HlsRewriter.ProxyHost}:{HlsRewriter.ProxyPort}/");
+    }
+
+    public bool IsRunning { get; private set; }
+
+    public void Start()
+    {
+        if (IsRunning || _listener is null) return;
+        try
+        {
+            _listener.Start();
+            _cts = new CancellationTokenSource();
+            IsRunning = true;
+            _ = Task.Run(() => AcceptLoopAsync(_cts!.Token));
+        }
+        catch (Exception ex)
+        {
+            // 端口被占/权限不足：代理起不来按未启用处理（LibVLC 继续播原始 URL），不挡播放
+            Report(ex.Message);
+            _listener = null;
+            IsRunning = false;
+        }
+    }
+
+    public void Stop()
+    {
+        try { _cts?.Cancel(); } catch { }
+        try { _listener?.Stop(); } catch { }
+        _listener?.Close();
+        _listener = null;
+        IsRunning = false;
+    }
+
+    private async Task AcceptLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested && _listener is not null)
+        {
+            System.Net.HttpListenerContext ctx;
+            try { ctx = await _listener.GetContextAsync(); }
+            catch { return; } // 监听已停
+            _ = Task.Run(async () =>
+            {
+                try { await HandleAsync(ctx, ct); }
+                catch (Exception ex) { Report($"代理单请求失败：{ex.Message}"); try { ctx.Response.StatusCode = 502; ctx.Response.Close(); } catch { } }
+            }, ct);
+        }
+    }
+
+    private async Task HandleAsync(System.Net.HttpListenerContext ctx, CancellationToken ct)
+    {
+        var raw = ctx.Request.Url?.ToString() ?? "";
+        // 代理 URL 解包：127.0.0.1:port/?u=原URL；非代理形态直接按原 URL 用
+        var target = HlsRewriter.TryUnwrap(raw, out var inner) ? inner : raw;
+        // 相对路径（子清单里的变体分片）：按上一跳 Referer 还原为原站绝对地址
+        if (!target.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            var referer = ctx.Request.Headers["Referer"];
+            if (Uri.TryCreate(referer, UriKind.Absolute, out var baseUri) && HlsRewriter.TryUnwrap(baseUri.ToString(), out var baseInner))
+                target = new Uri(new Uri(baseInner), target).ToString();
+            else { ctx.Response.StatusCode = 400; ctx.Response.Close(); return; }
+        }
+
+        var host = new Uri(target).Host;
+        // 回源解析走存活通道（StreamDnsPicker 内部系统+DoH 并发择优，系统解析坏时 DoH 独立撑住）
+        await _dns.ResolveAsync(host);
+
+        using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, target);
+        // 透传关键头：Range（分片续传）、UA/Referer（防盗链）、Host 由 HttpClient 按目标 URL 自带
+        if (ctx.Request.Headers["Range"] is { Length: > 0 } range) req.Headers.TryAddWithoutValidation("Range", range);
+        if (ctx.Request.Headers["User-Agent"] is { Length: > 0 } ua) req.Headers.TryAddWithoutValidation("User-Agent", ua);
+        if (ctx.Request.Headers["Referer"] is { Length: > 0 } rf && HlsRewriter.TryUnwrap(rf, out var rfInner)) req.Headers.TryAddWithoutValidation("Referer", rfInner);
+
+        using var resp = await Forward.SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, ct);
+        ctx.Response.StatusCode = (int)resp.StatusCode;
+        ctx.Response.ContentType = resp.Content.Headers.ContentType?.ToString() ?? "";
+        if (resp.Content.Headers.ContentLength is { } len) ctx.Response.ContentLength64 = len;
+
+        var media = resp.Content.Headers.ContentType?.MediaType ?? "";
+        bool isPlaylist = media.Contains("mpegurl") || target.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+        if (isPlaylist)
+        {
+            // 子清单/主清单：正文域名 URL 全改写为代理 URL（播放链后续请求继续走代理）
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            var rewritten = HlsRewriter.RewritePlaylist(body);
+            var buf = System.Text.Encoding.UTF8.GetBytes(rewritten);
+            ctx.Response.ContentLength64 = buf.Length;
+            await ctx.Response.OutputStream.WriteAsync(buf, ct);
+        }
+        else
+        {
+            // TS/分片：字节直过，零缓存零改写
+            await resp.Content.CopyToAsync(ctx.Response.OutputStream, ct);
+        }
+        ctx.Response.Close();
+    }
+
+    public void Dispose() => Stop();
+}

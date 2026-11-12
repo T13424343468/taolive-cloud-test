@@ -7,11 +7,7 @@ on:
 jobs:
   install-and-launch:
     runs-on: ubuntu-24.04
-<<<<<<< HEAD
     timeout-minutes: 355
-=======
-    timeout-minutes: 150
->>>>>>> origin/main
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,7 +40,6 @@ jobs:
           export ANDROID_SDK_ROOT=$ANDROID_HOME
           export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH
           yes | sdkmanager --licenses > /dev/null || true
-          # emulator 包在此阶段保留：avdmanager 创建 AVD 时会校验其 package.xml
           sdkmanager "platform-tools" "platforms;android-24" "emulator"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
@@ -68,7 +63,6 @@ jobs:
           echo no | avdmanager create avd -n testavd -k "system-images;android-24;default;armeabi-v7a" || true
           CFG="$ANDROID_AVD_HOME/testavd.avd/config.ini"
           cat "$CFG"
-          # classic 引擎需要有效 skin；且明确关闭 GPU 走 -gpu off
           grep -q '^skin.name=' "$CFG" && sed -i 's|^skin.name=.*|skin.name=WXGA720|' "$CFG" || echo 'skin.name=WXGA720' >> "$CFG"
           grep -q '^skin.path=' "$CFG" && sed -i 's|^skin.path=.*|skin.path=platforms/android-24/skins/WXGA720|' "$CFG" || echo 'skin.path=platforms/android-24/skins/WXGA720' >> "$CFG"
           grep -q '^hw.gpu.enabled=' "$CFG" && sed -i 's|^hw.gpu.enabled=.*|hw.gpu.enabled=no|' "$CFG" || echo 'hw.gpu.enabled=no' >> "$CFG"
@@ -87,7 +81,7 @@ jobs:
           "$ANDROID_HOME/emulator/emulator64-arm" -version | head -2 || { echo "CLASSIC_ENGINE_WONT_LOAD"; ldd "$ANDROID_HOME/emulator/emulator64-arm" | grep 'not found'; exit 1; }
           echo "CLASSIC_ENGINE_OK"
 
-      - name: Boot with classic engine (TCG ARM emulation)
+      - name: Boot with classic engine (TCG ARM emulation, 4h patience + heartbeat)
         run: |
           set -e
           export ANDROID_AVD_HOME=$HOME/.android/avd
@@ -105,68 +99,57 @@ jobs:
             cat emulator.log
             exit 1
           fi
-<<<<<<< HEAD
-          echo "Picking $PICKED"
-          yes | sdkmanager "$PICKED"
-          echo "SYSIMAGE=$PICKED" >> $GITHUB_ENV
-
-      - name: Create AVD and boot emulator (software emulation, with progress heartbeat)
-        run: |
-          set -e
-          echo no | avdmanager create avd -n testavd -k "$SYSIMAGE"
-          emulator -avd testavd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 4096 -accel off &
-          sleep 30
-          adb devices || true
-          BC=""
-          for i in $(seq 1 60); do
-            BC=$(timeout 30 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-            echo "boot-check $i: '$BC'  $(date -u +%H:%M:%S)"
-            if [ "$BC" = "1" ]; then echo BOOT_COMPLETED; break; fi
-            sleep 300
-          done
-          if [ "$BC" != "1" ]; then echo BOOT_TIMEOUT_5H; exit 1; fi
-=======
           echo "ENGINE_ALIVE_AFTER_45S"
-          # 设备出现（fast-fail：引擎挂了立即报，最多等 20 分钟）
-          DEAD=0
-          timeout 1200 adb wait-for-device || DEAD=1
-          if [ $DEAD -ne 0 ]; then
+          DEVICE_UP=0
+          for i in $(seq 1 48); do
             if ! kill -0 $EMUPID 2>/dev/null; then
-              echo "EMULATOR_DIED_DURING_WAIT_FOR_DEVICE"
-            else
-              echo "DEVICE_NEVER_APPEARED"
+              echo "EMULATOR_DIED_DURING_WAIT_FOR_DEVICE (round $i)"
+              tail -150 emulator.log
+              exit 1
             fi
-            tail -100 emulator.log
+            ST=$(adb devices 2>/dev/null | tail -n +2 | tr -d ' ' | grep -c 'device$\|offline$' || true)
+            echo "wait-for-device check $i: engine-alive, adb-lines=$ST  $(date -u +%H:%M:%S)"
+            if timeout 60 adb wait-for-device 2>/dev/null; then DEVICE_UP=1; break; fi
+            sleep 240
+          done
+          if [ $DEVICE_UP -ne 1 ]; then
+            echo "DEVICE_NEVER_APPEARED_4H"
+            tail -200 emulator.log
             exit 1
           fi
           echo "DEVICE_APPEARED"
-          # 等待开机完成，每轮检查引擎进程存活（TCG 下可能需要 30-90 分钟）
           START=$SECONDS
+          BOOT_OK=0
           while true; do
             if ! kill -0 $EMUPID 2>/dev/null; then
               echo "EMULATOR_DIED_DURING_BOOT"
-              tail -120 emulator.log
+              tail -150 emulator.log
               exit 1
             fi
-            if timeout 40 adb shell getprop sys.boot_completed 2>/dev/null | grep -q '^1$'; then
+            if timeout 60 adb shell getprop sys.boot_completed 2>/dev/null | grep -q '^1$'; then
               echo "BOOT_COMPLETED"
+              BOOT_OK=1
               break
             fi
-            if [ $((SECONDS - START)) -gt 5400 ]; then
-              echo "BOOT_TIMEOUT_90MIN"
-              tail -120 emulator.log
+            ELAPSED=$((SECONDS - START))
+            if [ $ELAPSED -gt 14400 ]; then
+              echo "BOOT_TIMEOUT_4H"
+              tail -200 emulator.log
               exit 1
             fi
-            sleep 15
+            if [ $((ELAPSED % 300)) -lt 30 ]; then
+              echo "boot-wait ${ELAPSED}s; kernel-log tail:"
+              tail -8 emulator.log || true
+            fi
+            sleep 30
           done
->>>>>>> origin/main
           adb shell getprop ro.build.version.release || true
           adb shell getprop ro.product.cpu.abi || true
 
       - name: Dump emulator log
         if: always()
         run: |
-          cat emulator.log 2>/dev/null | tail -150 || echo "NO_EMULATOR_LOG"
+          tail -150 emulator.log 2>/dev/null || echo "NO_EMULATOR_LOG"
 
       - name: Install APK
         run: |

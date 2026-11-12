@@ -164,6 +164,8 @@ public class StreamResolver
     /// <summary>
     /// 自愈1：带备援的取流。主源失败 → 自动切用户自有源等备援候选（静默）；
     /// 备援连续成功 SourceFailover.RecoverToPrimaryAfter 轮自动回主源；全候选失败返回 null（UI 明确提示）。
+    /// 治顿批①：主源失败后先查备援源注册表（15 卫视+4 央视公共备援），再退用户自有源；
+    /// 备援 URL 恒定（非票据型），按 N5 口径不做换票假成功判定。
     /// </summary>
     public async Task<ResolvedStream?> ResolveWithFailoverAsync(Channel ch, bool force = false)
     {
@@ -172,7 +174,17 @@ public class StreamResolver
         {
             var primary = await ResolvePlayUrlAsync(ch, force);
             if (primary != null) return primary;
-            _failover.NextCandidateOnFailure(key, 2); // 主源 + 用户源
+            _failover.NextCandidateOnFailure(key, 2); // 主源 + 备援源（用户源经 UserFallback 同链）
+        }
+        // 治顿批①：内置备援表优先（登记台免网络二次解析，直连即用）；未登记退 UserFallback
+        if (FallbackSourceRegistry.Get(ch.Name) is { } fb)
+        {
+            _failover.OnSuccess(key);
+            var fbOpts = new List<(string Key, string Value)>();
+            if (!string.IsNullOrEmpty(fb.Referer)) fbOpts.Add(("http-referrer", fb.Referer));
+            var fbUa = string.IsNullOrEmpty(fb.UserAgent) ? ch.UserAgent : fb.UserAgent;
+            if (!string.IsNullOrEmpty(fbUa)) fbOpts.Add(("http-user-agent", fbUa));
+            return new ResolvedStream { Channel = ch, Url = fb.Url, Options = fbOpts };
         }
         if (UserFallback == null) return null;
         try

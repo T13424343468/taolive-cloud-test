@@ -920,10 +920,21 @@ Check(StallRescue.ExhaustedRecoveryFirstDelayMs == 30_000,
     "v25真机修复·重连阶梯耗尽后 30 秒起兜底重试（原口径永久躺平只报一次「信号中断」，画面冻死实锤）");
 Check(StallRescue.ExhaustedRecoveryPeriodMs == 60_000,
     "v25真机修复·耗尽兜底 60 秒常驻节奏（首帧恢复或换台才收摊，不等用户救场）");
-Check(StallRescue.ExhaustedRebuildEveryCycles == 3,
-    "v25真机修复·耗尽兜底每 3 轮升级软重启内核（其余轮静默重取流重接，阶梯仍行进）");
+Check(StallRescue.ExhaustedRebuildEveryCycles == 1,
+    "④内核自愈提前·耗尽兜底每轮即软重启内核（老板 11-12 令：取不到首帧几十秒内主动内核自愈，不再等 3 轮约 2.5 分钟）");
 Check(StallRescue.ExhaustedRecoveryPeriodMs / StallRescue.ExhaustedRebuildEveryCycles > 0,
     "v25真机修复·耗尽兜底节奏整除守卫（升级间隔=3 分钟，防参数改坏后除零/永不升级）");
+// ④内核自愈提前·三条验收断言（老板 2026-11-12 令）
+Check(StallRescue.ShouldKernelRebuildOnExhausted(1, frameShown: false)
+    && StallRescue.ShouldKernelRebuildOnExhausted(2, frameShown: false),
+    "④首帧超时→内核自愈触发：首帧未出时第 1 轮兜底即软重启内核（30 秒首延迟内达「几十秒内」口径），后续每轮持续自愈");
+Check(!StallRescue.ShouldKernelRebuildOnExhausted(0, frameShown: false),
+    "④边界守卫：cycle=0（未进兜底循环）不触发内核自愈");
+Check(!StallRescue.ShouldKernelRebuildOnExhausted(1, frameShown: true)
+    && !StallRescue.ShouldKernelRebuildOnExhausted(3, frameShown: true),
+    "④正常流不误触发：首帧已出（frameShown=true）恒不重启（兜底循环本应已收摊，双保险）");
+Check(StallRescue.RescueCapPerWindow == 2 && StallRescue.RescueWindowMs == 90_000,
+    "④节流账不破：内核自愈走重启路径不消耗取流预算，90 秒窗 2 次的介入节流口径原样");
 Check(BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 1200) == 3000
     && BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 4000) == 4000
     && BufferInventory.StartCachingMs(BufferInventory.Mode.SilentRefetch, 1200) == 1200,
@@ -1444,6 +1455,48 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         "v25二2c ClearCooldowns：网络变更后票据冷却清零（不把好环境白冻 2 小时）");
     Check(ysp2.TryGet("cc", t25 + 60, out var keep) && keep == "http://x/cc.m3u8",
         "v25二2c ClearCooldowns：票据缓存保留验证（失败自然重新入账）");
+}
+
+// ==================== 治顿批①·备援源注册表（fallback_sources） ====================
+{
+    // ① 表完整性：19 路（15 卫视 + 4 央视），URL 全 http(s) 绝对地址
+    Check(FallbackSourceRegistry.Table.Length == 19, "治①①备援表 19 路（15 卫视+4 央视）");
+    Check(FallbackSourceRegistry.Table.All(e => e.Url.StartsWith("http")),
+        "治①①备援表 URL 全绝对地址");
+
+    // ② 频道覆盖：央视频 63 路目录 17 台 + 浙江台目录 2 台（钱江/教科在 cztv 源），共 19 全命中
+    {
+        var yspHit = new YangshipinSource().FetchChannels().Count(c => FallbackSourceRegistry.Has(c.Name));
+        var cztvHit = new CztvSource().FetchChannels().Count(c => FallbackSourceRegistry.Has(c.Name));
+        Check(yspHit == 17 && cztvHit == 2, $"治①②目录覆盖 19 台（央视频 {yspHit}+浙江 {cztvHit}）");
+    }
+
+    // ③ 主源失败 → 备援表直连（不依赖 UserFallback）：湖南卫视主源取流为空（未知源+空流地址=失败），应返回备援 URL
+    {
+        var resolver = new StreamResolver();
+        var hn = new Channel { Name = "湖南卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hnws" };
+        var r = await resolver.ResolveWithFailoverAsync(hn);
+        Check(r != null && r.Url.Contains("mgtv-hlsal-ldvt"), "治①③主源失败切内置备援（湖南卫视→mgtv）");
+        Check(r != null && resolver.Failover.CurrentIndex(hn.EpgKey) >= 0, "治①③备援切换进自愈账（状态机在管）");
+    }
+
+    // ④ 稳定后回主源：备援连续成功达 RecoverToPrimaryAfter 轮 → 自动回主源（Index=0）
+    {
+        var f = new SourceFailover();
+        f.NextCandidateOnFailure("k1", 2); // 主源失败 → 备援
+        f.OnSuccess("k1"); f.OnSuccess("k1"); // 连续 2 轮成功
+        Check(f.CurrentIndex("k1") == 0, "治①④备援连续成功 2 轮自动回主源");
+    }
+
+    // ⑤ 未登记台不误切：无备援表匹配且无 UserFallback → 返回 null（UI 明确提示）
+    {
+        var resolver = new StreamResolver();
+        var odd = new Channel { Name = "不存在的台", SourceId = "dead", StreamUrl = "", EpgKey = "odd" };
+        Check(await resolver.ResolveWithFailoverAsync(odd) == null, "治①⑤未登记台无备援不硬切（明确失败）");
+    }
+
+    // ⑥ 台名归一匹配：去空格后一致即命中（「CCTV1 综合」变体也命中 CCTV1综合）
+    Check(FallbackSourceRegistry.Has("CCTV1 综合"), "治①⑥台名归一匹配（空格容忍）");
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");

@@ -55,14 +55,42 @@ public class StreamDnsPicker
         var systemTask = SafeCall(() => _systemResolve(host), "系统DNS");
         var dohA = SafeCall(() => _dohResolve("223.5.5.5", host), "DoH阿里");
         var dohB = SafeCall(() => _dohResolve("1.1.1.1", host), "DoH CF");
-        await Task.WhenAll(systemTask, dohA, dohB); // 内部各自吞异常，永不抛
+        // ③热修 B4：三路改 WhenAny——任一解析器出 IP 即返回。系统解析无超时，SystemDnsBroken 下
+        // DoH 3 秒出结果被白等（每 host 每 10 分钟窗口首连付一次系统超时）；其余路在后台继续补账进缓存
+        var all = new[] { systemTask, dohA, dohB };
+        var pending = new List<Task<IPAddress[]>>(all);
+        while (pending.Count > 0)
+        {
+            await Task.WhenAny(pending);
+            var partial = all.Where(t => t.IsCompletedSuccessfully)
+                .SelectMany(t => t.Result)
+                .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                .Distinct().ToArray();
+            if (partial.Length > 0)
+            {
+                _cache[host] = (partial, _nowMs());
+                MergeLateResults(host, all); // 其余路完成后合并补账（后台不等待）
+                return OrderByPenalty(partial);
+            }
+            pending.RemoveAll(t => t.IsCompleted); // 先出的路为空（如系统解析抛错）：不再重复等它
+        }
 
-        var ips = systemTask.Result.Concat(dohA.Result).Concat(dohB.Result)
-            .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-            .Distinct().ToArray();
-        if (ips.Length == 0) throw new System.Net.Sockets.SocketException(); // 全挂：与系统 DNS 失败同型，交上层兜底
-        _cache[host] = (ips, _nowMs());
-        return OrderByPenalty(ips);
+        throw new System.Net.Sockets.SocketException(); // 全挂：与系统 DNS 失败同型，交上层兜底
+    }
+
+    /// <summary>③热修 B4 配套：早返回后剩余解析器后台完成后合并结果补账进缓存（取全部成功的路）。</summary>
+    private async void MergeLateResults(string host, Task<IPAddress[]>[] all)
+    {
+        try
+        {
+            await Task.WhenAll(all);
+            var merged = all.Where(t => t.IsCompletedSuccessfully)
+                .SelectMany(t => t.Result)
+                .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                .Distinct().ToArray();
+            if (merged.Length > 0) _cache[host] = (merged, _nowMs());
+        }
+        catch { } // 补账失败不影响已返回的主路
     }
 
     /// <summary>DoH 查询（RFC8484 JSON）：只取 Answer 里 type=1 的 IPv4。失败返回空（不抛）。</summary>

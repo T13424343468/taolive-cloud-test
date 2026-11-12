@@ -1291,7 +1291,17 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
                 (server, h) => server == "223.5.5.5" ? Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }) : Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()),
                 () => dnsClock);
             var ips1 = picker.ResolveAsync("example.com").GetAwaiter().GetResult();
-            Check(ips1.Select(i => i.ToString()).SequenceEqual(new[] { "1.2.3.4", "5.6.7.8", "9.9.9.9" }), "v28网络③DNS合并去重只取IPv4（系统→阿里→CF 拼接序）");
+            // ③热修 B4：三路同步完成=全量合并（与旧口径一致）；早返回只对异步慢路生效（下两例验证）
+            Check(ips1.Select(i => i.ToString()).SequenceEqual(new[] { "1.2.3.4", "5.6.7.8", "9.9.9.9" }), "v28网络③DNS合并去重只取IPv4（同步完成仍全量合并，系统→阿里→CF 拼接序）");
+            // ③热修 B4-1：系统先出（DoH 延迟 500ms）→ 早返回系统 IP，不等 DoH 齐
+            {
+                var pickerSlowDoh = new StreamDnsPicker(
+                    host => Task.FromResult(new[] { IPAddress.Parse("1.2.3.4") }),
+                    async (s, h) => { await Task.Delay(500); return Array.Empty<IPAddress>(); },
+                    () => dnsClock);
+                var ipsFast = pickerSlowDoh.ResolveAsync("fast.com").GetAwaiter().GetResult();
+                Check(ipsFast.Length == 1 && ipsFast[0].ToString() == "1.2.3.4", "③热修B4：系统先出即返回（DoH 未齐不等待）");
+            }
             // DoH 全挂：系统 DNS 兜底仍出结果
             var pickerFallback = new StreamDnsPicker(
                 host => Task.FromResult(new[] { IPAddress.Parse("1.2.3.4") }),
@@ -1299,6 +1309,26 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
                 () => dnsClock);
             var ips2 = pickerFallback.ResolveAsync("example.com").GetAwaiter().GetResult();
             Check(ips2.Length == 1 && ips2[0].ToString() == "1.2.3.4", "v28网络③DoH异常回落系统DNS（兜底不挂取流）");
+            // ③热修 B4-2：系统解析挂住（永不完成），DoH 出 IP 应先返——不白等系统超时
+            {
+                var hangTcs = new TaskCompletionSource<IPAddress[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var pickerHang = new StreamDnsPicker(
+                    host => hangTcs.Task,
+                    (s, h) => Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }),
+                    () => dnsClock);
+                var ipsH = pickerHang.ResolveAsync("hang.com").GetAwaiter().GetResult();
+                Check(ipsH.Length == 1 && ipsH[0].ToString() == "9.9.9.9", "③热修B4：系统解析挂住不拖首连（DoH 先出即返）");
+                hangTcs.SetResult(Array.Empty<IPAddress>()); // 收尾（防测试进程悬挂警告）
+            }
+            // ③热修 B4-3：系统快速失败出空，DoH 出 IP 照常返回（先出的空路不短路失败）
+            {
+                var pickerEmpty = new StreamDnsPicker(
+                    host => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()),
+                    (s, h) => Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }),
+                    () => dnsClock);
+                var ipsE = pickerEmpty.ResolveAsync("empty.com").GetAwaiter().GetResult();
+                Check(ipsE.Length == 1 && ipsE[0].ToString() == "9.9.9.9", "③热修B4：系统出空不短路失败（DoH 补位返回）");
+            }
             // IP 字面量直接返回（不再解析）
             var literal = new StreamDnsPicker(() => dnsClock);
             var lit = literal.ResolveAsync("203.0.113.9").GetAwaiter().GetResult();

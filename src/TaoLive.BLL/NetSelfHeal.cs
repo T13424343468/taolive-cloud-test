@@ -275,13 +275,18 @@ public class SelfHealProxyKernel : IDisposable
                 Exception? last = null;
                 foreach (var ip in ips)
                 {
+                    // ③热修 B6：失败分支必须 Dispose——sock 提到 try 外声明，catch 才能收（防 finalizer 兜底泄漏）
+                    var sock = new System.Net.Sockets.Socket(ip.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
                     try
                     {
-                        var sock = new System.Net.Sockets.Socket(ip.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
                         await sock.ConnectAsync(new IPEndPoint(ip, port), ct);
                         return new System.Net.Sockets.NetworkStream(sock, ownsSocket: true);
                     }
-                    catch (Exception ex) { last = ex; }
+                    catch (Exception ex)
+                    {
+                        last = ex;
+                        try { sock.Dispose(); } catch { }
+                    }
                 }
                 throw last ?? new System.IO.IOException($"自愈代理回源无可用 IP：{host}");
             },
@@ -439,7 +444,11 @@ public class SelfHealProxyKernel : IDisposable
         else
         {
             // TS/分片：字节直过，零缓存零改写
-            await resp.Content.CopyToAsync(ctx.Response.OutputStream, ct);
+            // ③热修 B5：body 拷贝挂 30 秒 CTS（与 kernel ct 链接）——HttpClient.Timeout 在
+            // ResponseHeadersRead 下只盖到响应头，CopyToAsync 可无限期挂住（长跑线程/连接泄漏）
+            using var bodyCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bodyCts.CancelAfter(TimeSpan.FromSeconds(30));
+            await resp.Content.CopyToAsync(ctx.Response.OutputStream, bodyCts.Token);
         }
         ctx.Response.Close();
     }

@@ -162,6 +162,19 @@ public class MainActivity : Activity
         _warmupEnabled = _prefs.GetBoolean("warmup_enabled", true);       // A⑥：后台预热（默认开）
         _autostartEnabled = _prefs.GetBoolean("autostart_enabled", true); // v22 第 15 项：新装默认开（读取的是已存设置，与 BootReceiver/SettingsStore 同口径）
 
+        // 调参档接线（老板 2026-11-12 令：旋钮全量进设置页+一键还原）：启动读偏好进 BLL 门面，各策略读门面
+        AdvancedTuning.Apply(
+            _prefs.GetInt("adv_fail_gate", AdvancedTuning.DefaultFailGate),
+            _prefs.GetInt("adv_reprobe_min", 5) * 60_000L,
+            _prefs.GetInt("adv_cache_sec", AdvancedTuning.DefaultListCacheSec),
+            _prefs.GetInt("adv_retry_base_sec", 120) * 1000L,
+            _prefs.GetInt("adv_retry_max_min", 120) * 60_000L,
+            _prefs.GetInt("adv_proxy_port", AdvancedTuning.DefaultProxyPort));
+
+        // 源档案接线（上善若水纪律）：档案库与 source_health.json 同目录载入，机制取样持续回写
+        SourceProfileStore.Reporter = msg => CrashNet.Record(msg); // BLL 不反引 UI：打点委托在此注入
+        SourceProfileStore.Shared.Load(FilesDir!.AbsolutePath);
+
         _favorites = new FavoriteStore();
         _favorites.Restore(_prefs?.GetString("favorites", null)); // 收藏顺序跨启动记忆（v1.0.8 第14项）
         _catalog = new ChannelCatalog(_favorites);
@@ -894,6 +907,8 @@ public class MainActivity : Activity
             ToggleAutostart, "#F7F5EE", OpenAutostartSystemPage);
         AddRow("崩溃日志（点按查看）", ShowCrashLog, "#C9D6E2");
         AddRow("自诊断（点按查看）", ShowDiagPanel, "#C9D6E2"); // S3（vc38）：五类摘要只读一页+导出
+        // 调参档接线（老板 2026-11-12 令）：进阶调优二级页——旋钮全量可调+每项讲清作用+一键还原
+        AddRow("进阶调优（点按进入）", ShowAdvancedTuningPanel, "#C9D6E2");
         // B 包第 2 项：砍掉「电视系统」整段入口——系统设置由遥控器设置键长按直达，软件内不再列
         AddLabel("返回键收起 · 长按设置键直达系统设置");
 
@@ -1040,6 +1055,8 @@ public class MainActivity : Activity
     private TextView? _diagExportBtn;    // 导出：完整诊断文件复制到文件管理器可见目录
     private TextView? _diagCloseBtn;
 
+    private FrameLayout? _advOverlay;    // 调参档接线（老板 2026-11-12 令）：进阶调优全屏面板（自诊断同打法）
+
     /// <summary>自管面板按钮统一描边（自崩溃日志窗提取，诊断窗共用，ui-remote 归一条款）。</summary>
     private void StyleOverlayButton(TextView b, GradientDrawable focusDrawable)
     {
@@ -1140,6 +1157,159 @@ public class MainActivity : Activity
         _diagExportBtn = null;
         _diagCloseBtn = null;
         OpenSettingsPanel();
+    }
+
+    // ---- 进阶调优面板（调参档接线·老板 2026-11-12 令：旋钮全量进设置页、每项讲清作用、支持一键还原） ----
+
+    /// <summary>旋钮档位（确认键循环）。默认值加 * 标注；改动即存偏好并即时生效（端口项下次播放生效）。</summary>
+    private static readonly int[] AdvGateSteps = { 1, 2, 3, 5, 8, 12 };
+    private static readonly int[] AdvReprobeMinSteps = { 1, 2, 5, 10, 15 };
+    private static readonly int[] AdvCacheSecSteps = { 15, 30, 60, 120, 300 };
+    private static readonly int[] AdvRetrySecSteps = { 30, 60, 120, 300, 600 }; // 起步；封顶恒 2 小时
+    private static readonly int[] AdvPortSteps = { 47618, 47628, 47638, 47648, 49618 };
+
+    private static int NextStep(int[] steps, int current)
+    {
+        for (int i = 0; i < steps.Length; i++)
+            if (steps[i] > current) return steps[i];
+        return steps[0]; // 到顶循环回最小档
+    }
+
+    private void ShowAdvancedTuningPanel()
+    {
+        try
+        {
+            var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            int pad = Dp(24);
+            box.SetPadding(pad, pad, pad, pad);
+            box.SetBackgroundColor(InkTranslucency.PanelColor(this));
+            var title = new TextView(this) { Text = "进阶调优", TextSize = 22 };
+            title.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(title);
+            box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = Dp(10) });
+
+            void AddKnob(string label, string desc, Action onClick)
+            {
+                var row = new TextView(this) { Text = label, TextSize = 19 };
+                row.SetTextColor(Color.ParseColor("#F7F5EE"));
+                row.SetPadding(Dp(24), Dp(20), Dp(24), Dp(2));
+                row.Focusable = true;
+                var focusDrawable = InkTranslucency.FocusDrawable();
+                row.FocusChange += (_, ev) =>
+                {
+                    if (ev.HasFocus) row.Background = focusDrawable;
+                    else if (row.Background == focusDrawable) row.Background = null;
+                };
+                row.Click += (_, _) => { onClick(); SaveAdvancedTuning(); RefreshAdvancedRows(); };
+                box.AddView(row);
+                var sub = new TextView(this) { Text = desc, TextSize = 13 };
+                sub.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+                InkTranslucency.ApplyReadabilityShadow(sub);
+                sub.SetPadding(Dp(30), 0, Dp(24), Dp(10));
+                box.AddView(sub);
+            }
+            // 5 个旋钮行（确认键循环档位；每项下挂一行人话作用说明——老板令：讲清楚每一项是什么作用）
+            void Knob(int[] steps, Action<int> set, Func<string> label, string desc, Func<int> cur)
+            {
+                AddKnob(label(), desc, () => set(NextStep(steps, cur())));
+            }
+            Knob(AdvGateSteps,
+                v => AdvancedTuning.Apply(v, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
+                () => $"自愈门槛：连败 {AdvancedTuning.SelfHealFailGate} 次（默认 3 · 确认键调）",
+                "网络解析出毛病时，撑几次失败才启动本地中转自救——调低自救快但易误伤，调高稳但自救慢",
+                () => AdvancedTuning.SelfHealFailGate);
+            Knob(AdvReprobeMinSteps,
+                v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, v * 60_000L, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
+                () => $"自愈回探：{AdvancedTuning.SelfHealReprobeMs / 60_000} 分钟（默认 5 · 确认键调）",
+                "自救起来之后，隔多久偷偷试一次能否回直连——调低回得快但探测勤，调高省流量回得慢",
+                () => (int)(AdvancedTuning.SelfHealReprobeMs / 60_000));
+            Knob(AdvCacheSecSteps,
+                v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, v, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
+                () => $"清单缓存：{AdvancedTuning.ListCacheSec} 秒（默认 60 · 确认键调）",
+                "频道清单数据在手上留多久不重取——留久省流量，留短换台信息更新鲜",
+                () => AdvancedTuning.ListCacheSec);
+            Knob(AdvRetrySecSteps,
+                v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, v * 1000L, AdvancedTuning.RetryMaxMs, AdvancedTuning.ProxyPort),
+                () => $"重试节奏：起步 {AdvancedTuning.RetryBaseMs / 1000} 秒（默认 120 · 确认键调）",
+                "被源服务器拒绝后退多远再试——跟风控博弈的分寸：调急了容易挨打，调钝了台恢复慢（封顶恒 2 小时）",
+                () => (int)(AdvancedTuning.RetryBaseMs / 1000));
+            Knob(AdvPortSteps,
+                v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, v),
+                () => $"自救端口：{AdvancedTuning.ProxyPort}（默认 47618 · 确认键调）",
+                "自救中转走的内部通道口——只有跟其他软件撞号才需要改；改动下次播放生效",
+                () => AdvancedTuning.ProxyPort);
+
+            var tip = new TextView(this)
+            {
+                Text = "改坏了随时点「一键还原默认」回出厂值。\n端口项改动下次播放生效，其余即时生效。",
+                TextSize = 13,
+            };
+            tip.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(tip);
+            tip.SetPadding(Dp(30), Dp(6), Dp(24), Dp(10));
+            box.AddView(tip);
+
+            var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            var reset = new TextView(this) { Text = "一键还原默认", Gravity = GravityFlags.Center };
+            reset.SetPadding(pad / 2, Dp(14), pad / 2, Dp(14));
+            reset.Click += (_, _) =>
+            {
+                AdvancedTuning.ResetToDefaults();
+                SaveAdvancedTuning();
+                RefreshAdvancedRows();
+                FlashInfo("进阶调优：已全部还原出厂默认");
+            };
+            var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
+            close.SetPadding(pad / 2, Dp(14), pad / 2, Dp(14));
+            close.Click += (_, _) => CloseAdvancedPanel();
+            reset.Id = View.GenerateViewId();
+            close.Id = View.GenerateViewId();
+            reset.NextFocusRightId = close.Id;
+            close.NextFocusLeftId = reset.Id;
+            StyleOverlayButton(reset, InkTranslucency.AccentFocusDrawable()); // 还原=朱砂（改动性按钮）
+            StyleOverlayButton(close, InkTranslucency.FocusDrawable());
+            int btnH = Dp(52);
+            btns.AddView(reset, new LinearLayout.LayoutParams(0, btnH, 1f));
+            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
+            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
+
+            var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
+            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
+            overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
+            _advOverlay = overlay;
+            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
+            CloseSettingsPanel();
+            close.RequestFocus(); // 默认焦点落「关闭」，防误改
+        }
+        catch (Exception ex) { CrashNet.Record($"[进阶调优] 打开失败：{ex.Message}"); FlashInfo("进阶调优打开失败"); }
+    }
+
+    private void RefreshAdvancedRows() // 简化刷新：整体重建面板（行数固定，焦点随重建回默认，与设置面板同口径）
+    {
+        if (_advOverlay is null) return;
+        CloseAdvancedPanel(reopenSettings: false);
+        ShowAdvancedTuningPanel();
+    }
+
+    private void CloseAdvancedPanel(bool reopenSettings = true)
+    {
+        if (_advOverlay is null) return;
+        _root.RemoveView(_advOverlay);
+        _advOverlay.Dispose();
+        _advOverlay = null;
+        if (reopenSettings) OpenSettingsPanel();
+    }
+
+    private void SaveAdvancedTuning() // 调参档写偏好（跨启动记忆；Apply 即生效）
+    {
+        _prefs?.Edit()
+            ?.PutInt("adv_fail_gate", AdvancedTuning.SelfHealFailGate)
+            ?.PutInt("adv_reprobe_min", (int)(AdvancedTuning.SelfHealReprobeMs / 60_000))
+            ?.PutInt("adv_cache_sec", AdvancedTuning.ListCacheSec)
+            ?.PutInt("adv_retry_base_sec", (int)(AdvancedTuning.RetryBaseMs / 1000))
+            ?.PutInt("adv_retry_max_min", (int)(AdvancedTuning.RetryMaxMs / 60_000))
+            ?.PutInt("adv_proxy_port", AdvancedTuning.ProxyPort)
+            ?.Apply();
     }
 
     /// <summary>五类摘要组装：全部经现有公开接口/公开成员取数，不落设备标识、不新增采集。</summary>
@@ -2039,6 +2209,22 @@ public class MainActivity : Activity
             return true;
         }
 
+        // 进阶调优面板（调参档接线）：返回/菜单=关闭；确认=点当前行；其余不穿透（旋钮行焦点导航系统自走）
+        if (_advOverlay != null)
+        {
+            switch (keyCode)
+            {
+                case Keycode.Back or Keycode.Menu:
+                    CloseAdvancedPanel();
+                    return true;
+                case Keycode.DpadCenter or Keycode.Enter:
+                    (CurrentFocus as TextView)?.PerformClick();
+                    return true;
+                default:
+                    return true; // 不穿透
+            }
+        }
+
         // S3 自诊断面板（vc38）：键位与崩溃日志面板同款——返回/菜单=关闭；上下=滚动；左右=两钮移焦点；确认=点当前钮
         if (_diagOverlay != null)
         {
@@ -2437,6 +2623,7 @@ public class MainActivity : Activity
         // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘），再落盘
         _healthLoadTask?.Wait();
         _healthStore?.FlushNow(); // v1.0.10：退出前把源健康账落盘
+        SourceProfileStore.Shared.FlushNow(); // 源档案接线：退出前档案落盘（同 source_health.json 家法）
         _host.Dispose();
         base.OnDestroy();
     }

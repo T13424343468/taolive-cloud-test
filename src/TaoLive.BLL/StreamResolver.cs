@@ -113,7 +113,7 @@ public class StreamResolver
     private readonly ConcurrentDictionary<string, TableSnapshot> _tableCache = new();
     private readonly SemaphoreSlim _tableGate = new(1, 1); // 同源整表抓取串行（并发到期只发一次）
 
-    private static readonly TimeSpan TableTtl = TimeSpan.FromSeconds(60);
+    private static TimeSpan TableTtl => TimeSpan.FromSeconds(AdvancedTuning.ListCacheSec); // 调参档接线：清单缓存读 AdvancedTuning
 
     /// <summary>整表源按源级聚合抓表：TTL 内同源只发 1 次请求，返回缓存的整表 JSON。</summary>
     private async Task<string?> FetchSourceTableAsync(string sourceId, Func<Task<string?>> fetchRaw)
@@ -137,7 +137,8 @@ public class StreamResolver
 
     private sealed class CachedUrl { public string Url = ""; public long FetchedAt; }
     private readonly ConcurrentDictionary<string, CachedUrl> _cache = new();
-    private static readonly TimeSpan ShortCache = TimeSpan.FromSeconds(60);
+    // 调参档接线（老板 2026-11-12 令·旋钮全量进设置页）：清单缓存时长读 AdvancedTuning
+    private static TimeSpan ShortCache => TimeSpan.FromSeconds(AdvancedTuning.ListCacheSec);
 
     public async Task<ResolvedStream?> ResolvePlayUrlAsync(Channel ch, bool force = false)
     {
@@ -156,7 +157,9 @@ public class StreamResolver
 
         var opts = new List<(string Key, string Value)>();
         if (!string.IsNullOrEmpty(ch.Referer)) opts.Add(("http-referrer", ch.Referer));
-        var ua = ch.SourceId == "kankan" ? KankanFetchUserAgent : ch.UserAgent;
+        // 源档案接线：防盗头 UA 覆盖读档案（kankan 签名绑 UA，出厂档案 UaOverride 记账）
+        var ua = SourceProfileStore.Shared.ProfileOf(ch.SourceId).UaOverride;
+        if (string.IsNullOrEmpty(ua)) ua = ch.UserAgent;
         if (!string.IsNullOrEmpty(ua)) opts.Add(("http-user-agent", ua));
         return new ResolvedStream { Channel = ch, Url = url, Options = opts };
     }
@@ -184,6 +187,11 @@ public class StreamResolver
             if (!string.IsNullOrEmpty(fb.Referer)) fbOpts.Add(("http-referrer", fb.Referer));
             var fbUa = string.IsNullOrEmpty(fb.UserAgent) ? ch.UserAgent : fb.UserAgent;
             if (!string.IsNullOrEmpty(fbUa)) fbOpts.Add(("http-user-agent", fbUa));
+            // 接线位 A（老板 2026-11-12 批准）：备援 URL 落预热池——下轮主源失败可零网络直起；
+            // 保鲜期封顶 10 分钟：池命中会挡住主源重取，长保鲜期=回主源被拖死，短保鲜期最晚 10 分钟自愈
+            WarmupDisk?.Put($"stream:{key}", fb.Url,
+                Math.Min(10 * 60_000, WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             return new ResolvedStream { Channel = ch, Url = fb.Url, Options = fbOpts };
         }
         if (UserFallback == null) return null;
@@ -199,6 +207,10 @@ public class StreamResolver
             var opts = new List<(string Key, string Value)>();
             if (!string.IsNullOrEmpty(ch.Referer)) opts.Add(("http-referrer", ch.Referer));
             if (!string.IsNullOrEmpty(ch.UserAgent)) opts.Add(("http-user-agent", ch.UserAgent));
+            // 接线位 A：用户备援同样落池（同封顶口径）
+            WarmupDisk?.Put($"stream:{key}", alt,
+                Math.Min(10 * 60_000, WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             return new ResolvedStream { Channel = ch, Url = alt, Options = opts };
         }
         catch { return null; }
@@ -215,18 +227,21 @@ public class StreamResolver
 
     /// <summary>票据短效源（落了必过期，误导起播）：央视频 5 分钟票、gzstv 腾讯云分钟级票，不落盘。
     /// jstv 不在此列——network.md N3 修复后其保鲜期由 WarmupPolicy 专属节拍（150s）收口，短于签名期 180s，
-    /// 落盘命中不再必过期（落盘只加速口径恢复成立）。</summary>
-    private static bool IsShortTicketSource(string sourceId) => sourceId is "yangshipin" or "gzstv";
+    /// 落盘命中不再必过期（落盘只加速口径恢复成立）。
+    /// 源档案接线（上善若水纪律）：读 SourceProfileStore 档案，出厂名册做默认回落——机制读档案不读代码。</summary>
+    private static bool IsShortTicketSource(string sourceId) =>
+        SourceProfileStore.Shared.KindOf(sourceId) == SourceKind.TicketShort;
 
     /// <summary>
     /// network.md N5·票据/签名型源判定（URL 是否随换票轮换）：票据型源换票「假成功」（返回同 URL）
     /// 需按失败计数升级备援；恒定 URL 源（xatv 直连、nmtv/gxtv 整表定位等）换票成功返回原 URL 属正常，
     /// 不做假成功判定——此前 LiveVideoHost.RefreshStreamAsync 对恒定源每次重连都按换票失败计，
     /// attempt≥2 即误转备援空转。UI 层判定点（LiveVideoHost.RefreshStreamAsync）改走本口径（BLL 单一事实源）。
-    /// kankan 流 URL 是否轮换未核实，按保守口径不算票据型（宁可少计数，不误触发备援）。
+    /// kankan 流 URL 是否轮换未核实，按保守口径出厂档案 Rotating=false（宁可少计数，不误触发备援）。
+    /// 源档案接线（上善若水纪律）：读档案 Rotating 标记；新源两次取样自动定档，机制回报更新。
     /// </summary>
     public static bool IsRotatingTicketSource(string sourceId) =>
-        sourceId is "yangshipin" or "cztv" or "gzstv" or "jstv";
+        SourceProfileStore.Shared.IsRotating(sourceId);
 
     private async Task<string?> ResolveCachedAsync(Channel ch, Func<Channel, Task<string?>> fetch, bool force = false)
     {
@@ -245,8 +260,11 @@ public class StreamResolver
         if (!string.IsNullOrEmpty(url))
         {
             _cache[key] = new CachedUrl { Url = url, FetchedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
+            SourceProfileStore.Shared.ObserveSample(ch.SourceId, url, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // 源档案：取样回报定档
             WarmupDisk?.Put($"stream:{key}", url,
-                WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs,
+                SourceProfileStore.Shared.ProfileOf(ch.SourceId).RefreshIntervalMs > 0
+                    ? SourceProfileStore.Shared.ProfileOf(ch.SourceId).RefreshIntervalMs
+                    : WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
         return url;

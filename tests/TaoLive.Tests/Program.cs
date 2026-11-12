@@ -1164,6 +1164,71 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
             .GetAwaiter().GetResult();
         Check(hit == "lk" && led3.IsFrozen("lk", 1), "A⑬竞速403写同一本退避账");
 
+        // ---- 调参档接线断言（老板 2026-11-12 令：旋钮全量进设置页+一键还原） ----
+        {
+            AdvancedTuning.ResetToDefaults();
+            // 钳制：非法值收进合法范围（设置页与还原同一入口）
+            AdvancedTuning.Apply(99, 1, 99999, 1, 1, 99);
+            Check(AdvancedTuning.SelfHealFailGate == 20, "调参档门槛钳上限");
+            Check(AdvancedTuning.SelfHealReprobeMs >= AdvancedTuning.ReprobeMsMin, "调参档回探钳下限");
+            Check(AdvancedTuning.ProxyPort >= AdvancedTuning.ProxyPortMin, "调参档端口钳下限");
+            AdvancedTuning.Apply(5, 5 * 60_000, 60, 120_000, 7_200_000, 47618);
+            Check(AdvancedTuning.SelfHealFailGate == 5 && AdvancedTuning.SelfHealReprobeMs == 5 * 60_000, "调参档Apply即生效");
+            // 门控跟随：门槛 5 时连败 3~4 不触发、第 5 次触发
+            var gate5 = new SelfHealGate(() => 0);
+            Check(!gate5.OnPlayFailed() && !gate5.OnPlayFailed() && !gate5.OnPlayFailed() && !gate5.OnPlayFailed(),
+                "调参档门控跟随：门槛5时连败4不触发");
+            Check(gate5.OnPlayFailed(), "调参档门控跟随：第5次触发");
+            // 一键还原：全部回出厂，门控阈值同步回 3
+            AdvancedTuning.ResetToDefaults();
+            Check(SelfHealGate.FailThreshold == 3 && HlsRewriter.ProxyPort == 47618, "调参档一键还原默认");
+            var gate3 = new SelfHealGate(() => 0);
+            gate3.OnPlayFailed(); gate3.OnPlayFailed();
+            Check(gate3.OnPlayFailed(), "还原后门控第3次触发");
+            // 退避跟随：重试起步调至 30 秒，首败冻结约 30 秒
+            AdvancedTuning.Apply(3, 5 * 60_000, 60, 30_000, 7_200_000, 47618);
+            var l30 = new SourceBackoffLedger();
+            l30.RecordLimited("yangshipin", 1000);
+            Check(l30.IsFrozen("yangshipin", 1000 + 29_000) && !l30.IsFrozen("yangshipin", 1000 + 31_000),
+                "调参档退避跟随：起步30秒");
+            AdvancedTuning.ResetToDefaults();
+            Check(HlsRewriter.Wrap("https://example.com/a.m3u8").Contains(":47618/?u="), "端口还原后代理URL回默认");
+        }
+
+        // ---- 源档案断言（上善若水纪律：点名册写活，机制读档案不读代码） ----
+        {
+            // 出厂名册回落：原点名册原值搬家，判定口径不变
+            Check(SourceProfileStore.Shared.KindOf("yangshipin") == SourceKind.TicketShort, "源档案央视频=短票据");
+            Check(SourceProfileStore.Shared.KindOf("gzstv") == SourceKind.TicketShort, "源档案gzstv=短票据");
+            Check(SourceProfileStore.Shared.ProfileOf("cztv").Rotating && SourceProfileStore.Shared.ProfileOf("jstv").Rotating,
+                "源档案cztv/jstv=轮换");
+            Check(!SourceProfileStore.Shared.ProfileOf("kankan").Rotating, "源档案kankan保守不轮换");
+            Check(SourceProfileStore.Shared.ProfileOf("nmtv").BatchAggregation, "源档案nmtv整表聚合");
+            Check(WarmupPolicy.PaceOf("jstv").RefreshIntervalMs == 150_000, "源档案jstv保鲜150秒");
+            Check(SourceProfileStore.Shared.ProfileOf("yangshipin").IpBound, "源档案央视频IP绑定");
+            // 未登记源兜底：Unknown + 保守节拍
+            Check(SourceProfileStore.Shared.KindOf("新源x") == SourceKind.Unknown, "源档案未登记=Unknown");
+            Check(WarmupPolicy.PaceOf("新源x").RefreshIntervalMs == 10 * 60_000, "源档案未登记保守兜底10分钟");
+            // 形状判别（纯逻辑可测）
+            Check(SourceProfileStore.ClassifyUrl("http://112.30.32.1:9901/tslive/live.m3u8") == SourceKind.IPDirect, "形状判别纯IP=IPDirect");
+            Check(SourceProfileStore.ClassifyUrl("https://l.x.com/play.m3u8?auth_key=123-0-abc") == SourceKind.ShortSign, "形状判别签名参数=ShortSign");
+            Check(SourceProfileStore.ClassifyUrl("https://l.x.com/play.m3u8") == SourceKind.Unknown, "形状判别普通URL=Unknown待探测");
+            // 指纹：参数值变指纹不变（换票），路径变指纹变（轮换）
+            var fp1 = SourceProfileStore.UrlFingerprint("https://l.x.com/p.m3u8?auth_key=A");
+            var fp2 = SourceProfileStore.UrlFingerprint("https://l.x.com/p.m3u8?auth_key=B");
+            var fp3 = SourceProfileStore.UrlFingerprint("https://l.x.com/q.m3u8?auth_key=A");
+            Check(fp1 == fp2 && fp1 != fp3, "源档案指纹：换票值变指纹不变，路径变才算轮换");
+            // 行为探测：未知源两次同指纹→Constant；两次异指纹→Rotating
+            SourceProfileStore.Shared.ObserveSample("学源a", "https://x.a.com/s.m3u8?k=1", 1000);
+            SourceProfileStore.Shared.ObserveSample("学源a", "https://x.a.com/s.m3u8?k=2", 2000);
+            Check(SourceProfileStore.Shared.KindOf("学源a") == SourceKind.Constant, "源档案行为探测：两次同指纹=恒定");
+            SourceProfileStore.Shared.ObserveSample("学源b", "https://x.b.com/s1.m3u8", 1000);
+            SourceProfileStore.Shared.ObserveSample("学源b", "https://x.b.com/s2.m3u8", 2000);
+            Check(SourceProfileStore.Shared.ProfileOf("学源b").Rotating, "源档案行为探测：两次异指纹=轮换");
+            Check(StreamResolver.IsRotatingTicketSource("yangshipin") && !StreamResolver.IsRotatingTicketSource("xatv"),
+                "源档案轮换判定口径：出厂名册原值");
+        }
+
         // ---- v28 主线④网络面四点断言 ----
         {
             // ①竞速默认开：无开关即常开——空候选竞速立即返回 null（不抛不挂），A⑬行为断言已盖完整链路

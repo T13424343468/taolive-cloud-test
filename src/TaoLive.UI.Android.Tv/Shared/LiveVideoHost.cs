@@ -708,7 +708,9 @@ public class LiveVideoHost : IDisposable
                     var uri = new Uri(_currentUrl);
                     int port = uri.IsDefaultPort ? (uri.Scheme == "https" ? 443 : 80) : uri.Port;
                     var verdict = await HealTriage.TriageAsync(uri.Host, port: port);
-                    try { CrashNet.Record($"[LiveVideoHost] 网络自愈三分判别（{via} 连败 {SelfHealGate.FailThreshold} 起）：{verdict.Detail}"); } catch { }
+                    // 接线位 C（老板 2026-11-12 批准）：判别日志注明纯 IP 源免疫口径——纯 IP 直连源（源档案 IPDirect）
+                    // 不走系统解析，解析僵死场景天然可用；备援排序/选源策略侧优先纯 IP 源因子（方案稿「解析坏优先纯 IP 源因子」条）
+                    try { CrashNet.Record($"[LiveVideoHost] 网络自愈三分判别（{via} 连败 {SelfHealGate.FailThreshold} 起）：{verdict.Detail}（纯 IP 直连源对解析僵死免疫，备援优先）"); } catch { }
                     if (HealGate.ReportTriage(verdict) && HealKernel.IsAlive)
                     {
                         try { CrashNet.Record("[LiveVideoHost] 网络自愈门控启用：播放链切本地代理，按存活通道（DoH 择优）回源"); } catch { }

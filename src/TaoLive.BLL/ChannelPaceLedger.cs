@@ -81,7 +81,8 @@ public class ChannelPaceLedger
             _ => 1.0,
         };
         long tierMs = (long)Math.Clamp(baseIntervalMs * f, baseIntervalMs * 0.5, baseIntervalMs * 2);
-        double tf = sourceId == "yangshipin" ? 1.0 : TimeFactor(localHour); // 央视频豁免时段加密
+        // 源档案接线（上善若水纪律）：IP 绑定源（出厂=央视频）豁免时段加密，判据读档案不再点名
+        double tf = SourceProfileStore.Shared.ProfileOf(sourceId).IpBound ? 1.0 : TimeFactor(localHour);
         long ms = (long)(tierMs * tf * StableJitter(epgKey));
         return Math.Clamp(ms, (long)(baseIntervalMs * 0.5), baseIntervalMs * 4);
     }

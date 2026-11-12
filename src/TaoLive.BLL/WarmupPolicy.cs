@@ -31,36 +31,23 @@ public readonly struct SourcePace
 
 /// <summary>
 /// 按源限流节拍政策（A 类第6项·预热改造的调度依据，总装口径三「一个账本」）：
-/// yangshipin 最敏感最慢；nmtv/gxtv 整表聚合节拍按源；xatv/gxtv 低敏感长保鲜。
+/// 源档案接线（上善若水纪律·老板 2026-11-12 令）：节拍读 SourceProfileStore 档案，
+/// 出厂名册=原硬编码节拍表原值搬家；新源入库自动定档，未定档源保守兜底。
 /// </summary>
 public static class WarmupPolicy
 {
-    /// <summary>逐源节拍（键=SourceId；未注册源按 conservative 兜底）。</summary>
-    public static readonly IReadOnlyDictionary<string, SourcePace> Paces = new Dictionary<string, SourcePace>
+    /// <summary>取源节拍：档案优先（保鲜期/让路间隔>0 才算已定），未定档按保守兜底（10 分钟保鲜 + 2 秒让路）。</summary>
+    public static SourcePace PaceOf(string sourceId)
     {
-        // 央视频：IP 绑定画像最重，节拍最慢、退避最深（细案 §一.1）
-        ["yangshipin"] = new SourcePace(refreshIntervalMs: 10 * 60_000, minGapMs: 2_000),
-        // 整表 API：一次请求全台（细案 §一.5/§一.6）
-        ["nmtv"] = new SourcePace(refreshIntervalMs: 30 * 60_000, minGapMs: 1_000, batchAggregation: true),
-        ["gxtv"] = new SourcePace(refreshIntervalMs: 6 * 60 * 60_000, minGapMs: 1_000, batchAggregation: true),
-        // 中敏感：票据短效但可整轮缓存
-        ["gzstv"] = new SourcePace(refreshIntervalMs: 30 * 60_000, minGapMs: 1_500),
-        ["cztv"] = new SourcePace(refreshIntervalMs: 2 * 60 * 60_000, minGapMs: 1_000),
-        // network.md N3：jstv 腾讯云防盗链签名 180 秒（JstvSource txTime=now+180s），
-        // 保鲜必须短于签名期——此前未注册节拍吃到 10 分钟保守兜底，落盘预热命中必过期。
-        // 专属 150 秒保鲜（<180s 留 30 秒余量，落盘只加速不塞过期票）。
-        ["jstv"] = new SourcePace(refreshIntervalMs: 150_000, minGapMs: 1_000),
-        // 低敏感：URL 恒定，落盘价值最高
-        ["xatv"] = new SourcePace(refreshIntervalMs: 6 * 60 * 60_000, minGapMs: 1_000),
-    };
-
-    /// <summary>取源节拍；未注册源给保守兜底（10 分钟保鲜 + 2 秒让路）。</summary>
-    public static SourcePace PaceOf(string sourceId) =>
-        Paces.TryGetValue(sourceId ?? "", out var pace) ? pace
-        : new SourcePace(refreshIntervalMs: 10 * 60_000, minGapMs: 2_000);
+        var p = SourceProfileStore.Shared.ProfileOf(sourceId);
+        return new SourcePace(
+            refreshIntervalMs: p.RefreshIntervalMs > 0 ? p.RefreshIntervalMs : 10 * 60_000,
+            minGapMs: p.MinGapMs > 0 ? p.MinGapMs : 2_000,
+            batchAggregation: p.BatchAggregation);
+    }
 
     /// <summary>是否整表聚合源（A⑬竞速与预热按源不按台调度）。</summary>
-    public static bool IsBatchSource(string sourceId) => PaceOf(sourceId).BatchAggregation;
+    public static bool IsBatchSource(string sourceId) => SourceProfileStore.Shared.ProfileOf(sourceId).BatchAggregation;
 }
 
 /// <summary>
@@ -84,14 +71,17 @@ public class SourceBackoffLedger
 
     private static long BackoffMs(int streak, SourcePace p)
     {
+        // 调参档接线（老板 2026-11-12 令·旋钮全量进设置页）：重试起步/封顶取源节拍与设置档的较紧者
+        long baseMs = Math.Min(p.BackoffBaseMs, AdvancedTuning.RetryBaseMs);
+        long maxMs = Math.Min(p.BackoffMaxMs, AdvancedTuning.RetryMaxMs);
         // 指数：基值 × 4^(streak-1)，封顶 BackoffMaxMs
-        long ms = p.BackoffBaseMs;
+        long ms = baseMs;
         for (int i = 1; i < streak; i++)
         {
             ms *= 4;
-            if (ms >= p.BackoffMaxMs) { ms = p.BackoffMaxMs; break; }
+            if (ms >= maxMs) { ms = maxMs; break; }
         }
-        return Math.Min(ms, p.BackoffMaxMs);
+        return Math.Min(ms, maxMs);
     }
 
     /// <summary>记录一次成功（200）：退避全额恢复。</summary>

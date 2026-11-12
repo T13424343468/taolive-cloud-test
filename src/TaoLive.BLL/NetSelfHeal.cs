@@ -85,9 +85,10 @@ public class ResolutionTriage
 /// </summary>
 public class SelfHealGate
 {
-    public const int FailThreshold = 3;          // 连续起播失败达到该数才进入判别
-    public const long GateHoldMs = 10 * 60_000;  // 启用后最短保持时长（防抖动反复开关）
-    public const long RetestMs = 5 * 60_000;     // 启用期间每 5 分钟复测一次系统解析
+    // 调参档接线（老板 2026-11-12 令·旋钮全量进设置页）：门槛与回探读 AdvancedTuning，门面即单一事实源
+    public static int FailThreshold => AdvancedTuning.SelfHealFailGate;   // 连续起播失败达到该数才进入判别
+    public const long GateHoldMs = 10 * 60_000;  // 启用后最短保持时长（防抖动反复开关，内部防抖不进设置页）
+    public static long RetestMs => AdvancedTuning.SelfHealReprobeMs;     // 启用期间按设置间隔复测系统解析
 
     private readonly Func<long> _nowMs;
     private int _consecutiveFails;
@@ -151,7 +152,7 @@ public class SelfHealGate
 public static class HlsRewriter
 {
     public const string ProxyHost = "127.0.0.1";
-    public const int ProxyPort = 47618;
+    public static int ProxyPort => AdvancedTuning.ProxyPort; // 调参档接线：设置页可调（改后下次播放生效）
 
     /// <summary>
     /// 把正文中所有 http(s) 绝对 URL 包进代理（已代理过的跳过）；

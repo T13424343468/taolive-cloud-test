@@ -30,8 +30,12 @@ public class HotStandbyKeeper
     private long _session; // 会话代数（Stop 即作废，防旧校验循环漏跑）
     private Channel? _channel;
     private string? _standbyUrl;
+    private long _standbyFetchedMs; // 接线位 B：备路票取票时刻（票据型按保鲜期换新票）
     private string? _mainUrl;
     private volatile bool _standbyOk;
+
+    /// <summary>接线位 B：备路票据型 URL 保鲜期（150s，与 jstv 节拍同口径——签名期 180s 留 30s 余量）。</summary>
+    private const long StandbyTicketTtlMs = 150_000;
 
     public HotStandbyKeeper(StreamResolver resolver, SourceBackoffLedger backoff)
     {
@@ -76,14 +80,35 @@ public class HotStandbyKeeper
             // 修法七 3b：同流去重——备路与主路完全相同则热备无意义，保持单路
             if (string.IsNullOrEmpty(alt) || string.Equals(alt, mainUrl, StringComparison.Ordinal)) return;
             _standbyUrl = alt;
+            _standbyFetchedMs = Environment.TickCount64;
             _standbyOk = true;
             CrashNet.Record($"[热备] {ch.Name} 备援就绪，热备启动（每 15 秒轻校验）");
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(15_000, ct); // 修法七 1a：≥15 秒节拍
                 if (session != Volatile.Read(ref _session) || _standbyUrl is null) return;
-                // 主源央视频 → 备路仅清单级（同 IP 不建双会话）；其余源清单+单分片头
-                bool segmentLevel = ch.SourceId != "yangshipin";
+                // 接线位 B（老板 2026-11-12 批准）：备路 URL 是签名/票据型时与主路票同寿命——不刷新则热备备而必过期。
+                // 按 URL 形状判短效（源档案 ClassifyUrl），超保鲜期重取一张新票；取不到退单路不硬顶
+                if (SourceProfileStore.ClassifyUrl(_standbyUrl) is SourceKind.ShortSign or SourceKind.TicketShort
+                    && Environment.TickCount64 - _standbyFetchedMs > StandbyTicketTtlMs)
+                {
+                    var fresh = fallback != null ? await fallback(ch) : null;
+                    if (session != Volatile.Read(ref _session)) return;
+                    if (!string.IsNullOrEmpty(fresh) && !string.Equals(fresh, _standbyUrl, StringComparison.Ordinal))
+                    {
+                        _standbyUrl = fresh;
+                        _standbyFetchedMs = Environment.TickCount64;
+                        CrashNet.Record($"[热备] {ch.Name} 备援票据到期，已按节拍换新票");
+                    }
+                    else if (string.IsNullOrEmpty(fresh))
+                    {
+                        _standbyOk = false;
+                        CrashNet.Record($"[热备] {ch.Name} 备援票据到期且换票失败：退回单路，下个节拍重试");
+                        continue;
+                    }
+                }
+                // 主路 IP 绑定源（源档案 IpBound，出厂=央视频）→ 备路仅清单级（同 IP 不建双会话）；其余源清单+单分片头
+                bool segmentLevel = !SourceProfileStore.Shared.ProfileOf(ch.SourceId).IpBound;
                 var (ok, rejected) = await _resolver.ProbeHotStandbyAsync(_standbyUrl, referer, ua, segmentLevel);
                 if (rejected)
                 {

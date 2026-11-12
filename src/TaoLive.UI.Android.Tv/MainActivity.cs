@@ -1821,11 +1821,17 @@ public class MainActivity : Activity
 
         int worstLen = 0;
         foreach (var r in rows)
+            if (r.Channel != null) worstLen = Math.Max(worstLen, r.Channel.Name?.Length ?? 0);
+        foreach (var mul in RowTextMulSteps)
         {
             _rowTextMul = mul;
             if (ListMetrics.FitsPanel(worstLen, mul)) break;
         }
     }
+
+    /// <summary>频道行主字号档（U 倍率）：默认 1.375U=22，一行装不下逐档降，面板宽不动。</summary>
+    private static readonly float[] RowTextMulSteps = { 1.375f, 1f, 0.875f };
+    private float _rowTextMul = 1.375f;
 
     private void CloseChannelList()
     {
@@ -1835,8 +1841,6 @@ public class MainActivity : Activity
         _lastListSig = null; // vc38：收列表清签名，重开列表首帧必刷
         _listPanel.Visibility = ViewStates.Gone;
         _listView = null;
-            if (r.Channel != null) worstLen = Math.Max(worstLen, r.Channel.Name?.Length ?? 0);
-        foreach (var mul in RowTextMulSteps)
         // v22 第 13 项：关抽屉后重新亮出节目单条（本台拉到过数据才亮），按 7 秒计时收起
         if (_epgHasData) ShowEpgBar();
     }
@@ -1863,10 +1867,6 @@ public class MainActivity : Activity
 
         /// <summary>预检状态实时刷新：换行数据通知重绘（滚动位置尽量保留）。</summary>
         public void ReplaceRows(List<Row> rows)
-    /// <summary>频道行主字号档（U 倍率）：默认 1.375U=22，一行装不下逐档降，面板宽不动。</summary>
-    private static readonly float[] RowTextMulSteps = { 1.375f, 1f, 0.875f };
-    private float _rowTextMul = 1.375f;
-
         {
             _rows = rows;
             NotifyDataSetChanged();

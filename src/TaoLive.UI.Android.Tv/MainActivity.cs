@@ -89,6 +89,8 @@ public class MainActivity : Activity
 
     // 软件设置面板（v1.0.8，用户拍板）：底部滑入透明面板；设置键 4077 单击呼出、长按跳系统设置
     private LinearLayout? _settingsPanel;
+    private ScrollView? _settingsScroll; // vc42④：面板内容滚动容器（行数增多时面板不撑出屏幕）
+    private LinearLayout? _settingsList; // vc42④：设置行容器（滚动内层）
     private bool _settingsPanelOpen;
     private bool _settingsLongFired;
     private bool _precheckEnabled = true;   // 循环预检开关（设置面板可切，持久化）
@@ -858,6 +860,17 @@ public class MainActivity : Activity
         panel.SetPadding(Dp(40), Dp(28), Dp(40), Dp(36));
         panel.SetMinimumWidth(Dp(360)); // vc41 自适应体系：定比令牌
         panel.Visibility = ViewStates.Gone;
+
+        // vc42④：面板内套 ScrollView，行多时整体可滚，面板高度不超出屏幕
+        var maxHeight = (int)(Resources!.DisplayMetrics!.HeightPixels * 0.9f);
+        _settingsScroll = new MaxHeightScrollView(this, maxHeight); // 内容超高即滚动
+        _settingsList = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        _settingsScroll.AddView(_settingsList, new FrameLayout.LayoutParams(-2, -2));
+
+        panel.AddView(_settingsScroll, new FrameLayout.LayoutParams(-2, -2)
+        {
+            Gravity = GravityFlags.Bottom | GravityFlags.CenterHorizontal,
+        });
         _root.AddView(panel, new FrameLayout.LayoutParams(-2, -2)
         {
             Gravity = GravityFlags.Bottom | GravityFlags.CenterHorizontal,
@@ -865,16 +878,34 @@ public class MainActivity : Activity
         return panel;
     }
 
+    /// <summary>vc42④：内容高度封顶的 ScrollView——测子页时以 maxHeight 上限收口，行多则滚动。</summary>
+    private sealed class MaxHeightScrollView : ScrollView
+    {
+        private readonly int _maxHeight;
+        public MaxHeightScrollView(Context c, int maxH) : base(c)
+        {
+            _maxHeight = maxH;
+            HorizontalScrollBarEnabled = false;
+            VerticalScrollBarEnabled = false; // vc42④：滚动条关闭，保持面板观感干净
+            Focusable = false; // vc42④：滚动容器不截焦点，光标照常落在设置行上（否则上下键变成滚动面板）
+        }
+        protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
+        {
+            base.OnMeasure(widthMeasureSpec,
+                MeasureSpec.MakeMeasureSpec(_maxHeight, MeasureSpecMode.AtMost));
+        }
+    }
+
     private void RefreshSettingsRows()
     {
-        if (_settingsPanel is null) return;
+        if (_settingsPanel is null || _settingsList is null) return;
         // v23 第 2 条：重建前记录焦点行索引（行数固定、索引稳定），重建后焦点回原行；
         // 1.0 UI⑤：打开崩溃日志即收起设置面板，日志期间不会重建焦点（面板已隐藏）。
         int focusedIdx = -1;
         var focused = CurrentFocus;
-        for (int i = 0; i < _settingsPanel.ChildCount; i++)
-            if (_settingsPanel.GetChildAt(i) == focused) { focusedIdx = i; break; }
-        _settingsPanel.RemoveAllViews();
+        for (int i = 0; i < _settingsList.ChildCount; i++)
+            if (_settingsList.GetChildAt(i) == focused) { focusedIdx = i; break; }
+        _settingsList.RemoveAllViews();
 
         void AddLabel(string text)
         {
@@ -882,7 +913,7 @@ public class MainActivity : Activity
             tv.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(tv);
             tv.SetPadding(Dp(24), Dp(18), Dp(24), Dp(6));
-            _settingsPanel!.AddView(tv);
+            _settingsList!.AddView(tv);
         }
         void AddRow(string text, Action onClick, string color, Action? onLongClick = null)
         {
@@ -899,7 +930,7 @@ public class MainActivity : Activity
             };
             tv.Click += (_, _) => onClick();
             if (onLongClick != null) tv.LongClick += (_, _) => onLongClick();
-            _settingsPanel!.AddView(tv);
+            _settingsList!.AddView(tv);
         }
 
         AddLabel("── 软件设置 ──");
@@ -918,10 +949,15 @@ public class MainActivity : Activity
         AddLabel("返回键收起 · 长按设置键直达系统设置");
 
         // v23 第 2 条：重建完成，焦点回原行（确认操作后光标停在当前行，不再让给别的行）
-        if (focusedIdx >= 0 && focusedIdx < _settingsPanel.ChildCount)
+        if (focusedIdx >= 0 && focusedIdx < _settingsList.ChildCount)
         {
-            var row = _settingsPanel.GetChildAt(focusedIdx);
-            if (row is not null && row.Focusable) row.RequestFocus();
+            var row = _settingsList.GetChildAt(focusedIdx);
+            if (row is not null && row.Focusable)
+            {
+                row.RequestFocus();
+                // vc42④：滚动容器内，光标行滚入可视区，避免焦点落在面板外
+                row.RequestRectangleOnScreen(new Rect(0, row.Top, row.Right, row.Bottom), true);
+            }
         }
     }
 

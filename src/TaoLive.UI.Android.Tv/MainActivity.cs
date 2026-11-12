@@ -133,7 +133,7 @@ public class MainActivity : Activity
 
     /// <summary>像素/dp 收敛（ui-remote P1 可缓项，vc38 落）：布局尺寸统一经此换算，不再散写裸像素——
     /// 此前多处 SetPadding/边距直接给整数像素，换密度设备上偏小/失准。</summary>
-    private int Dp(float v) => (int)(v * Resources!.DisplayMetrics!.Density);
+    private int Dp(float v) => Shared.UiScale.FromDp(v); // vc41 自适应体系：16dp=1U，全部间距 ∝ 屏宽，启动定标后运行期不变
 
     private int _listRefreshQueued;  // vc38 全表刷新风暴收敛：合帧在途标记
     private string? _lastListSig;    // vc38 状态签名：无变化不重绘

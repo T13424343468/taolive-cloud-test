@@ -1,5 +1,6 @@
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using AllPlayer.BLL;
 using TaoLive.BLL;
@@ -1193,6 +1194,52 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
                 "调参档退避跟随：起步30秒");
             AdvancedTuning.ResetToDefaults();
             Check(HlsRewriter.Wrap("https://example.com/a.m3u8").Contains(":47618/?u="), "端口还原后代理URL回默认");
+        }
+
+        // ---- ③热修批断言（老板 19:28 令「全部干完」：A1 僵死收账 / A2 HTTP 实响应探活+/ping 防自环 / A3 门控退场联动） ----
+        {
+            // A1：MarkDead 收账（AcceptLoop 异常退出不得留僵尸态）
+            var k1 = new SelfHealProxyKernel();
+            k1.Start();
+            Check(k1.IsRunning, "③热修A1：内核起监听 IsRunning=true");
+            k1.MarkDead();
+            Check(!k1.IsRunning, "③热修A1：MarkDead 后 IsRunning=false（不留僵尸态）");
+            Check(!k1.IsAlive, "③热修A1：收账后探活即死");
+
+            // A2：/ping 短路端点（防自环）+ IsAlive HTTP 实响应口径
+            var k2 = new SelfHealProxyKernel();
+            k2.Start();
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+                var ping = http.GetAsync($"http://127.0.0.1:{HlsRewriter.ProxyPort}/ping").GetAwaiter().GetResult();
+                Check(ping.StatusCode == HttpStatusCode.OK, "③热修A2：/ping 短路直回 200（不进 Forward 防自环）");
+                Check(k2.IsAlive, "③热修A2：HTTP 实响应探活=活");
+            }
+            finally { k2.Stop(); }
+            Check(!k2.IsAlive, "③热修A2：停后探活即死（不假活）");
+
+            // A3：门控退场联动三态（代理活不退 / 代理死退场 / 未启空操作）
+            var g3 = new SelfHealGate(() => 0);
+            g3.Disengage("不应生效"); // 门控未启用：空操作
+            Check(!g3.IsEngaged, "③热修A3：门控未启退场为空操作");
+            g3.OnPlayFailed(); g3.OnPlayFailed(); g3.OnPlayFailed();
+            var verdictA3 = new ResolutionTriage.Result(ResolutionTriage.VerdictKind.SystemDnsBroken, "系统解析坏（测试）");
+            Check(g3.ReportTriage(verdictA3), "③热修A3：判别 SystemDnsBroken 启用门控");
+            Check(g3.IsEngaged, "③热修A3：启用态确认（代理活时不应退场）");
+            g3.Disengage("网络自愈门控退场：代理失活，回归直连播放链");
+            Check(!g3.IsEngaged && g3.LastVerdict!.Contains("代理失活"), "③热修A3：代理死退场（IsEngaged=false，退场原因落账）");
+
+            // C7（①延伸断言补账）：重定向后最终基址带 ?query 时，相对行按原样 query 转绝对（产物为代理 URL，解包核对）
+            {
+                var rewritten = HlsRewriter.RewritePlaylist(
+                    "#EXTM3U\n#EXTINF:-1,live\nseg-1.ts\n",
+                    "http://final.example.tv:82/live/cctv3hd.m3u8?tm=123&key=abc");
+                var uLine = rewritten.Split('\n').First(l => l.Contains("/?u="));
+                Check(HlsRewriter.TryUnwrap(uLine, out var inner)
+                        && inner == "http://final.example.tv:82/live/seg-1.ts?tm=123&key=abc",
+                    "③热修C7断言：相对分片按最终基址转绝对（票据 query 原样随行）");
+            }
         }
 
         // ---- 源档案断言（上善若水纪律：点名册写活，机制读档案不读代码） ----

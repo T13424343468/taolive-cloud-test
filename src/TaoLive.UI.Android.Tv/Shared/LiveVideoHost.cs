@@ -704,6 +704,15 @@ public class LiveVideoHost : IDisposable
             {
                 try
                 {
+                    // ③热修 A3·门控困死退出联动：门控启用期代理失活 → 退场回直连重播。
+                    // 否则播放失败判别 verdict 仍 SystemDnsBroken，ReportTriage 已启用分支不重启代理不退出 → 永困死代理
+                    if (HealGate.IsEngaged && !HealKernel.IsAlive)
+                    {
+                        HealGate.Disengage("网络自愈门控退场：代理失活，回归直连播放链");
+                        try { CrashNet.Record($"[LiveVideoHost] {HealGate.LastVerdict}"); } catch { }
+                        RestartKernel();
+                        return;
+                    }
                     if (_currentUrl is null) return;
                     var uri = new Uri(_currentUrl);
                     int port = uri.IsDefaultPort ? (uri.Scheme == "https" ? 443 : 80) : uri.Port;
@@ -733,6 +742,14 @@ public class LiveVideoHost : IDisposable
         {
             try
             {
+                // ③热修 A3·门控困死退出联动（复测路径同守）：代理失活不判别直接退场，回直连重播
+                if (HealGate.IsEngaged && !HealKernel.IsAlive)
+                {
+                    HealGate.Disengage("网络自愈门控退场：代理失活，回归直连播放链");
+                    try { CrashNet.Record($"[LiveVideoHost] {HealGate.LastVerdict}"); } catch { }
+                    RestartKernel();
+                    return;
+                }
                 if (_currentUrl is null) return;
                 var uri = new Uri(_currentUrl);
                 int port = uri.IsDefaultPort ? (uri.Scheme == "https" ? 443 : 80) : uri.Port;

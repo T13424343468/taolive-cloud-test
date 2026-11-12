@@ -143,6 +143,15 @@ public class SelfHealGate
     /// <summary>启用期复测：到点由调用方重做判别，系统恢复则退出；返回 true 表示需要复测。</summary>
     public bool ShouldRetest()
         => IsEngaged && _nowMs() - _lastRetestMs >= RetestMs && (_lastRetestMs = _nowMs()) > 0;
+
+    /// <summary>③热修 A3·门控困死退出联动：门控启用后代理失活时由宿主层调用退场——
+    /// 否则播放失败判别 verdict 仍 SystemDnsBroken，ReportTriage 已启用分支不重启代理不退出，永困死代理。</summary>
+    internal void Disengage(string reason)
+    {
+        if (!IsEngaged) return;
+        IsEngaged = false;
+        LastVerdict = reason;
+    }
 }
 
 /// <summary>
@@ -178,7 +187,16 @@ public static class HlsRewriter
             }
             if (baseUri != null)
             {
-                try { lines[i] = Wrap(new Uri(baseUri, line).ToString()); } catch { /* 解不了原样保留 */ }
+                try
+                {
+                    var abs = new Uri(baseUri, line).ToString();
+                    // ③热修 C7：基址带票据 query（重定向后最终 URL）时相对分片原样带上——
+                    // RFC 3986 相对解析会丢基址 query，票据型轮换源相对分片丢票即 404
+                    var q = baseUri.Query;
+                    if (!string.IsNullOrEmpty(q) && !abs.Contains('?')) abs += q;
+                    lines[i] = Wrap(abs);
+                }
+                catch { /* 解不了原样保留 */ }
             }
         }
         return string.Join("\n", lines);
@@ -280,8 +298,18 @@ public class SelfHealProxyKernel : IDisposable
 
     public bool IsRunning { get; private set; }
 
+    /// <summary>③热修 A1：AcceptLoop 异常退出收账——监听异常后不得留僵尸态（监听开着、IsRunning 仍 true、accept 无人接）。
+    /// 与 Stop 同路径收账并打点；tests 直调断言 IsRunning=false。</summary>
+    internal void MarkDead()
+    {
+        Report("AcceptLoop 异常退出，代理收账（IsRunning=false），等下次启用重建");
+        Stop();
+    }
+
     /// <summary>评审观察③修法：127.0.0.1 假活陷阱——IsRunning 只代表监听起过，运行中可能僵死。
-    /// 切代理前实测本机回环可达，探不通按未启用处理（不把播放链切进死代理）。</summary>
+    /// 切代理前实测本机回环可达，探不通按未启用处理（不把播放链切进死代理）。
+    /// ③热修 A2：TCP connect 只证明监听 socket 开着，accept 停摆时内核 backlog 兜着 connect 仍成功（假活）——
+    /// 升级两道：TCP 连不上直接判死；连上再发 GET /ping 要 HTTP 实响应（任意状态码，500ms 超时）才算活。</summary>
     public bool IsAlive
     {
         get
@@ -291,7 +319,16 @@ public class SelfHealProxyKernel : IDisposable
             {
                 using var tcp = new System.Net.Sockets.TcpClient();
                 var connect = tcp.ConnectAsync(IPAddress.Loopback, HlsRewriter.ProxyPort);
-                return connect.Wait(500) && tcp.Connected;
+                if (!connect.Wait(500) || !tcp.Connected) return false;
+            }
+            catch { return false; }
+            try
+            {
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromMilliseconds(500) };
+                var probe = http.GetAsync($"http://{HlsRewriter.ProxyHost}:{HlsRewriter.ProxyPort}/ping");
+                if (!probe.Wait(500)) return false;
+                _ = probe.Result.StatusCode; // 收到 HTTP 响应（任意状态码）=accept 环活着
+                return true;
             }
             catch { return false; }
         }
@@ -331,7 +368,13 @@ public class SelfHealProxyKernel : IDisposable
         {
             System.Net.HttpListenerContext ctx;
             try { ctx = await _listener.GetContextAsync(); }
-            catch { return; } // 监听已停
+            catch
+            {
+                // ③热修 A1：异常退出也要收账——旧写法 return 后监听仍开着、IsRunning 仍 true（僵尸态，
+                // 假活陷阱半修只修了一半）。正常 Stop 路径本就 IsRunning=false，MarkDead 幂等无副作用
+                MarkDead();
+                return;
+            }
             _ = Task.Run(async () =>
             {
                 try { await HandleAsync(ctx, ct); }
@@ -343,6 +386,14 @@ public class SelfHealProxyKernel : IDisposable
     private async Task HandleAsync(System.Net.HttpListenerContext ctx, CancellationToken ct)
     {
         var raw = ctx.Request.Url?.ToString() ?? "";
+        // ③热修 A2 配套：/ping 短路端点（防自环）——探活请求若按普通 URL 走 Forward，
+        // 127.0.0.1 为 IP 字面量直连回自身 → 自我递归死循环；必须在入口短路直回
+        if (ctx.Request.Url?.AbsolutePath == "/ping")
+        {
+            ctx.Response.StatusCode = 200;
+            ctx.Response.Close();
+            return;
+        }
         // 代理 URL 解包：127.0.0.1:port/?u=原URL；非代理形态直接按原 URL 用
         var target = HlsRewriter.TryUnwrap(raw, out var inner) ? inner : raw;
         // 相对路径（子清单里的变体分片）：按上一跳 Referer 还原为原站绝对地址

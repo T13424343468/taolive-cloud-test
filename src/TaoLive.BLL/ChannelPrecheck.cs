@@ -192,28 +192,35 @@ public class ChannelPrecheck
     {
         foreach (var group in channels.GroupBy(GroupKey))
         {
-            if (ct.IsCancellationRequested) return;
-            var variants = group.ToList();
-            var lead = variants[0];
-            if (!keepKnownState || Of(lead) == ChannelHealth.Unknown)
-                MarkState(lead, ChannelHealth.Checking);
-            var anyOk = false;
-            foreach (var ch in variants)
+            // vc38（92条 S1·预检链兜底）：单台分组异常（StateChanged 订阅方抛错/账本写入异常等）
+            // 不掀整轮预检——后续台照常探测，本组留待下一轮复测
+            try
             {
                 if (ct.IsCancellationRequested) return;
-                bool ok;
-                try { ok = await _probe(ch).ConfigureAwait(false); }
-                catch { ok = false; }
-                WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-                anyOk |= ok;
-                if (_intervalMs > 0)
+                var variants = group.ToList();
+                var lead = variants[0];
+                if (!keepKnownState || Of(lead) == ChannelHealth.Unknown)
+                    MarkState(lead, ChannelHealth.Checking);
+                var anyOk = false;
+                foreach (var ch in variants)
                 {
-                    try { await Task.Delay(_intervalMs, ct).ConfigureAwait(false); }
-                    catch (OperationCanceledException) { return; }
+                    if (ct.IsCancellationRequested) return;
+                    bool ok;
+                    try { ok = await _probe(ch).ConfigureAwait(false); }
+                    catch { ok = false; }
+                    WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    anyOk |= ok;
+                    if (_intervalMs > 0)
+                    {
+                        try { await Task.Delay(_intervalMs, ct).ConfigureAwait(false); }
+                        catch (OperationCanceledException) { return; }
+                    }
                 }
+                foreach (var ch in variants)
+                    MarkState(ch, anyOk ? ChannelHealth.Alive : ChannelHealth.Dead);
             }
-            foreach (var ch in variants)
-                MarkState(ch, anyOk ? ChannelHealth.Alive : ChannelHealth.Dead);
+            catch (OperationCanceledException) { return; }
+            catch { /* 单台分组异常：兜底吞掉，整轮预检不断 */ }
         }
     }
 }

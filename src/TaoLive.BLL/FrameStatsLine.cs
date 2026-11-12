@@ -30,12 +30,11 @@ public static class FrameStatsLine
     }
 
     /// <summary>
-    /// v1.0.10 修复⑤：带重试口径与 AI 档位的画面信息行。
-    /// - 两项全缺且重试已到限 → 显「--」不留「检测中」；未到限（还在重试）→ 维持「检测中」；
-    /// - tierName 非 null 时并显 AI 画质档位（口径同【二】三档全中文），随档位变化刷新。
+    /// v1.0.10 修复⑤：带重试口径的画面信息行。
+    /// - 两项全缺且重试已到限 → 显「--」不留「检测中」；未到限（还在重试）→ 维持「检测中」。
     /// </summary>
     public static string FormatEx(double? origFps, double? curFps, int origW, int origH, int curW, int curH,
-        string? tierName, bool statsExhausted)
+        bool statsExhausted)
     {
         bool noFps = origFps is null || origFps <= 0;
         bool noRes = origW <= 0 || origH <= 0;
@@ -54,7 +53,7 @@ public static class FrameStatsLine
             // 部分缺失到限：缺失项也显「--」不静默
             if (noFps && statsExhausted) core += "  原帧率 --";
         }
-        return string.IsNullOrEmpty(tierName) ? core : $"{core}  画质增强：{tierName}";
+        return core;
     }
 
     // ---- v22 第 9 项：抽屉画面信息改短格式（老板 20:09 令、20:36 加严拍板）----
@@ -91,13 +90,6 @@ public static class FrameStatsLine
         if (!curValid) return $"分辨率:{orig}";
         var cur = ResBucket(curW);
         return cur == orig ? $"分辨率:{orig}" : $"分辨率:{orig}>{cur}";
-    }
-
-    /// <summary>画质段（v22 第 9/17 项口径）：实际档与设置档一致显「生效」，临时降档如实显「未生效」；关档只显「关」。</summary>
-    public static string TierSegment(string? tierName, bool effective)
-    {
-        if (string.IsNullOrEmpty(tierName) || tierName == "关") return "画质:关";
-        return $"画质:{tierName}:{(effective ? "生效" : "未生效")}";
     }
 }
 

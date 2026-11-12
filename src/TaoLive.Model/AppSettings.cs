@@ -29,7 +29,6 @@ public class AppSettings
     public int ShortcutKeySlotC { get; set; } = -1;
     public int ShortcutKeySlotD { get; set; } = -1;
     public bool StartOnFavoriteFirst { get; set; } = false; // B 档：启动直达收藏首位
-    public string AiEnhanceTier { get; set; } = "auto"; // AI 画质档位：v1.0.10 统一 auto(自动,默认)/low/high/off（旧版 smart 兼容按 auto）
     public string LastChannel { get; set; } = "";        // 上次频道（开机即看）
     public bool UserSourcesEnabled { get; set; } = true;
     public string DecodeMode { get; set; } = "auto";     // 解码方式（v1.0.8 第18项）：auto/force_hw/force_sw

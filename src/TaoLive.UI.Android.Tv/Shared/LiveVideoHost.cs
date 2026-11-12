@@ -71,6 +71,12 @@ public class LiveVideoHost : IDisposable
     private int _hotWindowCount;             // v25 修法七 2b：独立窗口内已切换次数（封顶 4，防主备乒乓）
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
+    private long _bufferLowFirstMs;           // vc38: 低水位毛刺确认（0=无未决低读；92条 playback P2）
+    private readonly object _startLock = new();   // PL5: 起播临界区——热备/换台/重连写 _currentUrl+StartInternal 串行
+    private long _disposed;                       // UR2: 宿主已释放（Dispose 后 StartInternal/Play 一律拒绝）
+    private System.Threading.Timer? _firstFrameTimer;    // PL2: 首帧超时兜底定时器
+    private int _firstFrameExtends;                      // vc37: 首帧查活续期轮次（起播重置，封顶 2）
+    private const int FirstFrameTimeoutMs = 20_000;      // PL2: 首帧硬超时=问热备→自救阶梯；vc37 12s→20s（真机 11-12：慢网络起播被 12s 自救打断循环）
     /// <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
     public long TotalMemBytes { get; set; }
 
@@ -84,6 +90,9 @@ public class LiveVideoHost : IDisposable
     private Media? _currentMedia; // ④帧统计来源（Media.Statistics；换台/重连时换新释放旧）
 
     public event Action<string>? StatusChanged;
+
+    /// <summary>PL4: UI 派发委托——软重建设播环境须回 UI 线程挂 View（审计 playback-loop-PL4），由宿主创建方注入。</summary>
+    public Action<Action>? UiDispatcher { get; set; }
 
     /// <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
     public (double? OrigFps, double? CurFps, int OrigW, int OrigH, int CurW, int CurH) SnapshotStats()
@@ -107,47 +116,6 @@ public class LiveVideoHost : IDisposable
         return (_origFps, _measuredFps, _origW, _origH, _origW, _origH);
     }
 
-    /// <summary>画质滤镜的键集合（A⑩重挂滤镜时先摘旧键再并新键）。</summary>
-    private static readonly string[] QualityFilterKeys = { "video-filter", "sharpen-amplitude", "contrast", "saturation", "gamma" };
-
-    /// <summary>
-    /// A 类第10项·档位变化后重挂滤镜：先摘掉旧画质键，并上新档滤镜（缺键才补同款合并），静默快速重接。
-    /// 未在播（无播放器/已手动停）只记账不重接，下次起播自然带新档。
-    /// </summary>
-    public void ApplyQualityTier(IReadOnlyList<(string Key, string Value)> filterOptions)
-    {
-        var stripped = _currentOptions.Where(o =>
-        {
-            var body = o.StartsWith(':') ? o[1..] : o;
-            var eq = body.IndexOf('=');
-            var key = eq < 0 ? body : body[..eq];
-            return !QualityFilterKeys.Contains(key);
-        }).ToList();
-        _currentOptions = MergeOptions(stripped, filterOptions);
-        if (_player != null && !_userStopped && _currentUrl != null) StartInternal(silent: true);
-    }
-
-    /// <summary>
-    /// A 类第10项·喂给调速器的实测快照：现帧率、累计掉帧占比（丢帧/(丢帧+显示帧)）、播放时钟是否停滞。
-    /// 无媒体统计（未出首帧/统计缺失）时返回 stalled=true 前的保守值：调用方自行只在出过首帧后喂。
-    /// </summary>
-    public (double? Fps, double DroppedRate, bool Stalled) SnapshotGovernorStats()
-    {
-        var media = _currentMedia;
-        var fps = _measuredFps;
-        double droppedRate = 0;
-        bool stalled;
-        if (media != null)
-        {
-            var st = media.Statistics;
-            long total = (long)st.DisplayedPictures + st.LostPictures;
-            if (total > 0) droppedRate = (double)st.LostPictures / total;
-            stalled = st.DisplayedPictures > 0 && (fps is null || fps <= 0); // 出过帧但现在测不出帧率=停滞
-        }
-        else stalled = true;
-        return (fps, droppedRate, stalled);
-    }
-
     /// <summary>
     /// 重连前刷新入口（v1.0.8）：断流重连不再拿旧地址硬重试——直播源票据 5 分钟级过期，
     /// 旧 URL 重试一百次也是失败。UI 层挂入换票委托，重连前先取新鲜入口；取不到（源端
@@ -157,12 +125,6 @@ public class LiveVideoHost : IDisposable
     /// ⑫/⑬联动：静默重取流走同一委托。
     /// </summary>
     public Func<int, Task<RefreshedStream?>>? ReconnectRefresher { get; set; }
-
-    /// <summary>⑫②级降清晰度：是否还有可降档（UI 按 AI 增强档位判断）；无档可降时自救直接并入重取流。</summary>
-    public Func<bool>? HasLowerQuality { get; set; }
-
-    /// <summary>⑫②级降清晰度请求：UI 收到后降一档 AI 增强（软解负载减轻），随后静默重接。</summary>
-    public event Action? LowerQualityRequested;
 
     /// <summary>首帧事件：第一次收到播放时钟即认为已有画面输出（用于撤掉「正在连接」遮罩）。</summary>
     public event Action? FrameShown;
@@ -192,7 +154,14 @@ public class LiveVideoHost : IDisposable
     {
         _videoCarrier = videoView;
         Core.Initialize();
-        BuildKernel();
+        // vc38（92条 playback P2）：载体重挂与软重启共用同一互斥——重挂撞上软重启进行中时
+        // 不再并行双建内核（旧病：Attach 直进 BuildKernel 不占 _kernelRebuilding，
+        // 与看门狗线程 RestartKernel 并发会造出两个 MediaPlayer 抢同一载体）；
+        // 重启流程 BuildKernel 读 _videoCarrier，会把新内核挂到新载体上，此处让位即正确。
+        if (_kernelRebuilding) return;
+        _kernelRebuilding = true;
+        try { BuildKernel(); }
+        finally { _kernelRebuilding = false; }
     }
 
     /// <summary>建播放内核（Attach 与⑫软重启共用）：LibVLC + 软解播放器 + 事件接线 + 看门狗。</summary>
@@ -201,7 +170,14 @@ public class LiveVideoHost : IDisposable
         _libVlc = new LibVLC(enableDebugLogs: false);
         // 真机反馈：Amlogic t982 硬解黑屏，默认软解保画面（v1.0.2）
         _player = new MediaPlayer(_libVlc) { EnableHardwareDecoding = false };
-        _videoCarrier!.MediaPlayer = _player;
+        // PL4: RestartKernel 可能由看门狗/自救线程调用，载体 View 挂播放器必须回 UI 线程
+        var carrier = _videoCarrier;
+        if (carrier != null)
+        {
+            var player = _player;
+            if (UiDispatcher != null) UiDispatcher(() => { try { carrier.MediaPlayer = player; } catch { } });
+            else carrier.MediaPlayer = player;
+        }
         _player.EncounteredError += (_, _) => OnStreamError();
         _player.Buffering += (_, e) =>
         {
@@ -215,6 +191,7 @@ public class LiveVideoHost : IDisposable
         {
             Volatile.Write(ref _lastTickMs, Environment.TickCount64);
             _earlyRescueUsed = false; // ⑨B时钟在走：本轮提前介入额度恢复
+            Volatile.Write(ref _bufferLowFirstMs, 0); // vc38: 时钟在走=播放正常，未决低读毛刺确认一并清
             if (_frameShown) return;
             _frameShown = true;
             _earlyRescueStreak = 0; // v23 第 5 条：首帧清零（真首帧才算，微动不清）
@@ -249,6 +226,7 @@ public class LiveVideoHost : IDisposable
         _kernelRebuilding = true;
         try
         {
+            _genCounter.NextGeneration(); // PL9: 软重启推进代数，作废旧定时器/旧回调，防旧代回调踩新内核
             try { _player?.Stop(); } catch { /* 已停不碍重建 */ }
             try { _currentMedia?.Dispose(); } catch { }
             _currentMedia = null;
@@ -287,10 +265,20 @@ public class LiveVideoHost : IDisposable
         HandleStall();                            // ⑫分级快速自救：快过断流重连阶梯
     }
 
-    /// <summary>1.0.12 修正①·Buffering 主信号触发点：缓冲接近耗尽即时介入（VLC 内核线程回调，守卫后走统一入口）。</summary>
+    /// <summary>1.0.12 修正①·Buffering 主信号触发点：缓冲接近耗尽即时介入（VLC 内核线程回调，守卫后走统一入口）。
+    /// vc38 毛刺确认（92条 playback P2）：单次低读先记账不动手，确认窗（BufferingGlitchConfirmMs）内
+    /// 第二次低读才算真低水位——码流尖峰抖动的单拍毛刺不再误触发静默重取流；时钟恢复即清确认。</summary>
     private void OnBufferingLow()
     {
         if (_userStopped || !_frameShown || _kernelRebuilding || _streamDead) return;
+        var now = Environment.TickCount64;
+        var first = Volatile.Read(ref _bufferLowFirstMs);
+        if (first == 0 || now - first > StallRescue.BufferingGlitchConfirmMs)
+        {
+            Volatile.Write(ref _bufferLowFirstMs, now);
+            return;
+        }
+        Volatile.Write(ref _bufferLowFirstMs, 0);
         TriggerEarlyRescue("Buffering 缓冲空");
     }
 
@@ -382,19 +370,25 @@ public class LiveVideoHost : IDisposable
             _hotWindowCount = 0;
         }
         if (_hotWindowCount >= 4) return false; // 修法七 2b：独立窗 4 次，防乒乓
+        long hotGen = _genCounter.Current;   // PL1: 备路等待期间换台/新一代起播, 结果作废
         var standby = await HotStandbySwitch();
-        if (_userStopped || standby is null) return false;
+        if (_userStopped || standby is null || !_genCounter.IsCurrent(hotGen)) return false;
         _hotWindowCount++;
-        _currentUrl = standby.Value.Url;
-        // 缺键才补：热备流只带 Referer/UA 两项，并入现有表保住画质滤镜（同 A 类 P1 口径）
-        _currentOptions = MergeOptions(_currentOptions, standby.Value.Options);
-        StartInternal(silent: true); // 定格保帧：同台自救不铺清场遮罩
+        lock (_startLock)   // PL5: 热备写 _currentUrl+StartInternal 串行，防与换台/重连并发落账
+        {
+            if (_userStopped || !_genCounter.IsCurrent(hotGen)) return false;   // PL1: 落账前再守一次
+            _currentUrl = standby.Value.Url;
+            // 缺键才补：热备流只带 Referer/UA 两项，并入现有表保持既有选项（同 A 类 P1 口径）
+            _currentOptions = MergeOptions(_currentOptions, standby.Value.Options);
+            StartInternal(silent: true); // 定格保帧：同台自救不铺清场遮罩
+        }
         try { CrashNet.Record($"[热备] {via}：帧级切备援发起（主路断到切换 {Environment.TickCount64 - brokeAt}ms，90 秒独立窗第 {_hotWindowCount}/4 次）"); } catch { }
         return true;
     }
 
     /// <summary>
-    /// ⑫画面卡住分级快速自救（用户拍板「可以就这么定」）：静默重取流 → 降清晰度 → 软重启播放内核。
+    /// ⑫画面卡住分级快速自救（用户拍板「可以就这么定」）：静默重取流 → 软重启播放内核。
+    /// （画质增强摘除后无档可降，二级并入静默重取流。）
     /// 静默级不发状态不占断流重连次数；重取流消费⑬健康表（ReconnectRefresher 内优先取最近验证可用来源）。
     /// v25 修法七：自救前先问热备——备路就绪即帧级切换，不走重票。
     /// </summary>
@@ -405,7 +399,7 @@ public class LiveVideoHost : IDisposable
         {
             if (await TryHotStandbyAsync("分级自救前主路断")) return; // v25 修法七：热备就绪帧级切换
             _stallCount++;
-            var action = StallRescue.Plan(_stallCount - 1, HasLowerQuality?.Invoke() ?? false);
+            var action = StallRescue.Plan(_stallCount - 1, hasLowerQuality: false); // 画质增强已摘除：恒无可降档
             switch (action)
             {
                 case StallRescueAction.RestartKernel:
@@ -413,7 +407,6 @@ public class LiveVideoHost : IDisposable
                     RestartKernel();
                     break;
                 default:
-                    if (action == StallRescueAction.LowerQuality) LowerQualityRequested?.Invoke();
                     _ = SilentRefreshAsync(announce: true);
                     break;
             }
@@ -505,11 +498,12 @@ public class LiveVideoHost : IDisposable
     }
 
     /// <summary>
-    /// 起播一路直播流（URL 已由 StreamResolver 签好；透传头与画质滤镜合并为选项列表）。
+    /// 起播一路直播流（URL 已由 StreamResolver 签好；透传头等为选项列表传入）。
     /// 换台先停旧播放（v1.0.8）：坏状态播放器不带病起播，代数推进作废旧回调。
     /// </summary>
     public void Play(string url, IReadOnlyList<(string Key, string Value)> options)
     {
+        if (Interlocked.Read(ref _disposed) != 0) return;   // UR2
         _currentUrl = url;
         _currentOptions = options.Select(o => $":{o.Key}={o.Value}").ToList();
         _retriesLeft = 3;
@@ -544,10 +538,12 @@ public class LiveVideoHost : IDisposable
 
     private void StartInternal(bool silent = false)
     {
+        if (Interlocked.Read(ref _disposed) != 0) return;   // UR2
         if (_player is null || _currentUrl is null) return;
         long gen = _genCounter.NextGeneration(); // 本次起播代数（Stop 事件/旧定时器作废）
         _frameShown = false; // 每次起播/重连都要重新等首帧，遮罩才撤得对
         _streamDead = false; // 起播即视为存活，等首帧与时钟验证
+        _firstFrameExtends = 0; // vc37 查活续期轮次随起播重置
         Volatile.Write(ref _lastTickMs, Environment.TickCount64);
         if (!silent) StatusChanged?.Invoke("连接中…");
         _player.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
@@ -566,6 +562,36 @@ public class LiveVideoHost : IDisposable
         foreach (var opt in _currentOptions) media.AddOption(opt);
         ParseMediaStats(media); // ④原/现帧率与分辨率：起播解析媒体轨道
         _player.Play(media);
+        StartFirstFrameTimer();   // PL2: 首帧超时兜底
+    }
+
+    /// <summary>PL2: 首帧超时兜底——起播 12s 未出首帧即按断流处理（先热备后自救阶梯）, 防画面永挂黑屏（审计 playback-loop-PL2）。</summary>
+    private void StartFirstFrameTimer()
+    {
+        _firstFrameTimer?.Dispose();
+        _firstFrameTimer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                if (_userStopped || _frameShown) return;
+                // vc37 查活续期：流时钟近 1.5 秒内走过 = 流活着，首帧判定未触发不重播——
+                // 自救打断正在缓冲的起播是第二刀首连/切台卡顿放大器（真机 11-12）；续期最多 2 轮，超限才走自救
+                if (_firstFrameExtends < 2 && Environment.TickCount64 - Volatile.Read(ref _lastTickMs) < 1500)
+                {
+                    _firstFrameExtends++;
+                    try { CrashNet.Record($"[LiveVideoHost] 首帧超时但流时钟在走（查活通过），续期等首帧（第 {_firstFrameExtends}/2 轮）"); } catch { }
+                    StartFirstFrameTimer();
+                    return;
+                }
+                try { CrashNet.Record($"[LiveVideoHost] 起播 {FirstFrameTimeoutMs / 1000}s 未出首帧, 按断流自救"); } catch { }
+                _ = Task.Run(async () =>
+                {
+                    if (await TryHotStandbyAsync("首帧超时")) return;
+                    OnStreamErrorFallthrough();   // 计自救阶梯：2/4/6 秒换票重接
+                });
+            }
+            catch { }
+        }, null, FirstFrameTimeoutMs, Timeout.Infinite);
     }
 
     /// <summary>解析媒体视频轨道（第④项）：原帧率/原分辨率；无缩放滤镜时现=原，测量缺失显示「检测中」。</summary>
@@ -697,6 +723,7 @@ public class LiveVideoHost : IDisposable
         _userStopped = true;
         _genCounter.NextGeneration(); // 作废未决重连
         StopExhaustedRecovery(); // v25 真机修复：手动停止即收摊
+        _firstFrameTimer?.Dispose(); _firstFrameTimer = null;    // PL2
         _player?.Stop();
     }
 
@@ -719,8 +746,10 @@ public class LiveVideoHost : IDisposable
 
     public void Dispose()
     {
+        Interlocked.Exchange(ref _disposed, 1);   // UR2: 释放后拒绝一切起播路径
         _watchdog?.Dispose();
         _watchdog = null;
+        _firstFrameTimer?.Dispose(); _firstFrameTimer = null;     // PL2
         StopExhaustedRecovery(); // v25 真机修复：宿主释放随行收摊
         _statsRetryTimer?.Dispose(); // ⑤重试定时器随宿主释放
         _statsRetryTimer = null;

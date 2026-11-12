@@ -45,6 +45,10 @@ public static class StallRescue
     /// <summary>1.0.12 修正①·Buffering 主信号触发线（缓存百分比低于该值视为缓冲接近耗尽，即时介入不等看门狗巡检）。</summary>
     public const float BufferingLowPct = 5f;
 
+    /// <summary>vc38·低水位毛刺确认窗（毫秒，92条 playback P2）：窗内第二次低读才算真低水位；
+    /// 单次低读可能是码流尖峰抖动的毛刺（下一拍就回升），先记账不动手，防误触发静默重取流。</summary>
+    public const int BufferingGlitchConfirmMs = 1500;
+
     /// <summary>v25 真机修复·耗尽兜底：断流重连阶梯耗尽后首次兜底重试延迟（毫秒）。
     /// 真机实锤：阶梯耗尽后原口径永久躺平（只报一次「信号中断」），画面冻死直到用户手动切台。</summary>
     public const int ExhaustedRecoveryFirstDelayMs = 30_000;

@@ -154,18 +154,17 @@ public class MemoryWatcher
 }
 
 /// <summary>
-/// 自愈9·低配资源自适应：缓存条目数/预检频率按可用内存动态调整，与智能画质档联动
-/// （智能档基准不越过此处给出的档位上限）。三档：充裕 / 紧张 / 极低（内存未知按充裕兜底但智能档上限为关）。
+/// 自愈9·低配资源自适应：缓存条目数/预检频率按可用内存动态调整。三档：充裕 / 紧张 / 极低（内存未知按充裕兜底）。
 /// </summary>
 public static class ResourceProfile
 {
-    public static (int PrecheckIntervalMs, int RoundGapMs, int MaxCacheEntries, AiLiveTier SmartBaseCap) Adapt(long availBytes)
+    public static (int PrecheckIntervalMs, int RoundGapMs, int MaxCacheEntries) Adapt(long availBytes)
     {
         const long MB = 1024L * 1024;
-        if (availBytes <= 0) return (600, 20_000, 96, AiLiveTier.Off);      // 内存未知：频率正常但智能档保守
-        if (availBytes < 400 * MB) return (1200, 40_000, 32, AiLiveTier.Off);  // 极低：降频减存，画质增强关
-        if (availBytes < 800 * MB) return (900, 30_000, 64, AiLiveTier.Low);   // 紧张：小降频，最多低档
-        return (600, 20_000, 96, AiLiveTier.High);                              // 充裕：全速
+        if (availBytes <= 0) return (600, 20_000, 96);      // 内存未知：按充裕兜底
+        if (availBytes < 400 * MB) return (1200, 40_000, 32);  // 极低：降频减存
+        if (availBytes < 800 * MB) return (900, 30_000, 64);   // 紧张：小降频
+        return (600, 20_000, 96);                              // 充裕：全速
     }
 }
 

@@ -51,6 +51,11 @@ public class StreamResolver
         var dnsUse = picker ?? Dns; // 测试注入点：默认取全局单例
         try
         {
+            // AB 对照·DNS择优短路（vc30ab）：v28/v29 真机白屏+取流失败头号嫌疑即本模块
+            // （DoH 连不上时每次解析吃满约 3 秒，挤压取流窗口）。本包改为只走系统 DNS：
+            // 直接原样返回 URL，完全绕过 DoH/IP 择路；其余逻辑零改动。
+            return url;
+#pragma warning disable CS0162 // 保留原实现便于对照恢复
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
                 || uri.HostNameType == UriHostNameType.IPv4 || uri.HostNameType == UriHostNameType.IPv6)
                 return url;
@@ -59,6 +64,7 @@ public class StreamResolver
             var builder = new UriBuilder(uri) { Host = ips[0].ToString() };
             if (!uri.IsDefaultPort) builder.Port = uri.Port;
             return builder.Uri.ToString();
+#pragma warning restore CS0162
         }
         catch { return url; } // DNS 全挂：原 URL 走系统解析兜底
     }
@@ -195,8 +201,20 @@ public class StreamResolver
     /// <summary>A 类第6项·预热落盘注入（长效源起播零探测；票据短效源不落盘）。</summary>
     public WarmupStore? WarmupDisk { get; set; }
 
-    /// <summary>票据短效源（落了必过期，误导起播）：央视频 5 分钟票、gzstv 腾讯云分钟级票，不落盘。</summary>
+    /// <summary>票据短效源（落了必过期，误导起播）：央视频 5 分钟票、gzstv 腾讯云分钟级票，不落盘。
+    /// jstv 不在此列——network.md N3 修复后其保鲜期由 WarmupPolicy 专属节拍（150s）收口，短于签名期 180s，
+    /// 落盘命中不再必过期（落盘只加速口径恢复成立）。</summary>
     private static bool IsShortTicketSource(string sourceId) => sourceId is "yangshipin" or "gzstv";
+
+    /// <summary>
+    /// network.md N5·票据/签名型源判定（URL 是否随换票轮换）：票据型源换票「假成功」（返回同 URL）
+    /// 需按失败计数升级备援；恒定 URL 源（xatv 直连、nmtv/gxtv 整表定位等）换票成功返回原 URL 属正常，
+    /// 不做假成功判定——此前 LiveVideoHost.RefreshStreamAsync 对恒定源每次重连都按换票失败计，
+    /// attempt≥2 即误转备援空转。UI 层判定点（LiveVideoHost.RefreshStreamAsync）改走本口径（BLL 单一事实源）。
+    /// kankan 流 URL 是否轮换未核实，按保守口径不算票据型（宁可少计数，不误触发备援）。
+    /// </summary>
+    public static bool IsRotatingTicketSource(string sourceId) =>
+        sourceId is "yangshipin" or "cztv" or "gzstv" or "jstv";
 
     private async Task<string?> ResolveCachedAsync(Channel ch, Func<Channel, Task<string?>> fetch, bool force = false)
     {
@@ -242,10 +260,15 @@ public class StreamResolver
             if (cnlid is null || livepid is null || defn is null) return null;
 
             var ticketUrl = _ysp.BuildTicketUrl(cnlid, livepid, defn, now);
-            var body = await HttpGetStringAsync(ticketUrl, null, YspTicketService.ClientUserAgent);
+            // network.md N2：改用分级取文本——只有服务器明确拒绝（403/429）才入指数退避账；
+            // 网络级失败（超时/断网/异常/5xx）按 Unreachable 只给 30 秒短冷却，
+            // 绝不回灌拉黑（v23 修法 B 公开口径；此前 body is null 一律 MarkCooldown，
+            // 断网几分钟即把央视频台白冻至 2 小时，全源 SourceBackoffLedger 同口径对照）。
+            var (body, rejected) = await HttpGetStringClassifiedAsync(ticketUrl, null, YspTicketService.ClientUserAgent);
             if (body is null)
             {
-                _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow); // 1.0.12 修法 B：指数退避账（2/4/8 分钟）替换 30 秒固定冷却
+                if (rejected) _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow); // 1.0.12 修法 B：明确拒绝才指数退避（2/4/8 分钟）
+                else _ysp.MarkUnreachable(ch.EpgKey, DateTime.UtcNow); // N2：网络级失败短冷却 30s，不进指数账
                 return null;
             }
             var (iretcode, playurl) = ParseYspResponse(body);
@@ -325,7 +348,7 @@ public class StreamResolver
         req.Headers.TryAddWithoutValidation("sign", sign);
         req.Headers.TryAddWithoutValidation("User-Agent", KankanFetchUserAgent);
         req.Headers.TryAddWithoutValidation("Referer", "https://live.kankanews.com/");
-        req.Headers.TryAddWithoutValidation("M-Uuid", "taolive-tv-01");
+        req.Headers.TryAddWithoutValidation("M-Uuid", DeviceIdentity.GetInstallUuid()); // network.md N6：安装级随机 uuid（此前恒定 taolive-tv-01 全安装共享风控配额）
         string body;
         try
         {

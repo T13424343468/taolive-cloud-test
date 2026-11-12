@@ -3,13 +3,12 @@ using System.Collections.Generic;
 
 namespace TaoLive.BLL;
 
-/// <summary>信息行消息优先级（总装协同口径·高到低）：连接状态 &gt; 档位变化 &gt; IP 限流提示 &gt; 常规。</summary>
+/// <summary>信息行消息优先级（总装协同口径·高到低）：连接状态 &gt; IP 限流提示 &gt; 常规。</summary>
 public enum InfoLinePriority
 {
     Normal = 0,     // 常规频道名等
     RateLimit = 1,  // IP 限流提示
-    TierChange = 2, // 档位变化（含自动降档可见）
-    Connect = 3,    // 连接状态（正在连接/重试）
+    Connect = 2,    // 连接状态（正在连接/重试）
 }
 
 /// <summary>
@@ -24,7 +23,6 @@ public class InfoLineHub
     public static readonly IReadOnlyDictionary<InfoLinePriority, long> HoldMs = new Dictionary<InfoLinePriority, long>
     {
         [InfoLinePriority.Connect] = 6_000,
-        [InfoLinePriority.TierChange] = 5_000,
         [InfoLinePriority.RateLimit] = 8_000,
         [InfoLinePriority.Normal] = 0, // 常规内容不占闸，随到随显
     };
@@ -74,12 +72,11 @@ public class InfoLineHub
         _parked = null;
     }
 
-    /// <summary>按文案归类优先级（单写入口的 UI 侧便捷判定；连接/重连 &gt; 档位 &gt; 限流 &gt; 常规）。</summary>
+    /// <summary>按文案归类优先级（单写入口的 UI 侧便捷判定；连接/重连 &gt; 限流 &gt; 常规）。</summary>
     public static InfoLinePriority PriorityOf(string text)
     {
         if (text is null) return InfoLinePriority.Normal;
         if (text.Contains("连接中") || text.Contains("重连") || text.Contains("正在自动换")) return InfoLinePriority.Connect;
-        if (text.Contains("档") || text.Contains("画质")) return InfoLinePriority.TierChange;
         if (text.Contains("限流")) return InfoLinePriority.RateLimit;
         return InfoLinePriority.Normal;
     }

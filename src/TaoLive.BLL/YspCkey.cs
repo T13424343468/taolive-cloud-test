@@ -266,6 +266,20 @@ public class YspTicketService
         }
     }
 
+    /// <summary>
+    /// network.md N2·网络级失败短冷却：超时/断网/异常（含 5xx 等非明确拒绝）不入指数退避账、
+    /// 不加连败 streak，只让出 30 秒重试窗口；环境恢复（ClearCooldowns）立即清。
+    /// 与 v23 修法 B「网络级失败一律 Unreachable 不回灌拉黑」同口径，避免好环境白冻。
+    /// </summary>
+    public void MarkUnreachable(string channelId, DateTime now)
+    {
+        lock (_lock)
+        {
+            var streak = _cooldownUntil.TryGetValue(channelId, out var cur) ? cur.Streak : 0;
+            _cooldownUntil[channelId] = (now.AddSeconds(30), streak);
+        }
+    }
+
     /// <summary>退避剩余毫秒（未冻结为 0）：限流提示按剩余时长动态给预期。</summary>
     public long RemainingCooldownMs(string channelId, DateTime now)
     {

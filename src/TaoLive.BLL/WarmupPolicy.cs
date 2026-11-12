@@ -46,6 +46,10 @@ public static class WarmupPolicy
         // 中敏感：票据短效但可整轮缓存
         ["gzstv"] = new SourcePace(refreshIntervalMs: 30 * 60_000, minGapMs: 1_500),
         ["cztv"] = new SourcePace(refreshIntervalMs: 2 * 60 * 60_000, minGapMs: 1_000),
+        // network.md N3：jstv 腾讯云防盗链签名 180 秒（JstvSource txTime=now+180s），
+        // 保鲜必须短于签名期——此前未注册节拍吃到 10 分钟保守兜底，落盘预热命中必过期。
+        // 专属 150 秒保鲜（<180s 留 30 秒余量，落盘只加速不塞过期票）。
+        ["jstv"] = new SourcePace(refreshIntervalMs: 150_000, minGapMs: 1_000),
         // 低敏感：URL 恒定，落盘价值最高
         ["xatv"] = new SourcePace(refreshIntervalMs: 6 * 60 * 60_000, minGapMs: 1_000),
     };

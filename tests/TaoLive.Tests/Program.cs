@@ -256,37 +256,6 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     }
 }
 
-// 追加：AI 画质实时档（v1.0.8）——auto 按内存分档矩阵 + 滤镜选项内容
-{
-    const long MB = 1024L * 1024;
-    // auto 矩阵：<2GB 关；2~3GB 低档；≥3GB 高档；内存未知关
-    Check(LiveQuality.Pick("auto", true, 2 * 1024 * MB) == AiLiveTier.Low, "auto 2GB 32位=低档");
-    Check(LiveQuality.Pick("auto", true, 1500 * MB) == AiLiveTier.Off, "auto <2GB=关");
-    Check(LiveQuality.Pick("auto", false, 3 * 1024 * MB) == AiLiveTier.High, "auto 3GB=高档");
-    Check(LiveQuality.Pick("auto", false, 0) == AiLiveTier.Off, "auto 内存未知=关");
-    Check(LiveQuality.Pick("auto", false, 8 * 1024 * MB) == AiLiveTier.High, "auto 8GB=高档");
-    // 显式设置：off 强制关；low 尊重；high 在 <2GB 降级为低档（防卡死）
-    Check(LiveQuality.Pick("off", false, 8 * 1024 * MB) == AiLiveTier.Off, "off 强制关");
-    Check(LiveQuality.Pick("low", true, 1500 * MB) == AiLiveTier.Low, "low 显式=低档（小内存也尊重）");
-    Check(LiveQuality.Pick("high", true, 1500 * MB) == AiLiveTier.Low, "high 小内存降级=低档");
-    Check(LiveQuality.Pick("high", false, 4 * 1024 * MB) == AiLiveTier.High, "high 大内存=高档");
-    Check(LiveQuality.Pick("AUTO", false, 3 * 1024 * MB) == AiLiveTier.High, "大小写不敏感");
-    Check(LiveQuality.Pick("未知值", false, 3 * 1024 * MB) == AiLiveTier.High, "未知值按 auto 口径");
-    // 滤镜选项内容：关=空；低档=锐化；高档=锐化+画面微调（video-filter 含 sharpen 与 adjust）
-    Check(LiveQuality.OptionsFor(AiLiveTier.Off).Count == 0, "关档无滤镜参数");
-    var lowOpts = LiveQuality.OptionsFor(AiLiveTier.Low);
-    Check(lowOpts.Any(o => o.Key == "video-filter" && o.Value == "sharpen"), "低档=锐化滤镜");
-    Check(lowOpts.Any(o => o.Key == "sharpen-sigma" && o.Value == "0.8"), "低档带锐化幅度（v22：LibVLC 参数名 sharpen-sigma）");
-    Check(!lowOpts.Any(o => o.Key == "sharpen-amplitude"), "v22 定项：旧参数名 sharpen-amplitude 绝迹");
-    var highOpts = LiveQuality.OptionsFor(AiLiveTier.High);
-    Check(highOpts.Any(o => o.Key == "video-filter" && o.Value.Contains("sharpen") && o.Value.Contains("adjust")), "高档=锐化+画面微调组合");
-    Check(highOpts.Any(o => o.Key == "contrast") && highOpts.Any(o => o.Key == "saturation"), "高档带对比/饱和微调");
-    Check(highOpts.Any(o => o.Key == "brightness" && o.Value == "0.02"), "v22 定项：gamma 超域修正改 brightness 微调（值域 -1~1）");
-    Check(!highOpts.Any(o => o.Key == "gamma"), "v22 定项：gamma 参数绝迹");
-    Check(!highOpts.Count(o => o.Key == "video-filter").Equals(2), "video-filter 单条不重复（避免同名覆盖）");
-}
-
-
 // 追加：开机预检握手状态机（v1.0.8）——按序探测、状态流转、事件单发、复测入口
 {
     var pre = new ChannelPrecheck(ch => Task.FromResult(ch.Name != "dead"), intervalMs: 10);
@@ -548,24 +517,6 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(ListPaging.NextFirstVisible(3, 0, 6, +1) == 0, "列表比一屏短时原地不动");
 }
 
-// 追加：设置页画质档位循环（v1.0.10 用户 12:37 拍板：统一三档「自动/低/高」全中文，智能档并入自动档）
-{
-    Check(SettingsCycler.NextAiTier("auto") == "low", "档位循环 自动→低");
-    Check(SettingsCycler.NextAiTier("low") == "high", "档位循环 低→高");
-    Check(SettingsCycler.NextAiTier("high") == "auto", "档位循环 高→自动（闭环）");
-    Check(SettingsCycler.NextAiTier("smart") == "low", "旧版 smart 值按自动档口径循环");
-    Check(SettingsCycler.NextAiTier("SMART") == "low", "大小写不敏感");
-    Check(SettingsCycler.NextAiTier("未知值") == "low", "未知值落低档让用户显式选");
-    Check(SettingsCycler.NextAiTier(null!) == "low", "空值安全兜底");
-    // 显示名统一全中文三档，绝不出「智能」
-    Check(LiveQuality.DisplayName("auto") == "自动", "显示名 auto=自动");
-    Check(LiveQuality.DisplayName("smart") == "自动", "显示名 旧版smart=自动（并入自动档）");
-    Check(LiveQuality.DisplayName("low") == "低", "显示名 low=低");
-    Check(LiveQuality.DisplayName("high") == "高", "显示名 high=高");
-    Check(LiveQuality.DisplayName(null!) == "自动", "显示名空值兜底=自动");
-    Check(LiveQuality.DisplayName("SMART") != "智能" && LiveQuality.DisplayName("auto") != "智能", "显示名全链路无「智能」字样");
-}
-
 // 追加：循环预检保态复测（v1.0.8 用户拍板：列表不闪烁）——已知台复测不先置检测中
 {
     var pre = new ChannelPrecheck(ch => Task.FromResult(ch.Name != "dead"), intervalMs: 1);
@@ -769,13 +720,11 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     var plan1 = CrashRecovery.Plan(1);
     Check(plan1.ClearResolverCache && plan1.RequeueAllPrecheck && plan1.FallbackToStableCarrier && !CrashRecovery.ShouldNotice(plan1), "自愈8：崩溃后静默重置可疑状态");
     Check(CrashRecovery.ShouldNotice(CrashRecovery.Plan(3)), "自愈8：连续崩溃≥3 屏显一次恢复提示");
-    // 自愈9·低配资源自适应：预检频率/缓存条目/智能档上限按内存调
-    var (iv1, _, cache1, cap1) = ResourceProfile.Adapt(100 * 1024 * 1024);
-    Check(iv1 == 1200 && cache1 == 32 && cap1 == AiLiveTier.Off, "自愈9：极低内存降频减存+智能档关");
-    var (iv2, _, cache2, cap2) = ResourceProfile.Adapt(2 * 1024L * 1024 * 1024);
-    Check(iv2 == 600 && cache2 == 96 && cap2 == AiLiveTier.High, "自愈9：内存充裕全速");
-    var (_, _, _, capUnknown) = ResourceProfile.Adapt(0);
-    Check(capUnknown == AiLiveTier.Off, "自愈9：内存未知智能档保守关");
+    // 自愈9·低配资源自适应：预检频率/缓存条目按内存调
+    var (iv1, _, cache1) = ResourceProfile.Adapt(100 * 1024 * 1024);
+    Check(iv1 == 1200 && cache1 == 32, "自愈9：极低内存降频减存");
+    var (iv2, _, cache2) = ResourceProfile.Adapt(2 * 1024L * 1024 * 1024);
+    Check(iv2 == 600 && cache2 == 96, "自愈9：内存充裕全速");
     // 自愈10·键值归一：常见别名映射、未知键不硬编码
     Check(KeyAlias.ToCanonical(4077) == 177, "自愈10：TCL 设置键别名→标准设置键");
     Check(KeyAlias.ToCanonical(111) == 4, "自愈10：ESC 码别名→返回键");
@@ -907,13 +856,12 @@ Check(ExitDialogFocus.Move(ExitButton.Cancel, +1) == ExitButton.Exit && ExitDial
 Check(ExitDialogFocus.Move(ExitButton.Exit, +1) == ExitButton.Exit && ExitDialogFocus.Move(ExitButton.Cancel, -1) == ExitButton.Cancel, "④到边不动不环绕，防误触退出");
 Check(ExitDialogFocus.Back() == ExitButton.Cancel, "④返回键=继续看");
 
-// ⑤画面信息行：首帧后重试（500ms×10），到限显「--」不留「检测中」；并显 AI 档位
+// ⑤画面信息行：首帧后重试（500ms×10），到限显「--」不留「检测中」
 Check(StatsLinePolicy.IntervalMs == 500 && StatsLinePolicy.MaxRetries == 10, "⑤重试口径：每500ms至多10次");
 Check(StatsLinePolicy.NextDelayMs(0) == 500 && StatsLinePolicy.NextDelayMs(9) == 500 && StatsLinePolicy.NextDelayMs(10) is null, "⑤到限停止重试");
-Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: false).Contains("检测中"), "⑤重试期内维持「检测中」");
-Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: true).Contains("--") && !FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, true).Contains("检测中"), "⑤到限显「--」不留「检测中」");
-Check(FrameStatsLine.FormatEx(null, null, 1920, 1080, 1920, 1080, null, true).Contains("原帧率 --"), "⑤部分缺失到限：缺失项显「--」");
-Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("画质增强：自动"), "⑤并显画质增强档位（v22 定项：显示名改画质增强）");
+Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, statsExhausted: false).Contains("检测中"), "⑤重试期内维持「检测中」");
+Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, statsExhausted: true).Contains("--") && !FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, true).Contains("检测中"), "⑤到限显「--」不留「检测中」");
+Check(FrameStatsLine.FormatEx(null, null, 1920, 1080, 1920, 1080, true).Contains("原帧率 --"), "⑤部分缺失到限：缺失项显「--」");
 
 // ⑥换台提速：先连最快出画面档，亮后无感升高档，失败留在当前档
 var tiers = new List<(int Height, long Bandwidth)> { (1080, 8_000_000), (720, 3_000_000), (480, 1_500_000) };
@@ -1076,7 +1024,7 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     Check(favRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 3, 2 }),
         "B·收藏标签按收藏排序铺开");
 
-    // v22 第 9 项：画面信息短格式——帧率+分辨率一行、画质一行；同值只显一档、变化显 a>b、缺失/到限口径
+    // v22 第 9 项：画面信息短格式——帧率+分辨率一行；同值只显一档、变化显 a>b、缺失/到限口径
     Check(FrameStatsLine.FpsSegment(null, null, false) == "帧率:检测中", "v22 第 9 项：帧率缺失未到限显检测中");
     Check(FrameStatsLine.FpsSegment(null, null, true) == "帧率:--", "v22 第 9 项：帧率缺失到限显 --");
     Check(FrameStatsLine.FpsSegment(25, null, false) == "帧率:25fps", "v22 第 9 项：现值未测同值单显");
@@ -1086,9 +1034,6 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     Check(FrameStatsLine.ResSegment(1920, 1080, 1920, 1080, false) == "分辨率:1080P", "v22 第 9 项：同档并入档位文案");
     Check(FrameStatsLine.ResSegment(1920, 1080, 2560, 1440, false) == "分辨率:1080P>2K", "v22 第 9 项：分辨率变化显 1080P>2K");
     Check(FrameStatsLine.ResSegment(1280, 720, 640, 360, false) == "分辨率:720P", "v22 第 9 项：≤1280 同归 720P 只显一档");
-    Check(FrameStatsLine.TierSegment("高", true) == "画质:高:生效", "v22 第 9 项：画质档生效口径");
-    Check(FrameStatsLine.TierSegment("低", false) == "画质:低:未生效", "v22 第 9 项：临时降档如实显未生效");
-    Check(FrameStatsLine.TierSegment("关", true) == "画质:关", "v22 第 9 项：关档只显关");
 
     // v22 第 16 项：18 路挂链后抽屉分类过滤对账——地方台含 13 城市候选，卫视含甘肃/福建经济
     {
@@ -1149,37 +1094,11 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     var merged4 = MediaOptionMerge.Merge(new List<string> { "solo" }, new List<(string, string)>());
     Check(merged4.Count == 1 && merged4[0] == "solo", "P1合并：无等号条目原样保留");
 
-    // A 类第10项·调速器：掉帧立即降档（会话临时档）+ 平稳 10 分钟回位
-    var gov = new SmartGovernor(AiLiveTier.High);
-    long t0 = 1_000_000;
-    Check(gov.Tick(0.05, false, t0) == true && gov.Effective == AiLiveTier.Low, "A⑩掉帧超阈立即降档");
-    Check(gov.Tick(0.0, false, t0 + 5 * 60 * 1000) == false && gov.Effective == AiLiveTier.Low, "A⑩未满10分钟不回升");
-    Check(gov.Tick(0.0, false, t0 + SmartGovernor.StableRestoreMs + 1) == true && gov.Effective == AiLiveTier.High, "A⑩平稳10分钟逐档回位");
-    Check(gov.Tick(0.0, false, t0 + 2 * SmartGovernor.StableRestoreMs) == false, "A⑩基准档不再升");
-    var govOff = new SmartGovernor(AiLiveTier.Off);
-    govOff.Tick(0.5, true, 0);
-    Check(govOff.Effective == AiLiveTier.Off, "A⑩地板档不越降");
-    var govLow = new SmartGovernor(AiLiveTier.Low);
-    govLow.Tick(0.03, false, 100);
-    Check(govLow.Effective == AiLiveTier.Off && govLow.IsDowngraded, "A⑩降档即临时档标记");
-
-    // A 类第8项·32 位封顶=天花板下沉（地板保留）：auto <2GB 仍关，高档压低
-    Check(LiveQuality.Pick("high", true, 4L * 1024 * 1024 * 1024) == AiLiveTier.Low, "A⑧32位高档封顶=低档");
-    Check(LiveQuality.Pick("auto", true, 1500 * 1024 * 1024) == AiLiveTier.Off, "A⑧32位auto地板仍=关");
-    Check(LiveQuality.Pick("off", true, 8L * 1024 * 1024 * 1024) == AiLiveTier.Off, "A⑧off尊重用户");
-
-    // A 类第5项·实际档显示名
-    Check(LiveQuality.TierName(AiLiveTier.Off) == "关", "A⑤实际档名=关");
-    Check(LiveQuality.TierName(AiLiveTier.Low) == "低", "A⑤实际档名=低");
-    Check(LiveQuality.TierName(AiLiveTier.High) == "高", "A⑤实际档名=高");
-
     // A 类第2项·信息行单写入口：同文重刷吞 + 优先级让位 + 到期放行
     var hub = new InfoLineHub();
     long now = 10_000;
     Check(hub.Submit("1  CCTV1 连接中…", InfoLinePriority.Connect, now) != null, "A②连接状态上屏");
     Check(hub.Submit("1  CCTV1 连接中…", InfoLinePriority.Connect, now + 100) == null, "A②同文重刷直接吞");
-    Check(hub.Submit("1  画质已自动调为「低」", InfoLinePriority.TierChange, now + 200) == null, "A②档位变化让位连接状态");
-    Check(hub.Poll(now + InfoLineHub.HoldMs[InfoLinePriority.Connect] + 1) == "1  画质已自动调为「低」", "A②连接保持期到放行档位变化");
     Check(hub.Submit("1  频道名", InfoLinePriority.Normal, now + 12_000) != null, "A②常规随到随显");
     Check(hub.Submit("1  取流被限流", InfoLinePriority.RateLimit, now + 12_100) != null, "A②限流可顶常规");
     Check(hub.Submit("1  又一条常规", InfoLinePriority.Normal, now + 12_200) == null, "A②常规让位限流保持期");
@@ -1270,9 +1189,10 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
             Check(ips4.First().ToString() == "1.2.3.4", "v28网络③成功恢复原序");
             // ④连接复用兜底：取流双通道均为静态单例（复用生效）+ 池化连接寿命 5 分钟兜底
             Check(StreamResolver.Dns is not null, "v28网络④DNS择优挂接取流链路（静态单例入口在位）");
+            // A1短路（vc30ab口径）：取流入口原样返回，DoH/IP 择路停用（模块与单例保留，摘掉入口 return url 即恢复）
             var direct = await StreamResolver.PickEndpointAsync("http://example.com/live.m3u8?tok=1",
                 new StreamDnsPicker(host => Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }), (s, h) => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()), () => dnsClock));
-            Check(direct.StartsWith("http://9.9.9.9/") && direct.Contains("live.m3u8?tok=1"), "v28网络④PickEndpoint 择优替换主机（路径与查询原样保留）");
+            Check(direct == "http://example.com/live.m3u8?tok=1", "v28网络④PickEndpoint 择优短路原样返回（vc30ab口径）");
             var fallback = await StreamResolver.PickEndpointAsync("http://example.com/live.m3u8?tok=2",
                 new StreamDnsPicker(host => Task.FromException<IPAddress[]>(new Exception("解析挂了")), (s, h) => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()), () => dnsClock));
             Check(fallback == "http://example.com/live.m3u8?tok=2", "v28网络④解析失败兜底原样返回（异常不挂取流）");

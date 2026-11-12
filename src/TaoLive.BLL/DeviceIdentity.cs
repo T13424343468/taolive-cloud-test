@@ -13,9 +13,10 @@ public static class DeviceIdentity
     private static string? _dir;              // 应用私有目录（由 MainActivity 启动时注入；null=不落盘）
     private static readonly object _gate = new();
     private static string? _cached;
+    private static string? _cachedInstallUuid; // network.md N6：安装级 uuid 缓存（同 guid 家法）
 
     /// <summary>测试与运行注入点：应用私有目录；传 null 关闭持久化（退化为随机，不抛错）。</summary>
-    public static void Attach(string? dir) { lock (_gate) { _dir = dir; _cached = null; } }
+    public static void Attach(string? dir) { lock (_gate) { _dir = dir; _cached = null; _cachedInstallUuid = null; } }
 
     /// <summary>取稳定 guid：已有落盘文件直接复用；没有则生成并写盘；无目录注入时现场随机（与旧行为一致）。</summary>
     public static string GetGuid()
@@ -42,6 +43,35 @@ public static class DeviceIdentity
         }
     }
 
+    /// <summary>
+    /// network.md N6·安装级稳定 uuid（kankan 取票 M-Uuid 头）：此前全安装硬编码同一值
+    /// "taolive-tv-01"，服务端按 uuid 风控/限流时全部用户共享同一配额；改按安装随机生成并持久化。
+    /// 同 GetGuid 家法：32 位十六进制、独立落盘文件（损坏重生成）、无目录注入退随机不挡起播。
+    /// </summary>
+    public static string GetInstallUuid()
+    {
+        lock (_gate)
+        {
+            if (_cachedInstallUuid != null) return _cachedInstallUuid;
+            var dir = _dir;
+            if (string.IsNullOrEmpty(dir)) return _cachedInstallUuid = Guid.NewGuid().ToString("N");
+            try
+            {
+                Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, "install_uuid.txt");
+                if (File.Exists(path))
+                {
+                    var v = File.ReadAllText(path).Trim();
+                    if (v.Length is 32 && v.All(Uri.IsHexDigit)) return _cachedInstallUuid = v;
+                }
+                var guid = Guid.NewGuid().ToString("N");
+                File.WriteAllText(path, guid); // 原子性可接受：单次小文件，损坏按 32 位校验丢弃重生成
+                return _cachedInstallUuid = guid;
+            }
+            catch { return _cachedInstallUuid = Guid.NewGuid().ToString("N"); } // 落盘失败不挡取票：退回随机
+        }
+    }
+
     /// <summary>测试用：重置（连同落盘文件路径）。</summary>
-    internal static void Reset() { lock (_gate) { _dir = null; _cached = null; } }
+    internal static void Reset() { lock (_gate) { _dir = null; _cached = null; _cachedInstallUuid = null; } }
 }

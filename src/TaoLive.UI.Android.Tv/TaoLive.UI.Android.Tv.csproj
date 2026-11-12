@@ -7,15 +7,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>com.taolive.tv</ApplicationId>
-    <ApplicationVersion>28</ApplicationVersion>
-    <ApplicationDisplayVersion>1.2</ApplicationDisplayVersion>
+    <ApplicationVersion>38</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.4</ApplicationDisplayVersion>
     <ApplicationTitle>TaoLive</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体。
          v28 瘦身：收窄为仅 android-arm——此前双 ABI 列表使构建把整套 arm64-v8a 库（libvlc 43MB+libassemblies blob 22MB+mono/AOT 运行时，约 66MB 死重）打进 32 位包，87MB→20MB 出头 -->
-    <RuntimeIdentifiers>android-arm</RuntimeIdentifiers>
-    <!-- v28 主线⑤运行库裁剪：Release 起用裁剪（SDK 程序集裁剪，用户程序集保全），托管程序集 blob 22MB 预期砍半；反射暗路以真机装机为终验 -->
+    <RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers>
+    <!-- 第二刀（v36/1.0.2）裁剪回带：SdkOnly 起用 + v33 定稿 25 件运行库保全名单（v31 定谳正解=_ExtraTrimmerArgs 逐件 copy 保全；
+         裁伤两类=成员真被裁+方法体抽桩，AndroidLinkSkip 死属性、TrimmerRootDescriptor 不构成整件保全，均勿回退）；
+         保全唯一事实源=本文件 _ExtraTrimmerArgs，pkg_final_check 白名单自此自动对账（坑7A之6）。
+         注：XML 注释内禁写双连字符（MSB4025），保全参数只能落在元素值，坑7A之7 回灌 -->
     <AndroidLinkMode Condition="'$(Configuration)' == 'Release'">SdkOnly</AndroidLinkMode>
+    <_ExtraTrimmerArgs Condition="'$(Configuration)' == 'Release'">--action copy System.Collections --action copy System.Collections.Concurrent --action copy System.Collections.NonGeneric --action copy System.Collections.Specialized --action copy System.ComponentModel.TypeConverter --action copy System.Diagnostics.DiagnosticSource --action copy System.Diagnostics.Process --action copy System.IO.FileSystem.DriveInfo --action copy System.Linq --action copy System.Net.Http --action copy System.Net.HttpListener --action copy System.Net.NameResolution --action copy System.Net.Primitives --action copy System.Net.Requests --action copy System.Net.Security --action copy System.Net.WebProxy --action copy System.Private.Uri --action copy System.Private.Xml.Linq --action copy System.Security.Claims --action copy System.Security.Cryptography --action copy System.Text.Encodings.Web --action copy System.Text.Json --action copy System.Text.RegularExpressions --action copy System.Threading.Channels --action copy System.Runtime.Numerics</_ExtraTrimmerArgs>
     <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>
     <AssemblyName>TaoLive.UI.Android.Tv</AssemblyName>
     <AndroidResgenFile>Resources\Resource.designer.cs</AndroidResgenFile>
@@ -36,9 +40,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- v28 瘦身：32 位包剔除 arm64 本机库条目（RuntimeIdentifiers 已收窄 android-arm，条目残留导致 XA4301 重复警告） -->
+    <!-- 包1 对照实验：恢复双架构（B27 已验证口径）；XA4301 重复告警为良性，v31 历史同款 -->
     <AndroidNativeLibrary Include="lib\armeabi-v7a\libvlc.so" />
     <AndroidNativeLibrary Include="lib\armeabi-v7a\libc++_shared.so" />
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libvlc.so" />
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libc++_shared.so" />
   </ItemGroup>
 
   <ItemGroup>

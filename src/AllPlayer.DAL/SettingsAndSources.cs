@@ -24,7 +24,16 @@ namespace AllPlayer.DAL
                 if (File.Exists(p))
                     return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(p)) ?? new AppSettings();
             }
-            catch { }
+            catch
+            {
+                // settings P1: 账本损坏——把坏文件改存 .bad 再回默认（不覆盖现场，便于对账）
+                try
+                {
+                    var p = FilePath(baseDir);
+                    if (File.Exists(p)) File.Copy(p, p + ".bad", overwrite: true);
+                }
+                catch { }
+            }
             return new AppSettings();
         }
 
@@ -34,8 +43,14 @@ namespace AllPlayer.DAL
             {
                 var p = FilePath(AppSettings.BaseDir);
                 Directory.CreateDirectory(Path.GetDirectoryName(p)!);
-                File.WriteAllText(p, JsonSerializer.Serialize(settings,
+                // settings P1: 写临时文件后单步 rename 原子替换——写一半崩溃/断电不再清空整本设置
+                // vc38 修红：netstandard2.1 无 Move(overwrite) 重载（CS1739），先删旧件再移入，
+                // 风险窗只有删与移之间的微秒级，写一半的风险仍由 tmp 全额兜住
+                var tmp = p + ".tmp";
+                File.WriteAllText(tmp, JsonSerializer.Serialize(settings,
                     new JsonSerializerOptions { WriteIndented = true }));
+                if (File.Exists(p)) File.Delete(p);
+                File.Move(tmp, p);
             }
             catch { }
         }

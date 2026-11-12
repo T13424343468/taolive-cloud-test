@@ -10,7 +10,4 @@ public static class DeviceProfile
 {
     /// <summary>低配设备标志：true 时 4K/8K 台不进节目单。</summary>
     public static bool HideUhd { get; set; }
-
-    /// <summary>AI 画质档位设置（v1.0.10 统一口径：auto=自动默认/low/high/off；旧版 smart 兼容按 auto 解析）。</summary>
-    public static string AiEnhanceTierSetting { get; set; } = "auto";
 }

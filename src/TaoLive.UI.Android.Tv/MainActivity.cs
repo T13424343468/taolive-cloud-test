@@ -143,7 +143,10 @@ public class MainActivity : Activity
     {
         base.OnCreate(savedInstanceState);
         TaoPalette.Select(0); // 水墨默认
-        Shared.UiScale.Init(Resources!.DisplayMetrics!); // vc41 自适应体系：启动定标一次，全套令牌冻结
+        // vc42 显示大小：档位系数随偏好（大=4/3/中=1/小=2/3，老板 21:08 定稿），重建后清冻结重定标
+        float dispFactor = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!.GetFloat("ui_scale", 1f);
+        Shared.UiScale.Reset();
+        Shared.UiScale.Init(Resources!.DisplayMetrics!, dispFactor); // vc41 自适应体系：启动定标一次，全套令牌冻结
 
         // 全局兜底：未捕获异常先落日志再放行，崩溃原因可查可报，不再无声闪退（v1.0.7）
         Java.Lang.Thread.DefaultUncaughtExceptionHandler =
@@ -906,6 +909,7 @@ public class MainActivity : Activity
             ToggleWarmup, "#F7F5EE");
         AddRow($"开机自启：{(_autostartEnabled ? "开" : "关")}（确认切换 · 长按跳系统自启管理）",
             ToggleAutostart, "#F7F5EE", OpenAutostartSystemPage);
+        AddRow($"显示大小：{DisplaySizeLabel()}（确认键切换）", CycleDisplaySize, "#F7F5EE"); // vc42：大→中→小循环，档位=原尺寸的倍率
         AddRow("崩溃日志（点按查看）", ShowCrashLog, "#C9D6E2");
         AddRow("自诊断（点按查看）", ShowDiagPanel, "#C9D6E2"); // S3（vc38）：五类摘要只读一页+导出
         // 调参档接线（老板 2026-11-12 令）：进阶调优二级页——旋钮全量可调+每项讲清作用+一键还原
@@ -942,6 +946,29 @@ public class MainActivity : Activity
         catch (Exception ex) { CrashNet.Record($"[Warmup] 开关切失败（不影响预热调度）：{ex.Message}"); }
         RefreshSettingsRows();
         FlashInfo(_warmupEnabled ? "后台预热：开" : "后台预热：关");
+    }
+
+    // vc42 显示大小（老板 21:08 定稿）：中=1（=原尺寸，默认）、大=4/3、小=2/3；面板/字/间距同一系数整体缩放
+    private static readonly float[] DisplaySizeSteps = { 4f / 3f, 1f, 2f / 3f };
+    private static readonly string[] DisplaySizeLabels = { "大", "中", "小" };
+
+    private static int DisplaySizeIndex(float f)
+    {
+        for (int i = 0; i < DisplaySizeSteps.Length; i++)
+            if (Math.Abs(DisplaySizeSteps[i] - f) < 0.01f) return i;
+        return 1; // 未知值回落「中」
+    }
+
+    private string DisplaySizeLabel() => DisplaySizeLabels[DisplaySizeIndex(
+        GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!.GetFloat("ui_scale", 1f))];
+
+    /// <summary>vc42 显示大小：大→中→小循环，档位记忆；整界面重建即时生效（正在看的台自动接回）。</summary>
+    private void CycleDisplaySize()
+    {
+        var prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
+        int next = (DisplaySizeIndex(prefs.GetFloat("ui_scale", 1f)) + 1) % DisplaySizeSteps.Length;
+        prefs.Edit()?.PutFloat("ui_scale", DisplaySizeSteps[next])?.Apply();
+        Recreate(); // 重建走 OnCreate 重定标，全套令牌按新档位重算
     }
 
     /// <summary>v22 第 7 项：跳系统自启管理——三级降级：应用详情页 → 应用列表 → 文字指引，绝不硬撑。</summary>

@@ -91,7 +91,7 @@ jobs:
           EMU="$ANDROID_HOME/emulator/emulator64-arm"
           "$EMU" -list-avds || true
           set -x
-          "$EMU" @testavd -engine classic -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu off -memory 2048 -cores 2 -verbose > emulator.log 2>&1 &
+          "$EMU" @testavd -engine classic -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu off -memory 1024 -show-kernel -verbose > emulator.log 2>&1 &
           EMUPID=$!
           sleep 45
           echo "--- emulator log head ---"

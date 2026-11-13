@@ -35,6 +35,13 @@ public class SourceHealthEntry
 /// </summary>
 public class ChannelPrecheck
 {
+    /// <summary>打点出口（BLL 不反引 UI）：由宿主层注入；未注入静默（订阅方异常可丢，状态账不受影响）。</summary>
+    public static Action<string>? Reporter { get; set; }
+
+    private static void Report(string msg)
+    {
+        try { Reporter?.Invoke($"[ChannelPrecheck] {msg}"); } catch { }
+    }
     private readonly Func<Channel, Task<bool>> _probe;
     private readonly int _intervalMs;
     private readonly ConcurrentDictionary<string, ChannelHealth> _states = new();
@@ -135,13 +142,16 @@ public class ChannelPrecheck
         return bestFallback ?? (Of(ch) == ChannelHealth.Alive ? ch : null);
     }
 
-    /// <summary>直接标记状态（播放实测/预检覆盖写）。仅在状态真正变化时发事件，防重复刷列表。</summary>
+    /// <summary>直接标记状态（播放实测/预检覆盖写）。仅在状态真正变化时发事件，防重复刷列表。
+    /// vc52 P8：StateChanged 订阅方异常不得毒化状态写入——事件从回写点抛出会炸进调用方
+    /// （播放实测/自救换源线程），状态已落账但事件炸了等于白写；订阅方异常只落日志。</summary>
     public void MarkState(Channel ch, ChannelHealth state)
     {
         var prev = Of(ch);
         if (prev == state) return;
         _states[ch.EpgKey] = state;
-        StateChanged?.Invoke(ch.EpgKey, state);
+        try { StateChanged?.Invoke(ch.EpgKey, state); }
+        catch (Exception ex) { Report($"状态事件订阅方异常（不影响状态账本）：{ex.Message}"); }
     }
 
     /// <summary>

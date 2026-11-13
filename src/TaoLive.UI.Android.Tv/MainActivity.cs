@@ -237,6 +237,7 @@ public class MainActivity : Activity
         // 开机预检握手（v1.0.8）：全台按序轻探（取票/头分片，不建视频传输），限速防判异常。
         // 预检后台进行，不阻塞当前频道播放；状态实时刷新进呼出列表。
         _precheck = new ChannelPrecheck(ProbeChannelAsync, intervalMs: 600);
+        ChannelPrecheck.Reporter ??= CrashNet.Record; // vc52 P8：订阅方异常打点接崩溃日志通道（BLL 不反引 UI，委托注入）
         // v1.0.10 第①项：源健康账落盘本地——重启后已验证源直接可用，换台不用从零再探
         // A 类第 7 项：央视频 guid 设备身份持久化，与源健康账同目录落盘
         DeviceIdentity.Attach(FilesDir!.AbsolutePath);
@@ -2793,7 +2794,9 @@ public class MainActivity : Activity
         _statsTicker?.Dispose(); // ④画面信息行节拍
         _statsTicker = null;
         // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘），再落盘
-        _healthLoadTask?.Wait();
+        // vc52 黄五（部分收口）：原 Wait() 无界——读盘慢（冷盘/IO 挤占）时 UI 线程无限期挂起；
+        // 加 1 秒上界，超限放行（健康账靠 MarkDirty 节流落盘自然补回，不丢档）。三项等待总预算合并列 vc53
+        _healthLoadTask?.Wait(1000);
         // fix51（修复批B移植）：退出落盘移出主线程（对齐 OnPause 的 Task.Run 口径），但进程即将终止——
         // 后台写盘必须有界等待完成再放行（2 秒上限），防「进程先死文件没写完」丢健康账，不得丢档
         var exitStore = _healthStore;

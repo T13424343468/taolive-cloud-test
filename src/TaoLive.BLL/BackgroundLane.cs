@@ -55,11 +55,17 @@ public static class BackgroundLane
     /// </summary>
     public static async Task RunAsync(Func<Task> work, CancellationToken ct = default)
     {
+        await RunAsync<object?>(async () => { await work().ConfigureAwait(false); return null; }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>带返回值的车道执行（探针 bool 等结果透传）：排队与限速逻辑与无返回版本完全一致。</summary>
+    public static async Task<T> RunAsync<T>(Func<Task<T>> work, CancellationToken ct = default)
+    {
         await WaitTurnAsync(ct).ConfigureAwait(false);
         try
         {
             Volatile.Write(ref _lastRunMs, Now());
-            await work().ConfigureAwait(false);
+            return await work().ConfigureAwait(false);
         }
         finally { Gate.Release(); }
     }

@@ -54,7 +54,7 @@ public class LiveVideoHost : IDisposable
     private volatile bool _streamDead;       // 断流标志：报错/看门狗触发到重连成功之间为真（IsAlive 口径）
     private int _cachingIndex;               // 重连网络缓存档位（重连递增，软解跟不上自适应）
     private int _stallCount;                 // 本台会话内卡死次数（⑫分级自救的行进依据）
-    private bool _kernelRebuilding;          // 软重启互斥（⑫③级）
+    private int _kernelRebuilding;           // 软重启互斥（⑫③级）；vc52 黄四 CAS 化：check-then-set 非原子，Timer 回调可并发重入
     private System.Threading.Timer? _statsRetryTimer; // ⑤首帧后轨道解析重试（每500ms至多10次）
     private int _statsRetries;                              // ⑤已重试次数
     public bool StatsExhausted => _statsRetries >= StatsLinePolicy.MaxRetries; // ⑤到限仍无数据显「--」
@@ -238,10 +238,10 @@ public class LiveVideoHost : IDisposable
         // 不再并行双建内核（旧病：Attach 直进 BuildKernel 不占 _kernelRebuilding，
         // 与看门狗线程 RestartKernel 并发会造出两个 MediaPlayer 抢同一载体）；
         // 重启流程 BuildKernel 读 _videoCarrier，会把新内核挂到新载体上，此处让位即正确。
-        if (_kernelRebuilding) return;
-        _kernelRebuilding = true;
+        // vc52 黄四：check-then-set 改 CAS 占位，重挂/软重启动并发窗口不再双入
+        if (Interlocked.CompareExchange(ref _kernelRebuilding, 1, 0) != 0) return;
         try { BuildKernel(); }
-        finally { _kernelRebuilding = false; }
+        finally { Volatile.Write(ref _kernelRebuilding, 0); }
     }
 
     /// <summary>建播放内核（Attach 与⑫软重启共用）：LibVLC + 软解播放器 + 事件接线 + 看门狗。</summary>
@@ -322,8 +322,8 @@ public class LiveVideoHost : IDisposable
     /// 队列操作踩已释放对象」的咬锁（真机 11-13 整机卡死实锤根因之二）。</summary>
     public void RestartKernel()
     {
-        if (_kernelRebuilding || _userStopped || _currentUrl is null) return;
-        _kernelRebuilding = true;
+        if (Volatile.Read(ref _kernelRebuilding) != 0 || _userStopped || _currentUrl is null) return;
+        if (Interlocked.CompareExchange(ref _kernelRebuilding, 1, 0) != 0) return; // vc52 黄四：CAS 占位防并发重入
         long genNow = _genCounter.Current;
         EnqueueNativeOp(() =>
         {
@@ -349,7 +349,7 @@ public class LiveVideoHost : IDisposable
                 try { CrashNet.Record("[LiveVideoHost] 软重启失败（自救链接管）：" + ex.Message); } catch { }
                 OnStreamError();
             }
-            finally { _kernelRebuilding = false; }
+            finally { Volatile.Write(ref _kernelRebuilding, 0); }
         });
     }
 
@@ -381,7 +381,7 @@ public class LiveVideoHost : IDisposable
             // ⑨B缓冲水位低提前介入：时钟 4 秒没走就先静默重取流（先出画面口径），不等 6 秒卡死；
             // 每轮卡顿只提前介入一次，重置额度靠 TimeChanged 恢复；
             // 1.0.12 修正①⑤：Buffering 事件（主信号）与看门狗（兜底）统一走介入入口——5 秒去重 + 90 秒窗上限 2 次
-            if (age >= EarlyRescueMs && !_earlyRescueUsed && !_kernelRebuilding)
+            if (age >= EarlyRescueMs && !_earlyRescueUsed && Volatile.Read(ref _kernelRebuilding) == 0)
                 TriggerEarlyRescue($"看门狗兜底：时钟 {age}ms 未走");
             ObserveBufferWatermark(age); // ⑩水位实接：默认贴边、抖动攒水位、平稳追回，动作变化落日志
             return;
@@ -395,7 +395,7 @@ public class LiveVideoHost : IDisposable
     /// 第二次低读才算真低水位——码流尖峰抖动的单拍毛刺不再误触发静默重取流；时钟恢复即清确认。</summary>
     private void OnBufferingLow()
     {
-        if (_userStopped || !_frameShown || _kernelRebuilding || _streamDead) return;
+        if (_userStopped || !_frameShown || Volatile.Read(ref _kernelRebuilding) != 0 || _streamDead) return;
         var now = Environment.TickCount64;
         var first = Volatile.Read(ref _bufferLowFirstMs);
         if (first == 0 || now - first > StallRescue.BufferingGlitchConfirmMs)
@@ -519,7 +519,7 @@ public class LiveVideoHost : IDisposable
     /// </summary>
     private async void HandleStall()
     {
-        if (_kernelRebuilding) return;
+        if (Volatile.Read(ref _kernelRebuilding) != 0) return;
         try
         {
             if (await TryHotStandbyAsync("分级自救前主路断")) return; // v25 修法七：热备就绪帧级切换

@@ -519,6 +519,8 @@ public class MainActivity : Activity
 
     // vc45② 常规级：空闲低频探索——每 30 分钟一轮、每轮最多 3 台轮转（方案定稿 §四「只在空闲时段执行」）：
     // 换台 5 分钟内整轮让路（不抢播放带宽）；搜源管线内受静默校验与预算约束，验活才入库。
+    // vc53 任务12b（老板 01:16 令落地）：播放中停摸=人在看零摸源（整轮收工待下轮）；
+    // 摸源整链收编全局单车道 Scout 档（清单+分片深探单个车道任务串行，摸源期间后台其它网络让路）。
     private void StartRoutineScout()
     {
         _scoutTimer = new System.Threading.Timer(async _ =>
@@ -532,15 +534,19 @@ public class MainActivity : Activity
                 if (all.Count == 0) return;
                 for (int i = 0; i < 3; i++)
                 {
+                    if (BackgroundLane.Playing) return; // vc53 任务12b：播放中停摸（画面平稳优先令），本轮收工
                     if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _tuneBeginMs < 5 * 60_000) return; // 换台即收工
                     var ch = all[Math.Abs(Interlocked.Increment(ref _scoutCursor)) % all.Count];
                     var known = FallbackSourceRegistry.Has(ch.Name) || (_dynStore?.Has(ch.Name) ?? false);
-                    await scout.RunAsync(ch.Name,
-                        () => discover(ch.Name),
-                        c => _resolver.ValidateCandidateDeepAsync(c.Url, c.Referer,
-                            string.IsNullOrEmpty(c.UserAgent) ? ch.UserAgent : c.UserAgent), // vc46②9-5：常规探索验活换分片级深探
-                        existingBestScore: 0, // 动态源=与内置表并行的备源，入库判重由库收口（同 URL 更新不叠加）
-                        channelKnown: known);
+                    await BackgroundLane.RunAsync(async () =>
+                    {
+                        await scout.RunAsync(ch.Name,
+                            () => discover(ch.Name),
+                            c => _resolver.ValidateCandidateDeepAsync(c.Url, c.Referer,
+                                string.IsNullOrEmpty(c.UserAgent) ? ch.UserAgent : c.UserAgent), // vc46②9-5：常规探索验活换分片级深探
+                            existingBestScore: 0, // 动态源=与内置表并行的备源，入库判重由库收口（同 URL 更新不叠加）
+                            channelKnown: known);
+                    }, tier: BackgroundLane.LaneTier.Scout);
                 }
             }
             catch (Exception se) { CrashNet.Record($"[Scout] 常规探索异常（功能不残废）：{se.Message}"); }

@@ -321,7 +321,7 @@ public class MainActivity : Activity
             var cur = _current;
             if (cur is null) return;
             try { await BackgroundLane.RunAsync(() => _resolver.ResolvePlayUrlAsync(cur, force: true)); }
-            catch (OperationCanceledException) { }
+            catch (System.OperationCanceledException) { } // 限定 System：Tv 工程同引 Android.OS，裸名二义（vc53 Tv 首编暴露的刀1潜伏编译错）
             catch (Exception ex) { CrashNet.Record($"[TicketKeeper] 续票失败下个周期再试：{ex.Message}"); }
         }, null, 240_000, 240_000);
     }

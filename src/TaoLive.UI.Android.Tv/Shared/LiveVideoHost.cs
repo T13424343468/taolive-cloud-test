@@ -110,20 +110,36 @@ public class LiveVideoHost : IDisposable
         _startQueue.Writer.TryWrite(op);
     }
 
+    // vc52 红一：泵不可自愈修复——旧写法 while 直挂，WaitToReadAsync 一旦抛异常泵即永久死亡，
+    // 而 _startQueuePumpRunning 停在 1，EnqueueNativeOp 的 CAS 起泵永远失败，队列只进不出全僵
+    // （播放/停播/释放全积压，真机卡死同型）。整段 try/catch/finally：finally 无条件复位单飞护栏，
+    // 复位后若仍有积压（复位与入队竞窗内新入队的操作）补一脚 EnsureStartQueuePump 消化
     private async Task PumpStartQueueAsync()
     {
         var reader = _startQueue.Reader;
-        while (await reader.WaitToReadAsync())
+        try
         {
-            while (reader.TryRead(out var op))
+            while (await reader.WaitToReadAsync())
             {
-                try { op(); }
-                catch (Exception ex)
+                while (reader.TryRead(out var op))
                 {
-                    try { CrashNet.Record("[LiveVideoHost] 起播队列操作异常（自救链兜底）：" + ex.Message); } catch { }
+                    try { op(); }
+                    catch (Exception ex)
+                    {
+                        try { CrashNet.Record("[LiveVideoHost] 起播队列操作异常（自救链兜底）：" + ex.Message); } catch { }
+                    }
+                    Interlocked.Decrement(ref _startQueueDepth);
                 }
-                Interlocked.Decrement(ref _startQueueDepth);
             }
+        }
+        catch (Exception ex)
+        {
+            try { CrashNet.Record("[LiveVideoHost] 起播队列泵异常退出（自愈重启）：" + ex.Message); } catch { }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _startQueuePumpRunning, 0);
+            if (Volatile.Read(ref _startQueueDepth) > 0) EnsureStartQueuePump();
         }
     }
 

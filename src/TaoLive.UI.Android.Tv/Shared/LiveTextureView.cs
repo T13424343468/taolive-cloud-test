@@ -3,7 +3,6 @@ using Android.Content;
 using Android.Graphics;
 using Android.Runtime;
 using Android.Views;
-using LibVLCSharp.Platforms.Android;
 using LibVLCSharp.Shared;
 using Org.Videolan.Libvlc;
 
@@ -17,12 +16,19 @@ namespace TaoLive.UI.Android.Tv.Shared;
 /// v1.0.10 修复项③（用户 12:38 确认真机启动崩溃 IllegalArgumentException surfaceTexture must not be null）：
 /// 贴播放器前先验 SurfaceTexture 就绪——未就绪先等 OnSurfaceTextureAvailable 回调再贴，不抢跑；
 /// 贴前逐道判空，任何一道不齐改走等待路径，绝不带 null 表面进 AWindow.attachTextureView。
+/// fix37（v1.0.16 不满屏根治，2026-11-13 口径拍板）：画面保持比例铺满——保持比例放大到贴合屏幕最大，
+/// 不满的边留黑，不裁不拉伸，全台统一。实现=接管 libvlc 视频布局回调（onNewVideoLayout），
+/// 按视频可视宽高比自算 contain 适配矩形，居中缩放载体自身；视频尺寸未知时全屏兜底（铺满整屏）。
+/// 与 LiveSurfaceView 同口径同构。
 /// </summary>
-public class LiveTextureView : TextureView, AWindow.ISurfaceCallback, IVLCVout.ICallback, IVideoCarrierView, TextureView.ISurfaceTextureListener
+public class LiveTextureView : TextureView, AWindow.ISurfaceCallback, IVLCVout.ICallback, IVideoCarrierView, TextureView.ISurfaceTextureListener, IVLCVout.IOnNewVideoLayoutListener, View.IOnLayoutChangeListener
 {
     MediaPlayer? _mediaPlayer;
     AWindow? _awindow;
-    LayoutChangeListener? _layoutListener;
+
+    // fix37 画幅基准：visible（源自报可视区，已含像素宽高比修正）优先，缺失退回全尺寸；0=未知走全屏兜底
+    int _videoAspectW;
+    int _videoAspectH;
 
     public LiveTextureView(IntPtr javaReference, JniHandleOwnership transfer) : base(javaReference, transfer) { }
 
@@ -72,27 +78,26 @@ public class LiveTextureView : TextureView, AWindow.ISurfaceCallback, IVLCVout.I
         _awindow = new AWindow(this);
         _awindow.AddCallback(this);
         _awindow.SetVideoView(this); // TextureView 载体（官方 AWindow 支持两个重载）
-        _awindow.AttachViews();
+        _awindow.AttachViews(this); // fix37：带布局回调挂载，视频尺寸变化经 onNewVideoLayout 回来
         _mediaPlayer.SetAndroidContext(_awindow.Handle);
 
-        _layoutListener = new LayoutChangeListener(_awindow);
-        AddOnLayoutChangeListener(_layoutListener);
+        AddOnLayoutChangeListener(this); // fix37：容器尺寸变化时重报窗口尺寸并重算适配
     }
 
     void Detach()
     {
         SurfaceTextureListener = null; // 摘掉监听：不完整的贴面流程不收回调
+        RemoveOnLayoutChangeListener(this);
         _awindow?.RemoveCallback(this);
         _awindow?.DetachViews();
 
-        if (_layoutListener != null)
-            RemoveOnLayoutChangeListener(_layoutListener);
-
-        _layoutListener?.Dispose();
-        _layoutListener = null;
-
         _awindow?.Dispose();
         _awindow = null;
+
+        // fix37：换档/重挂从干净状态开始，画幅基准清零，回到全屏兜底
+        _videoAspectW = 0;
+        _videoAspectH = 0;
+        Post(RestoreFullScreen);
     }
 
     protected override void Dispose(bool disposing)
@@ -120,6 +125,69 @@ public class LiveTextureView : TextureView, AWindow.ISurfaceCallback, IVLCVout.I
     }
 
     public void OnSurfaceTextureUpdated(SurfaceTexture surface) { }
+
+    // ---- fix37 保持比例铺满（2026-11-13 口径拍板，全台统一）----
+
+    /// <summary>libvlc 视频布局回调：拿视频尺寸算适配。回调在 libvlc 线程，改布局必须回 UI 线程。</summary>
+    public void OnNewVideoLayout(IVLCVout? vout, int width, int height, int visibleWidth, int visibleHeight, int videoWidth, int videoHeight)
+    {
+        var aw = visibleWidth > 0 && visibleHeight > 0 ? visibleWidth : videoWidth;
+        var ah = visibleWidth > 0 && visibleHeight > 0 ? visibleHeight : videoHeight;
+        _videoAspectW = aw;
+        _videoAspectH = ah;
+        Post(ApplyAspectFill);
+    }
+
+    /// <summary>contain 适配：等比放大到贴合容器最大，不满的边留黑，不裁不拉伸；
+    /// 视频尺寸未知或父容器非 FrameLayout 时全屏兜底（铺满整屏）。</summary>
+    void ApplyAspectFill()
+    {
+        var pw = Width;
+        var ph = Height;
+        if (pw <= 0 || ph <= 0) return; // 容器未完成布局，等下一轮 OnLayoutChange
+
+        if (_videoAspectW <= 0 || _videoAspectH <= 0)
+        {
+            RestoreFullScreen();
+            return;
+        }
+
+        if (Parent is not FrameLayout)
+        {
+            RestoreFullScreen(); // 挂载点异常时保守兜底，不越权接管
+            return;
+        }
+
+        var scale = Math.Min((double)pw / _videoAspectW, (double)ph / _videoAspectH);
+        var newW = (int)Math.Round(_videoAspectW * scale);
+        var newH = (int)Math.Round(_videoAspectH * scale);
+        if (newW < 1 || newH < 1) return;
+
+        if (LayoutParameters is FrameLayout.LayoutParams cur && cur.Width == newW && cur.Height == newH)
+            return; // 无变化不动，避免布局回调互激
+
+        LayoutParameters = new FrameLayout.LayoutParams(newW, newH, GravityFlags.Center);
+    }
+
+    void RestoreFullScreen()
+    {
+        if (LayoutParameters is FrameLayout.LayoutParams cur && cur.Width == -1 && cur.Height == -1)
+            return;
+        LayoutParameters = new FrameLayout.LayoutParams(-1, -1, GravityFlags.Center);
+    }
+
+    // ---- View.IOnLayoutChangeListener（fix37）：容器尺寸变化时重报窗口并重算适配 ----
+
+    public void OnLayoutChange(View? v, int left, int top, int right, int bottom, int oldLeft, int oldTop, int oldRight, int oldBottom)
+    {
+        var w = right - left;
+        var h = bottom - top;
+        if (w > 0 && h > 0)
+        {
+            _awindow?.SetWindowSize(w, h); // 窗口尺寸上报口径不变
+            ApplyAspectFill(); // 布局回调在 UI 线程，直接重算
+        }
+    }
 
     /// <summary>IVLCVout 回调：无附加动作。</summary>
     public void OnSurfacesCreated(IVLCVout? vout) { }

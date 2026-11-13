@@ -218,6 +218,28 @@ public class FallbackLoopBreaker
 }
 
 /// <summary>
+/// fix32 内核队列上界（2026-11-13 真机卡死批）：内核线程被原生锁堵死期间，自救反复投递曾令
+/// 队列无界堆积、闭包持有旧内核致内存单调涨（真机「看一二十分钟才发作」的慢积累）。
+/// 满载丢弃可丢项并落账，最坏积压封顶。
+/// </summary>
+public static class KernelQueuePolicy
+{
+    /// <summary>内核操作队列容量上界（个）。</summary>
+    public const int Capacity = 128;
+}
+
+/// <summary>
+/// fix33 双实例热切窗口上界（2026-11-13 真机卡死批）：热切未决期间新旧两路软解并存，
+/// 盒子 CPU 弱，久拖不决即整机拖死（真机「只能关机重启」帮凶之一）。
+/// 受理后窗口超时仍未提交/未失败即自动放弃切换，留当前档。
+/// </summary>
+public static class HotSwapPolicy
+{
+    /// <summary>热切受理后多久未提交即自动放弃（毫秒）。</summary>
+    public const int WindowMs = 30_000;
+}
+
+/// <summary>
 /// 代数守卫（v1.0.8 第2项，与重点第1/6项联动）：换台/重连各推进一代，
 /// 旧重连定时器与事件回调按代数作废，防旧台重连覆盖新台、防黑屏通道复活。
 /// </summary>

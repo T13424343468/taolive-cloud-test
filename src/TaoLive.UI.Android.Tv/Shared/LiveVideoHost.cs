@@ -42,6 +42,7 @@ public class LiveVideoHost : IDisposable
     private bool _exhaustedNotified;   // 重试耗尽只报一次
     private bool _mutedForBackground;
     private int _savedVolume = 100;    // 退后台前音量（恢复用户调节，不回默认满音量）
+    private int _volume = 100;         // fix34 音量缓存：VLC 原生音量读写移出主线程（计算走缓存，赋值投内核）
 
     private readonly GenerationCounter _genCounter = new();  // 代数守卫：旧定时器与回调作废依据
     private long _lastTickMs;                // 最近播放时钟（毫秒，Environment.TickCount64 基准）
@@ -70,9 +71,28 @@ public class LiveVideoHost : IDisposable
     // VLC 原生 Stop/Play/Dispose 一旦卡住，宿主调用线程跟着死——此前换台/退后台/热切都在
     // 主线程直接调原生，内核卡住=按键全无反应=只能关机。内核线程把全部原生操作收口串行，
     // 主线程只投递即返回，任何时候按键、换台、退出都不再被播放内核卡死。
-    private readonly System.Collections.Concurrent.BlockingCollection<Action> _kernelQueue = new();
+    // fix32：内核操作队列加上限（KernelQueuePolicy.Capacity）——无界队列在内核线程被原生重活
+    // 堵住期间会被反复投递的自救闭包无限堆积，内存与 GC 双双雪崩（真机「看一二十分钟才发作」
+    // 的慢积累）。满载即内核线程堵死：可丢项（轨道解析/统计类观测活）直接弃并落账；必办项也
+    // 不阻塞调用线程，一并弃——弃掉的释放类对象随进程生命周期收口，断流重连/自救阶梯兜底业务，
+    // 换取杜绝无界堆积拖死整机。闭包只拷贝最小状态（局部变量），不闭住整段宿主上下文。
+    private sealed class KernelOp
+    {
+        public Action Run = null!;  // 内核线程上执行的动作
+        public bool Droppable;      // 满载时可否丢弃（观测/解析类可丢，起播/停播类不丢但弃了有兜底链路）
+        public string Tag = "";     // 落账定位用
+    }
+
+    private readonly System.Collections.Concurrent.BlockingCollection<KernelOp> _kernelQueue =
+        new(new System.Collections.Concurrent.ConcurrentQueue<KernelOp>(), KernelQueuePolicy.Capacity);
     private readonly Thread _kernelThread;
     private readonly TaoLive.BLL.RescueBreaker _rescueBreaker = new(); // fix30 自救风暴断路器（防连环自救打满 CPU 拖死整机）
+
+    // fix35 观测缓存：IsAlive/SnapshotStats 不再 UI 线程直读 VLC 原生状态（冻结审计 A1 主凶——
+    // 每次探活/取统计都进 VLC 原生锁，内核被重活堵住时 UI 线程排队等锁即整机无响应）。
+    // 状态由内核事件与看门狗后台拍回写缓存，UI 线程读缓存零原生调用。
+    private volatile bool _kernelPlaying;      // 在播状态（Playing/Paused/Stopped/EncounteredError 事件回写）
+    private volatile int _cachedDisplayed;     // 已渲染帧数（看门狗后台拍读 Statistics 时回写）
 
     public LiveVideoHost()
     {
@@ -80,14 +100,24 @@ public class LiveVideoHost : IDisposable
         _kernelThread.Start();
     }
 
-    /// <summary>fix30：投递内核操作（无界队列不阻塞调用线程；串行执行天然防并发锁竞争）。</summary>
-    private void EnqueueKernel(Action act) => _kernelQueue.Add(act);
+    /// <summary>fix30：投递内核操作（串行执行天然防并发锁竞争）。fix32：主线程只入队即返回，
+    /// 队列满载（TryAdd 失败）不等待不重试——落账丢弃，绝不让 UI 线程因内核堵死而卡住。</summary>
+    private void EnqueueKernel(Action act, string tag = "", bool droppable = false)
+    {
+        var op = new KernelOp { Run = act, Droppable = droppable, Tag = tag };
+        if (_kernelQueue.TryAdd(op)) return;
+        try
+        {
+            CrashNet.Record($"[Kernel] fix32 内核队列满载，丢弃操作（tag={(tag.Length > 0 ? tag : "-")}，droppable={droppable}）");
+        }
+        catch { }
+    }
 
     private void KernelLoop()
     {
-        foreach (var act in _kernelQueue.GetConsumingEnumerable())
+        foreach (var op in _kernelQueue.GetConsumingEnumerable())
         {
-            try { act(); }
+            try { op.Run(); }
             catch (Exception ex) { try { CrashNet.Record("[Kernel] 内核操作异常（内核线程内收口）：" + ex.Message); } catch { } }
         }
     }
@@ -100,6 +130,12 @@ public class LiveVideoHost : IDisposable
     private bool _swapFrameShown;             // 第二实例首帧是否到齐
     private EventHandler<System.EventArgs>? _swapOnError;                       // 第二实例临时挂接（提交时摘除）
     private EventHandler<MediaPlayerTimeChangedEventArgs>? _swapOnTime;
+
+    // fix33 热切窗口：双实例共存上界 30 秒——热切未决期间新旧两路软解并存，盒子 CPU 弱，
+    // 久拖不决即整机拖死。受理后窗口超时仍未提交/未失败即自动 AbortSwap，双实例不残留。
+    private volatile bool _swapPending;               // 受理口径：受理即置位，提交/放弃/超时统一复位
+    private int _swapEpoch;                           // 迟到建实例作废依据（Interlocked 推进，内核侧复核）
+    private System.Threading.Timer? _swapWindowTimer; // 窗口计时器（提交/放弃时统一撤销）
 
     /// <summary>⑩设备总内存（秒级水位上限自适应），由宿主创建方注入。</summary>
     public long TotalMemBytes { get; set; }
@@ -125,21 +161,20 @@ public class LiveVideoHost : IDisposable
     /// <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
     public (double? OrigFps, double? CurFps, int OrigW, int OrigH, int CurW, int CurH) SnapshotStats()
     {
-        var media = _currentMedia;
-        if (media != null)
+        // fix35：UI 线程不再直读 Media.Statistics（VLC 原生锁，冻结审计 A1 主凶之一）——
+        // 看门狗后台拍把帧数回写 _cachedDisplayed，这里只读缓存，主线程零原生调用
+        // （_cachedDisplayed 本身是 volatile 字段，直读即取易失语义，Volatile.Read 反而触发 CS0420）
+        int displayed = _cachedDisplayed;
+        if (displayed > 0)
         {
-            var st = media.Statistics; // MediaStats 结构体：DisplayedPictures 字段
-            if (st.DisplayedPictures > 0)
+            long now = Environment.TickCount64;
+            if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
             {
-                long now = Environment.TickCount64;
-                if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
-                {
-                    double fps = (st.DisplayedPictures - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
-                    if (fps > 0 && fps < 240) _measuredFps = fps;
-                }
-                _fpsLastDisplayed = (uint)st.DisplayedPictures;
-                _fpsLastMs = now;
+                double fps = (displayed - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
+                if (fps > 0 && fps < 240) _measuredFps = fps;
             }
+            _fpsLastDisplayed = (uint)displayed;
+            _fpsLastMs = now;
         }
         return (_origFps, _measuredFps, _origW, _origH, _origW, _origH);
     }
@@ -172,8 +207,9 @@ public class LiveVideoHost : IDisposable
 
     private bool _frameShown;
 
-    /// <summary>双实例切换是否有第二实例在连（未决期间自救让路，不与切换叠加）。</summary>
-    public bool IsSwapPending => _swapPlayer != null;
+    /// <summary>双实例切换是否有第二实例在连（未决期间自救让路，不与切换叠加）。
+    /// fix33：受理未决（第二实例尚在内核线程创建中）也计入，防窗口内叠加自救/二次受理。</summary>
+    public bool IsSwapPending => _swapPending || _swapPlayer != null;
 
     /// <summary>当前播放流地址（档位切换沿用同一流地址、只换画质参数时用）。</summary>
     public string? CurrentUrl => _currentUrl;
@@ -191,7 +227,7 @@ public class LiveVideoHost : IDisposable
         get
         {
             if (_player is null || _userStopped || _streamDead) return false;
-            if (!_player.IsPlaying) return false;
+            if (!_kernelPlaying) return false; // fix35：读缓存替代 _player.IsPlaying（UI 线程零原生调用，A1 主凶收口）
             if (!_frameShown) return true; // 连接流程进行中，亮牌与重连由 Play 流程管理
             return PlaybackWatchdog.IsLive(_frameShown, Volatile.Read(ref _lastTickMs), Environment.TickCount64);
         }
@@ -212,6 +248,9 @@ public class LiveVideoHost : IDisposable
         _player = new MediaPlayer(_libVlc) { EnableHardwareDecoding = false };
         _videoCarrier!.MediaPlayer = _player;
         WireKernelEvents(_player);
+        _kernelPlaying = false;  // fix35：新内核未起播，在播缓存复位（等 Playing 事件回写）
+        _cachedDisplayed = 0;    // fix35：帧数统计随新媒体从头记账
+        _volume = 100;           // fix34：新播放器音量为默认满档，缓存对齐
         if (_watchdog is null)
             _watchdog = new Timer(OnWatchdogTick, null, 2000, 2000);
     }
@@ -219,9 +258,16 @@ public class LiveVideoHost : IDisposable
     /// <summary>主实例事件接线（BuildKernel 与双实例提交共用：提交后第二实例立即接管全部宿主职责）。</summary>
     private void WireKernelEvents(MediaPlayer player)
     {
-        player.EncounteredError += (_, _) => OnStreamError();
+        player.EncounteredError += (_, _) => { _kernelPlaying = false; OnStreamError(); }; // fix35：错误即不在播，缓存同步回写
+        // fix35：在播状态改事件驱动回写 _kernelPlaying（IsAlive 缓存口径），UI 线程不再直调 IsPlaying
+        player.Playing += (_, _) => { _kernelPlaying = true; };
+        player.Paused += (_, _) => { _kernelPlaying = false; };
         player.Buffering += (_, e) => Volatile.Write(ref _bufferPct, e.Cache); // ⑩水位实测来源（0–100）
-        player.Stopped += (_, _) => { /* 换台/重连的 Stop 有代数守卫，此处无需动作 */ };
+        player.Stopped += (_, _) =>
+        {
+            _kernelPlaying = false; // fix35：停止即不在播
+            /* 换台/重连的 Stop 有代数守卫，此处无需动作 */
+        };
         player.TimeChanged += (_, _) =>
         {
             Volatile.Write(ref _lastTickMs, Environment.TickCount64);
@@ -281,7 +327,8 @@ public class LiveVideoHost : IDisposable
             // fix29 防假活：时钟在走但画面帧数持续不涨——坏分片循环/伪流等假活场景，看门狗补第二道防线
             if (_currentMedia is { } media)
             {
-                var st = media.Statistics;
+                var st = media.Statistics; // 后台巡检线程读取：这里读到的帧数同时回写缓存（fix35），UI 线程零原生读
+                _cachedDisplayed = (int)st.DisplayedPictures; // fix35：帧数观测回写缓存（SnapshotStats 只读缓存）
                 if (st.DisplayedPictures > 0)
                 {
                     if (PlaybackWatchdog.IsFakeLive((int)st.DisplayedPictures, _lastDecodedCount, _decodedStallTicks))
@@ -447,12 +494,14 @@ public class LiveVideoHost : IDisposable
         StartInternal();
     }
 
-    /// <summary>音量步进（保留接口）：遥控音量走独立硬件键由系统处理，此接口暂不接线。</summary>
+    /// <summary>音量步进（保留接口）：遥控音量走独立硬件键由系统处理，此接口暂不接线。
+    /// fix34：不再主线程直读直写 _player.Volume（VLC 原生锁）——缓存上计算、原生赋值投内核，
+    /// 签名不变；极小概率与内核侧赋值交错时以内核串行结果为准，仅影响瞬时音量无碍业务。</summary>
     public int AdjustVolume(int delta)
     {
-        if (_player is null) return -1;
-        var vol = Math.Clamp(_player.Volume + delta, 0, 100);
-        _player.Volume = vol;
+        var vol = Math.Clamp(_volume + delta, 0, 100);
+        _volume = vol;
+        EnqueueKernel(() => { try { if (_player is { } p) p.Volume = vol; } catch { } }, tag: "音量", droppable: true);
         return vol;
     }
 
@@ -616,49 +665,93 @@ public class LiveVideoHost : IDisposable
     /// </summary>
     public bool BeginSwap(IVideoCarrierView carrier, string url, IReadOnlyList<(string Key, string Value)> options)
     {
-        if (_swapPlayer != null || _userStopped || _currentUrl is null) return false;
+        // fix32：受理判定全走托管状态（_swapPending 覆盖受理未决全程），主线程不再直查第二实例
+        if (_swapPending || _swapPlayer != null || _userStopped || _currentUrl is null) return false;
+        // fix32：受理即返回——LibVLC/MediaPlayer/Media 构建与 Play 全套原生重活投内核线程，
+        // 主线程绝不等 VLC 原生锁；成败经 SwapReady/SwapFailed 回调，受理结果始终为 true（已受理）
+        _swapPending = true;
         try
         {
             _swapCarrier = carrier;
-            _swapLibVlc = new LibVLC(enableDebugLogs: false);
-            _swapPlayer = new MediaPlayer(_swapLibVlc) { EnableHardwareDecoding = false }; // 软解口径与主实例一致
-            carrier.MediaPlayer = _swapPlayer;
             _swapFrameShown = false;
-            _swapOnError = (_, _) => { try { SwapFailed?.Invoke(); } catch { } };
-            _swapOnTime = (_, _) =>
-            {
-                if (_swapFrameShown) return;
-                _swapFrameShown = true;
-                try { SwapReady?.Invoke(); } catch { }
-            };
-            _swapPlayer.EncounteredError += _swapOnError;
-            _swapPlayer.TimeChanged += _swapOnTime;
-            var media = new Media(_swapLibVlc, new Uri(url));
+            int epoch = Interlocked.Increment(ref _swapEpoch); // fix33：本窗口代数，内核侧复核防迟到建实例
+            ArmSwapWindowTimer(); // fix33：30 秒未提交/未失败自动放弃，双实例软解不长期并存
             var caching = CacheLadder.At(_cachingIndex);
-            media.AddOption($":network-caching={caching}");
-            media.AddOption($":live-caching={Math.Max(1200, caching)}");
-            foreach (var opt in options) media.AddOption($":{opt.Key}={opt.Value}");
-            // fix24（老板拍板）：与主画面同一套请求头——绑头来源（央视频 JWT 绑 UA / Referer 防盗链）
-            // 第二实例不带必被拒，起流永远失败、升级空转；缺键才补，不覆盖调用方显式给的参数
-            var given = new HashSet<string>(options.Select(o => o.Key));
-            foreach (var opt in _currentOptions)
+            var currentOpts = _currentOptions; // 闭包最小拷贝：只带交换所需状态，不闭住整段宿主
+            EnqueueKernel(() =>
             {
-                var body = opt.StartsWith(':') ? opt.Substring(1) : opt;
-                var eq = body.IndexOf('=');
-                var key = eq > 0 ? body.Substring(0, eq) : body;
-                if (!given.Contains(key)) media.AddOption(opt);
-            }
-            _swapMedia = media;
-            _swapPlayer.Play(media);
-            CrashNet.Record($"[HotSwap] 双实例切换开始：url={MaskUrl(url)}（第二实例后台连新流，当前画面原样保留）");
-            return true;
+                try
+                {
+                    if (_userStopped || Volatile.Read(ref _swapEpoch) != epoch) return; // 窗口已作废
+                    var swapLibVlc = new LibVLC(enableDebugLogs: false);
+                    var swapPlayer = new MediaPlayer(swapLibVlc) { EnableHardwareDecoding = false }; // 软解口径与主实例一致
+                    carrier.MediaPlayer = swapPlayer; // AWindow 本为跨线程 handoff 设计：载体赋值随建随挂
+                    _volume = 100; // fix34：新播放器音量为默认满档，缓存对齐
+                    _swapOnError = (_, _) => { try { SwapFailed?.Invoke(); } catch { } };
+                    _swapOnTime = (_, _) =>
+                    {
+                        if (_swapFrameShown) return;
+                        _swapFrameShown = true;
+                        try { SwapReady?.Invoke(); } catch { } // fix33：成功不撤窗口——提交/放弃时统一收口
+                    };
+                    swapPlayer.EncounteredError += _swapOnError;
+                    swapPlayer.TimeChanged += _swapOnTime;
+                    var media = new Media(swapLibVlc, new Uri(url));
+                    media.AddOption($":network-caching={caching}");
+                    media.AddOption($":live-caching={Math.Max(1200, caching)}");
+                    foreach (var opt in options) media.AddOption($":{opt.Key}={opt.Value}");
+                    // fix24（老板拍板）：与主画面同一套请求头——绑头来源（央视频 JWT 绑 UA / Referer 防盗链）
+                    // 第二实例不带必被拒，起流永远失败、升级空转；缺键才补，不覆盖调用方显式给的参数
+                    var given = new HashSet<string>(options.Select(o => o.Key));
+                    foreach (var opt in currentOpts)
+                    {
+                        var body = opt.StartsWith(':') ? opt.Substring(1) : opt;
+                        var eq = body.IndexOf('=');
+                        var key = eq > 0 ? body.Substring(0, eq) : body;
+                        if (!given.Contains(key)) media.AddOption(opt);
+                    }
+                    if (_userStopped || Volatile.Read(ref _swapEpoch) != epoch)
+                    {
+                        // fix33：建实例期间窗口被作废（超时/放弃/停播）——实例从未落字段、从未起播，原地销毁收口
+                        try { media.Dispose(); } catch { }
+                        try { swapPlayer.Stop(); } catch { }
+                        try { swapPlayer.Dispose(); } catch { }
+                        try { swapLibVlc.Dispose(); } catch { }
+                        return;
+                    }
+                    _swapLibVlc = swapLibVlc;
+                    _swapPlayer = swapPlayer;
+                    _swapMedia = media;
+                    swapPlayer.Play(media); // fix32：原生 Play 在内核线程（主线程受理路径零等待）
+                    CrashNet.Record($"[HotSwap] 双实例切换开始：url={MaskUrl(url)}（第二实例内核线程连新流，当前画面原样保留）");
+                }
+                catch (Exception ex)
+                {
+                    CrashNet.Record($"[HotSwap] 第二实例起流异常，留当前档：{ex.Message}");
+                    try { CleanupSwapKernel(); } catch { }
+                }
+            }, tag: "热切起流", droppable: false);
+            return true; // fix32：受理即 true，成败经 SwapReady/SwapFailed 回调
         }
         catch (Exception ex)
         {
-            CrashNet.Record($"[HotSwap] 第二实例起流异常，留当前档：{ex.Message}");
+            CrashNet.Record($"[HotSwap] 受理异常，留当前档：{ex.Message}");
             try { CleanupSwapKernel(); } catch { }
             return false;
         }
+    }
+
+    /// <summary>fix33：热切窗口计时——受理后 HotSwapPolicy.WindowMs 内未提交（SwapReady→CommitSwap）
+    /// 也未失败（SwapFailed→上层 AbortSwap）即自动放弃切换，第二实例随窗口收口，双实例不残留。</summary>
+    private void ArmSwapWindowTimer()
+    {
+        _swapWindowTimer?.Dispose();
+        _swapWindowTimer = new System.Threading.Timer(_ =>
+        {
+            if (!_swapPending && _swapPlayer is null) return; // 已提交/已收口：无事可做
+            try { CrashNet.Record("[HotSwap] fix33 热切窗口超时未提交，自动放弃切换（双实例共存上界）"); } catch { }
+            AbortSwap("热切窗口超时");
+        }, null, HotSwapPolicy.WindowMs, System.Threading.Timeout.Infinite);
     }
 
     /// <summary>
@@ -667,13 +760,19 @@ public class LiveVideoHost : IDisposable
     /// </summary>
     public void CommitSwap()
     {
-        if (_swapPlayer is null || !_swapFrameShown || _userStopped) return;
+        if (!_swapPending || !_swapFrameShown || _userStopped) return; // fix33：以受理口径判定（_swapFrameShown 蕴含第二实例已建成）
         try
         {
             // 摘除第二实例临时挂接，避免与主实例全量接线重复触发
-            if (_swapOnError != null) _swapPlayer.EncounteredError -= _swapOnError;
-            if (_swapOnTime != null) _swapPlayer.TimeChanged -= _swapOnTime;
+            var swapPlayer = _swapPlayer; // 本地快照：编译器可判非空，消除 CS8602/CS8604
+            if (_swapOnError != null && swapPlayer != null) swapPlayer.EncounteredError -= _swapOnError;
+            if (_swapOnTime != null && swapPlayer != null) swapPlayer.TimeChanged -= _swapOnTime;
             _swapOnError = null; _swapOnTime = null;
+
+            // fix33：窗口收口（计时器撤销、代数推进作废迟到建实例、受理态复位）
+            _swapWindowTimer?.Dispose(); _swapWindowTimer = null;
+            Interlocked.Increment(ref _swapEpoch);
+            _swapPending = false;
 
             // 撤旧内核（旧画面由第二实例画面顶替，无间隙）：Stop→释放，与换台撤旧同一口径
             // fix30：旧内核原生释放投递内核线程——提交可从主线程调入，绝不在主线程碰原生锁
@@ -687,10 +786,11 @@ public class LiveVideoHost : IDisposable
             _currentMedia = _swapMedia;
             _videoCarrier = _swapCarrier; // 旧载体视图由 UI 移出视图树
             _swapPlayer = null; _swapLibVlc = null; _swapMedia = null; _swapCarrier = null;
-            WireKernelEvents(_player);
+            if (_player != null) WireKernelEvents(_player); // 空守卫：消除 CS8604
             _frameShown = true; // 新流已亮，无需再等首帧
             _origFps = null; _origW = 0; _origH = 0; _measuredFps = null; _fpsLastMs = 0; _fpsLastDisplayed = 0;
             _statsRetries = 0;
+            _cachedDisplayed = 0; // fix35：帧数统计随新媒体从头记账（等看门狗后台拍回写）
             if (oldPlayer != null)
             {
                 EnqueueKernel(() =>
@@ -701,7 +801,9 @@ public class LiveVideoHost : IDisposable
                     try { oldLibVlc?.Dispose(); } catch { }
                 });
             }
-            ParseMediaStats(_currentMedia); // ④新媒体轨道解析（首帧已过，直接取）
+            // fix32：轨道解析（Parse 同步重活）投内核线程，主线程只做托管字段交接（可丢：解析观测活，不碍业务）
+            var newMedia = _currentMedia;
+            EnqueueKernel(() => ParseMediaStats(newMedia), tag: "④轨道解析", droppable: true);
             StartStatsRetry();
             Volatile.Write(ref _lastTickMs, Environment.TickCount64);
             CrashNet.Record("[HotSwap] 切换提交：新画面顶上，全程无黑无闪");
@@ -712,16 +814,20 @@ public class LiveVideoHost : IDisposable
         }
     }
 
-    /// <summary>放弃切换：第二实例撤掉，留当前档——当前画面从头到尾无任何扰动。</summary>
+    /// <summary>放弃切换：第二实例撤掉，留当前档——当前画面从头到尾无任何扰动。fix33：受理未决（第二实例尚在内核线程创建中）也可放弃，窗口计时器一并收口。</summary>
     public void AbortSwap(string reason)
     {
-        if (_swapPlayer is null) return;
+        if (!_swapPending && _swapPlayer is null) return; // fix33：受理口径判定，防创建在途时漏收口
         CleanupSwapKernel();
         CrashNet.Record($"[HotSwap] 放弃切换，留在当前档：{reason}");
     }
 
     private void CleanupSwapKernel()
     {
+        // fix33：窗口收口（计时器撤销、代数推进作废内核侧迟到建实例、受理态复位）
+        _swapWindowTimer?.Dispose(); _swapWindowTimer = null;
+        Interlocked.Increment(ref _swapEpoch);
+        _swapPending = false;
         // fix30：第二实例原生释放投递内核线程（主线程只清托管状态，绝不碰原生锁）
         var swapPlayer = _swapPlayer;
         var swapLibVlc = _swapLibVlc;
@@ -742,21 +848,24 @@ public class LiveVideoHost : IDisposable
         });
     }
 
-    /// <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。</summary>
+    /// <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。fix34：读缓存、原生赋值投内核。</summary>
     public void MuteForBackground()
     {
-        if (_player is null || _mutedForBackground) return;
+        if (_mutedForBackground) return;
         _mutedForBackground = true;
-        _savedVolume = _player.Volume;
-        _player.Volume = 0;
+        _savedVolume = _volume; // fix34：读缓存替代 _player.Volume（主线程零原生调用）
+        _volume = 0;
+        EnqueueKernel(() => { try { if (_player is { } p) p.Volume = 0; } catch { } }, tag: "静音", droppable: true);
     }
 
-    /// <summary>回前台：声音原样恢复（退前用户调到多少回多少，不回默认满音量）。</summary>
+    /// <summary>回前台：声音原样恢复（退前用户调到多少回多少，不回默认满音量）。fix34：原生赋值投内核。</summary>
     public void UnmuteAfterBackground()
     {
-        if (_player is null || !_mutedForBackground) return;
+        if (!_mutedForBackground) return;
         _mutedForBackground = false;
-        _player.Volume = _savedVolume;
+        var vol = _savedVolume;
+        _volume = vol; // fix34：缓存同步
+        EnqueueKernel(() => { try { if (_player is { } p) p.Volume = vol; } catch { } }, tag: "恢复音量", droppable: true);
     }
 
     public void Dispose()

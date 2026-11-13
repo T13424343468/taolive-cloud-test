@@ -892,8 +892,10 @@ Check(StallRescue.RescueWindowMs == 90_000 && StallRescue.RescueCapPerWindow == 
     "1.0.12修正⑤·90 秒窗口介入上限 2 次（限频代替拉黑，探活与重连共用请求预算口径）");
 Check(StallRescue.BufferingLowPct == 5f,
     "1.0.12修正①·Buffering 主信号触发线（缓冲接近耗尽即时介入，发现延迟 2–6 秒压到 ≤1 秒）");
-Check(BufferInventory.TargetMs == 3000 && BufferInventory.Default == BufferInventory.Mode.StartFull,
-    "1.0.12发现B·3 秒库存两档：默认档=起播即 3 秒（拍板口径，真机验证后可切）");
+Check(BufferInventory.TargetMs == 7000 && BufferInventory.Default == BufferInventory.Mode.StartFull,
+    "vc53画面平稳优先令(00:36)·缓冲下限 7 秒：默认档=起播即 7 秒（老板拍板口径）");
+Check(BufferInventory.FillWindowMs == 30_000,
+    "vc53画面平稳优先令(00:52)·预取=取满窗口：参数给到确认延迟带 30 秒档，实际深度由源清单窗口决定（实测 18.5~30 秒）");
 // ---- v25 真机修复批（11-11 真机卡死实锤：两三秒一卡且卡死后永冻，须手动切台才恢复）----
 Check(StallRescue.ExhaustedRecoveryFirstDelayMs == 30_000,
     "v25真机修复·重连阶梯耗尽后 30 秒起兜底重试（原口径永久躺平只报一次「信号中断」，画面冻死实锤）");
@@ -914,10 +916,12 @@ Check(!StallRescue.ShouldKernelRebuildOnExhausted(1, frameShown: true)
     "④正常流不误触发：首帧已出（frameShown=true）恒不重启（兜底循环本应已收摊，双保险）");
 Check(StallRescue.RescueCapPerWindow == 2 && StallRescue.RescueWindowMs == 90_000,
     "④节流账不破：内核自愈走重启路径不消耗取流预算，90 秒窗 2 次的介入节流口径原样");
-Check(BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 1200) == 3000
-    && BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 4000) == 4000
+Check(BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 1200) == 7000
+    && BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 4000) == 7000
     && BufferInventory.StartCachingMs(BufferInventory.Mode.SilentRefetch, 1200) == 1200,
-    "1.0.12发现B·起播缓存口径：库存档兜底不低3秒/阶梯高者保留；补库存档先开画（修正②④并入）");
+    "vc53·起播缓存口径：库存档兜底不低 7 秒（画面平稳优先令 00:36）；补库存档先开画（修正②④并入）");
+Check(BufferInventory.FillWindowCachingMs(1200) == 30_000 && BufferInventory.FillWindowCachingMs(60_000) == 60_000,
+    "vc53·取满窗口缓存口径：参数与 7 秒下限、重连阶梯取大（00:52 拍板；阶梯更高者保留防软解跟不上）");
 Check(ResumeNetWaitPolicy.StepMs == 500 && ResumeNetWaitPolicy.MaxSteps == 6,
     "v23④回前台网络就绪等待步进 500ms×6≈3 秒封顶（常数收口可调）");
 Check(ResumeNetWaitPolicy.ShouldWait(0) && !ResumeNetWaitPolicy.ShouldWait(ResumeNetWaitPolicy.MaxSteps),

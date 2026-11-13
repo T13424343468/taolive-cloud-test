@@ -72,6 +72,7 @@ public class LiveVideoHost : IDisposable
     private long _hotWindowStartMs;          // v25 修法七 2b：热备切换独立 90 秒窗起点（不占自救 5 秒去重/90 秒窗 2 次）
     private int _hotWindowCount;             // v25 修法七 2b：独立窗口内已切换次数（封顶 4，防主备乒乓）
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
+    private int _activeCachingMs = CacheLadder.At(0); // ⑩当前生效缓存窗口（起播队列回写；取满窗口后=FillWindowCachingMs）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
     private long _bufferLowFirstMs;           // vc38: 低水位毛刺确认（0=无未决低读；92条 playback P2）
     private readonly object _startLock = new();   // PL5: 起播临界区——热备/换台/重连写 _currentUrl+StartInternal 串行
@@ -552,7 +553,7 @@ public class LiveVideoHost : IDisposable
     {
         if (_userStopped || _currentUrl is null) return;
         var action = BufferPolicy.Observe(
-            CacheLadder.At(_cachingIndex) / 1000.0 * (Volatile.Read(ref _bufferPct) / 100.0),
+            Volatile.Read(ref _activeCachingMs) / 1000.0 * (Volatile.Read(ref _bufferPct) / 100.0),
             networkSteady: tickAgeMs < 1500, // 近 1.5 秒内时钟走过=网络平稳
             TotalMemBytes);
         if (_lastBufferAction == action) { return; }
@@ -710,14 +711,17 @@ public class LiveVideoHost : IDisposable
                 var media = new Media(_libVlc!, new Uri(playUrl));
                 _currentMedia = media; // ④保留引用：Media.Statistics 提供帧统计
                 // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）；
-                // 1.0.12 发现 B：3 秒库存两档——默认「起播即 3 秒」（库存档兜底，修正②：重连缓存递增口径并入固定库存档，
-                // 不被水位自适应降回去）；补库存档先开画（修正④：换台口径=先开画后补库存），首帧后静默重接补到 3 秒
+                // vc53 画面平稳优先令（老板 00:36/00:52 拍板）：起播缓存下限 7 秒；正常起播（StartFull）
+                // 取满窗口——参数给到取满窗口目标（BufferInventory.FillWindowCachingMs），实际深度由
+                // 源清单滑动窗口决定（实测 18.5~30 秒），延迟 10~30 秒属老板确认取舍；
+                // 补库存档先开画（修正④：换台口径=先开画后补库存），首帧后静默重接补满窗口
                 int ladder = CacheLadder.At(cachingIdx);
                 int caching = inventoryFull
-                    ? Math.Max(BufferInventory.TargetMs, ladder)
+                    ? BufferInventory.FillWindowCachingMs(ladder)
                     : ladder;
                 media.AddOption($":network-caching={caching}");
                 media.AddOption($":live-caching={Math.Max(1200, caching)}");
+                Volatile.Write(ref _activeCachingMs, caching); // ⑩水位实测基准：当前生效缓存窗口（取满窗口后为 FillWindowCachingMs）
                 foreach (var opt in _currentOptions) media.AddOption(opt);
                 // fix32（修复批A移植）：轨道解析整段投后台——media.Parse 是阻塞原生重活，慢一拍整机卡一拍
                 var statsTarget = media;

@@ -236,6 +236,8 @@ public class MainActivity : Activity
         DeviceIdentity.Attach(FilesDir!.AbsolutePath);
         // A 类第6项：预热落盘层（/files/warmup/，与 source_health.json 并列）——长效源起播零网络探测
         _resolver.WarmupDisk = new WarmupStore(System.IO.Path.Combine(FilesDir!.AbsolutePath, "warmup"));
+        _resolver.WarmupDisk.FreeBytesProvider = () =>
+            new StatFs(FilesDir!.AbsolutePath).AvailableBytes; // vc45 老机型优化：缓存按剩余空间设顶（StatFs 口径）
         // v28 读盘优化：预热缓存灌回改后台预载（两本账内部均有锁/并发字典，与首播并发访问无竞态；损坏文件按无缓存处理口径不变）
         Task.Run(_resolver.WarmupDisk.Load);
         // A 类第6项：App 打开即拉起后台预热服务（同进程共享同一预热引擎，绝不起第二份）
@@ -1616,6 +1618,13 @@ public class MainActivity : Activity
     private void StartLoadingDots(Channel ch)
     {
         StopLoadingDots();
+        // vc45 老机型优化：低配盒（总内存 <2GB）自动关动画——静态牌一眼可见「还没死机」，不让定时器空转耗电
+        if (_totalMem > 0 && _totalMem < 2L * 1024 * 1024 * 1024)
+        {
+            var cur0 = _loadingChannel ?? ch;
+            _loadingText.Text = $"{cur0.Number}  {cur0.Name}\n正在连接";
+            return;
+        }
         int token = ++_loadingSeq;
         var tick = 0;
         string[] frames = { "正在连接", "正在连接 ·", "正在连接 ··", "正在连接 ···" };

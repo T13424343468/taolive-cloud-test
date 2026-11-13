@@ -35,6 +35,9 @@ public class WarmupStore
     private long? _lastFlushMs; // null=从未落盘（首次必落，不吃节流）
     private readonly object _gate = new();
 
+    /// <summary>vc45 老机型优化：剩余空间注入（宿主接 StatFs 口径）。空 = 按 32MB 常数顶（原口径）。</summary>
+    public Func<long>? FreeBytesProvider { get; set; }
+
     public WarmupStore(string? dir) => _dir = dir;
 
     private static string CachePath(string dir) => Path.Combine(dir, "playlist_cache.json");
@@ -72,15 +75,36 @@ public class WarmupStore
         lock (_gate)
         {
             _cache[url] = new WarmupEntry { Body = body, AtMs = nowMs, FreshnessMs = freshnessMs };
-            // 超限清最旧
+            // 超限清最旧（条数顶）
             if (_cache.Count > Capacity)
             {
                 foreach (var old in _cache.OrderBy(kv => kv.Value.AtMs).Take(_cache.Count - Capacity).ToList())
                     _cache.Remove(old.Key);
             }
+            // vc45 老机型优化：按剩余空间设顶（字节顶）——剩余越少缓存顶越低（free/16，4–48MB 夹取），
+            // 存储紧张的老盒子不再被预热缓存挤满；清最旧条目，至少留 1 条
+            long cap = CapBytesLocked();
+            while (UsedBytesLocked() > cap && _cache.Count > 1)
+            {
+                var oldest = _cache.OrderBy(kv => kv.Value.AtMs).First();
+                _cache.Remove(oldest.Key);
+            }
             _dirty = true;
         }
         Flush(nowMs);
+    }
+
+    private long UsedBytesLocked() => _cache.Values.Sum(e => (long)e.Body.Length * 2); // UTF-16 近似
+
+    private long CapBytesLocked()
+    {
+        try
+        {
+            var free = FreeBytesProvider?.Invoke() ?? -1;
+            if (free > 0) return Math.Clamp(free / 16, 4L * 1024 * 1024, 48L * 1024 * 1024);
+        }
+        catch { /* 探测失败按常数顶 */ }
+        return 32L * 1024 * 1024; // 原口径常数顶
     }
 
     /// <summary>读缓存：命中且在保鲜期内才返回（过期一律现场重取）。</summary>

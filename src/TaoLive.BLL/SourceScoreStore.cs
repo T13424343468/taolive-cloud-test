@@ -44,7 +44,6 @@ public class SourceScoreStore
     private readonly ConcurrentDictionary<string, SourceScoreRecord> _entries = new(StringComparer.Ordinal);
     private readonly Func<long> _nowMs;
     private System.Threading.Timer? _flushTimer;
-    private bool _dirty;
 
     /// <summary>nowMs 注入：测试用；默认 Unix 毫秒。</summary>
     public SourceScoreStore(string dir, Func<long>? nowMs = null)
@@ -113,7 +112,6 @@ public class SourceScoreStore
     {
         lock (_gate)
         {
-            _dirty = true;
             if (_flushTimer != null) return;
             _flushTimer = new System.Threading.Timer(_ =>
             {
@@ -130,7 +128,6 @@ public class SourceScoreStore
         SourceScoreRecord[] snapshot;
         lock (_gate)
         {
-            _dirty = false;
             snapshot = _entries.Values.ToArray();
         }
         try

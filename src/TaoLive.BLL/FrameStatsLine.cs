@@ -15,7 +15,7 @@ public static class FrameStatsLine
         bool noRes = origW <= 0 || origH <= 0;
         if (noFps && noRes) return "画面信息检测中";
 
-        bool fpsSame = !noFps && (curFps is null || Math.Abs(curFps.Value - origFps.Value) < 0.5);
+        bool fpsSame = !noFps && (curFps is null || Math.Abs(curFps.GetValueOrDefault() - origFps.GetValueOrDefault()) < 0.5);
         bool resSame = noRes || (curW <= 0 || curH <= 0) || (origW == curW && origH == curH);
         var parts = new System.Collections.Generic.List<string>(2);
         if (!noFps)

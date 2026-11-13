@@ -41,7 +41,6 @@ public class SourceHealthStore
     private readonly string _path;
     private readonly ConcurrentDictionary<string, SourceHealthEntry> _owner;
     private System.Threading.Timer? _flushTimer;
-    private bool _dirty;
 
     /// <summary>载入/落盘的条目集合（ChannelPrecheck 的健康表本体）。</summary>
     internal ConcurrentDictionary<string, SourceHealthEntry> Entries => _owner;
@@ -92,7 +91,6 @@ public class SourceHealthStore
     {
         lock (_gate)
         {
-            _dirty = true;
             if (_flushTimer != null) return;
             _flushTimer = new System.Threading.Timer(_ =>
             {
@@ -109,7 +107,6 @@ public class SourceHealthStore
         SourceHealthRecord[] snapshot;
         lock (_gate)
         {
-            _dirty = false;
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             snapshot = _owner
                 .Select(kv => new SourceHealthRecord

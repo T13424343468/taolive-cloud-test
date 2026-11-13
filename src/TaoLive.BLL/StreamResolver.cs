@@ -210,7 +210,7 @@ public class StreamResolver
 
     public async Task<ResolvedStream?> ResolvePlayUrlAsync(Channel ch, bool force = false)
     {
-        string url = ch.SourceId switch
+        string? rawUrl = ch.SourceId switch
         {
             "yangshipin" => await ResolveYspAsync(ch, force),
             "cztv" => await ResolveCachedAsync(ch, ResolveCztvAsync, force),
@@ -221,7 +221,8 @@ public class StreamResolver
             "jstv" => await ResolveCachedAsync(ch, ch2 => Task.FromResult(ResolveJstv(ch2)), force),
             _ => ch.StreamUrl,
         };
-        if (string.IsNullOrEmpty(url)) return null;
+        if (string.IsNullOrEmpty(rawUrl)) return null;
+        string url = rawUrl; // 非空收窄（CS8600 零警口径）
 
         var opts = new List<(string Key, string Value)>();
         if (!string.IsNullOrEmpty(ch.Referer)) opts.Add(("http-referrer", ch.Referer));

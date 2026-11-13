@@ -602,7 +602,10 @@ public class LiveVideoHost : IDisposable
         media.AddOption($":network-caching={caching}");
         media.AddOption($":live-caching={Math.Max(1200, caching)}");
         foreach (var opt in _currentOptions) media.AddOption(opt);
-        ParseMediaStats(media); // ④原/现帧率与分辨率：起播解析媒体轨道
+        // fix32（移植 2026-11-13 修复批A）：轨道解析整段投后台——media.Parse 是阻塞原生重活，
+        // 换台路径此处在 UI 线程跑，解析慢一拍就整机卡一拍；重试定时器路径已在后台，口径一致
+        var statsTarget = media;
+        _ = Task.Run(() => ParseMediaStats(statsTarget));
         _player.Play(media);
         StartFirstFrameTimer();   // PL2: 首帧超时兜底
     }

@@ -739,7 +739,11 @@ public class MainActivity : Activity
             _prefetchQueue.Enqueue(nb); // 未占到闸：排回队尾
             return;
         }
-        Task.Run(async () => { try { await _resolver.ResolvePlayUrlAsync(nb); } catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); } });
+        Task.Run(async () =>
+        {
+            try { await BackgroundLane.RunAsync(() => _resolver.ResolvePlayUrlAsync(nb)); } // vc53 任务12c：邻台预取并入全局单车道（画面平稳优先令——后台网络一律过道）
+            catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); }
+        });
     }
 
     // ---- 循环预检（v1.0.8 用户拍板：频率越高越好，以不被判异常流量为前提）----
@@ -2173,12 +2177,13 @@ public class MainActivity : Activity
         _epgCts = new System.Threading.CancellationTokenSource();
         var ui = _ui;
         var cts = _epgCts; // vc53 红灯B：捕获本代 CTS——换台后旧令照常取消，读字段会漏抓新一代
-        _ = Task.Run(() =>
+        _ = Task.Run(async () =>
         {
             CancellationToken token;
             try { token = cts.Token; }
             catch (ObjectDisposedException) { return; } // 令牌已释放=换台/退出收场，本轮作废
-            var result = _epgClient.Fetch(ch.EpgKey, token); // 取消令实传——换台/退出可打断在飞请求
+            // vc53 任务12c：EPG 拉取并入全局单车道（画面平稳优先令——后台网络一律过道；取消令透传，换台/退出可打断排队）
+            var result = await BackgroundLane.RunAsync(() => Task.FromResult(_epgClient.Fetch(ch.EpgKey, token)));
             ui.Post(() =>
             {
                 if (seq != _playSeq || _epgPanel is null) return; // 换台后旧节目单作废

@@ -435,13 +435,17 @@ public class StreamResolver
             {
                 var known = FallbackSourceRegistry.Has(channel.Name) || (DynamicSources?.Has(channel.Name) ?? false);
                 var resolverRef = this;
-                await scout.RunAsync(
-                    channel.Name,
-                    () => discover(channel.Name),
-                    async c => await resolverRef.ValidateCandidateDeepAsync(c.Url, c.Referer,
-                        string.IsNullOrEmpty(c.UserAgent) ? channel.UserAgent : c.UserAgent), // vc46②9-5：救急搜源验活换分片级深探
-                    existingBestScore: 0, // 救急=全候选判死，任何验活源均可入库（existingBestScore≤0=顶替口径）
-                    channelKnown: known);
+                // vc53 任务12c：救急搜源收编全局单车道救助档（Rescue=播放链自愈，跳过门控/间隔只守全局串行；
+                // 救急期间其它后台网络一律让路——严禁多源同时探测/拉取）
+                await BackgroundLane.RunAsync(async () =>
+                    await scout.RunAsync(
+                        channel.Name,
+                        () => discover(channel.Name),
+                        async c => await resolverRef.ValidateCandidateDeepAsync(c.Url, c.Referer,
+                            string.IsNullOrEmpty(c.UserAgent) ? channel.UserAgent : c.UserAgent), // vc46②9-5：救急搜源验活换分片级深探
+                        existingBestScore: 0, // 救急=全候选判死，任何验活源均可入库（existingBestScore≤0=顶替口径）
+                        channelKnown: known),
+                    tier: BackgroundLane.LaneTier.Rescue);
             }
             catch { /* 搜源失败不拖播放；过程留档由管线 Log 收口 */ }
             finally { _scoutInflight.TryRemove(channelKey, out _); }

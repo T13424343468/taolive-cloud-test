@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -289,6 +291,9 @@ public sealed class DynamicSourceStore
     private readonly ConcurrentDictionary<string, List<DynamicSourceEntry>> _index = new(StringComparer.Ordinal);
     private readonly Func<long> _nowMs;
 
+    /// <summary>vc45②：入库/摘库后的回调（宿主接线落盘「变更即存」）。空 = 不落盘。</summary>
+    public Action? OnChanged { get; set; }
+
     public DynamicSourceStore(Func<long>? nowMs = null) =>
         _nowMs = nowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
@@ -304,9 +309,11 @@ public sealed class DynamicSourceStore
         var list = _index.GetOrAdd(key, _ => new List<DynamicSourceEntry>());
         lock (list)
         {
+            list.RemoveAll(x => x.Url == e.Url); // vc45②判重：同 URL 再入库=更新不叠加（常规低频重复探索不堆栈）
             list.Add(e);
             list.Sort((a, b) => b.Score.CompareTo(a.Score)); // 谁分高谁顶上
         }
+        OnChanged?.Invoke();
     }
 
     public IReadOnlyList<DynamicSourceEntry> Get(string channelName) =>
@@ -318,7 +325,56 @@ public sealed class DynamicSourceStore
     public void Remove(string channelName, string url)
     {
         if (_index.TryGetValue(Normalize(channelName), out var l))
-            lock (l) l.RemoveAll(x => x.Url == url);
+            lock (l) { if (l.RemoveAll(x => x.Url == url) > 0) OnChanged?.Invoke(); }
+    }
+
+    /// <summary>vc45②：全量快照（宿主落盘用；逐台加锁复制，快照期间并发变更不撕裂）。</summary>
+    public IEnumerable<DynamicSourceEntry> Snapshot()
+    {
+        foreach (var kv in _index)
+            lock (kv.Value)
+            {
+                foreach (var e in kv.Value) yield return e;
+            }
+    }
+}
+
+// ============ 动态源库落盘（vc45②：重启回灌，与 source_profiles.json 同目录同口径）============
+
+/// <summary>动态源库落盘：原子写（tmp+move，SourceProfileStore 同口径），损坏文件按空库处理。
+/// DynamicSourceEntry 为字段成员（非属性），序列化须 IncludeFields（否则落盘空对象，回灌即丢）。</summary>
+public static class DynamicSourceRegistry
+{
+    private static readonly JsonSerializerOptions JsonOpts = new() { IncludeFields = true };
+
+    public static void Load(DynamicSourceStore store, string dir)
+    {
+        try
+        {
+            var path = Path.Combine(dir ?? ".", "dynamic_sources.json");
+            if (!File.Exists(path)) return;
+            var entries = JsonSerializer.Deserialize<DynamicSourceEntry[]>(File.ReadAllText(path), JsonOpts);
+            if (entries == null) return;
+            foreach (var e in entries)
+            {
+                var ts = e.AddedUtcMs; // Add 会盖时间戳，回灌后还原
+                store.Add(e);
+                e.AddedUtcMs = ts;
+            }
+        }
+        catch { /* 损坏按空库处理：搜源管线会重新验活收录 */ }
+    }
+
+    public static void Save(DynamicSourceStore store, string dir)
+    {
+        try
+        {
+            var path = Path.Combine(dir ?? ".", "dynamic_sources.json");
+            var tmp = path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(store.Snapshot().ToArray(), JsonOpts));
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch { /* 落盘失败不拖播放：下次变更重试 */ }
     }
 }
 

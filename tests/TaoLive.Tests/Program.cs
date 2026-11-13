@@ -1764,6 +1764,124 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
     }
 }
 
+// ==================== vc45 ②·选源智能化核心（方案定稿逐条落码） ====================
+{
+    var now = 1_000_000_000_000L;
+
+    // ②1 评分引擎：稳定×时效×清晰度 − 冷却惩罚，逐因子可查
+    {
+        var engine = new SourceIntelligenceEngine();
+        var s1 = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true });
+        Check(Math.Abs(s1.Total - 100 * 0.8 * 0.9 * 1.0 * 1.0 * 1.0) < 0.01, $"②1基础分=100×Π因子（{s1.Total:F1}）");
+        Check(s1.Factors.Count == 5 && s1.Factors[0].Id == "稳定度" && Math.Abs(s1.Factors[0].Value - 0.8) < 1e-9,
+            "②1逐因子分值可查（S3 决策日志定位用）");
+        var s2 = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true, CooldownRemainingMs = FailureCooldownLedger.DnsDeadMs });
+        Check(s2.Total <= 0, "②1满冷却惩罚沉底（分≤0 不再选）");
+        // 因子可插拔：换因子总分随行
+        var engine2 = new SourceIntelligenceEngine(new ISourceFactor[] { new StabilityFactor() });
+        var s3 = engine2.Score(new SourceScoreContext { Stability = 0.5 });
+        Check(Math.Abs(s3.Total - 50) < 0.01, "②1因子可插拔（只留稳定度因子）");
+    }
+
+    // ②2 最少驻留+迟滞：新源明显更优且驻留已满才切
+    {
+        Check(!SwitchAdvisor.ShouldSwitch(80, 85, long.MaxValue), "②2迟滞带内不切（差 5 分 < 迟滞 15）");
+        Check(SwitchAdvisor.ShouldSwitch(80, 96, SwitchAdvisor.MinDwellMs), "②2明显更优且驻留已满→切");
+        Check(!SwitchAdvisor.ShouldSwitch(80, 96, SwitchAdvisor.MinDwellMs - 1), "②2驻留未满不切（防抖动）");
+    }
+
+    // ②3 失败模式分级冷却：403 票过期短/超时中/DNS 死长/内容校验拉黑
+    {
+        var led = new FailureCooldownLedger(() => now);
+        led.Record("http://a/x.m3u8", SourceFailureMode.TicketExpired);
+        led.Record("http://b/x.m3u8", SourceFailureMode.Timeout);
+        led.Record("http://c/x.m3u8", SourceFailureMode.DnsDead);
+        led.Record("http://d/x.m3u8", SourceFailureMode.ContentInvalid);
+        Check(led.RemainingMs("http://a/x.m3u8") == FailureCooldownLedger.TicketExpiredMs, "②3票过期=短冷却 5 分钟");
+        Check(led.RemainingMs("http://b/x.m3u8") == FailureCooldownLedger.TimeoutMs, "②3超时=中冷却 15 分钟");
+        Check(led.RemainingMs("http://c/x.m3u8") == FailureCooldownLedger.DnsDeadMs, "②3DNS 死=长冷却 60 分钟");
+        Check(led.RemainingMs("http://d/x.m3u8") == long.MaxValue, "②3内容校验失败=拉黑（等顶替不自动复活）");
+        led.Record("http://a/x.m3u8", SourceFailureMode.TicketExpired);
+        now += FailureCooldownLedger.TicketExpiredMs + 1;
+        Check(!led.IsCooling("http://a/x.m3u8"), "②3短冷却到期自动解冻");
+        Check(led.RemainingMs("http://c/x.m3u8") == FailureCooldownLedger.DnsDeadMs - FailureCooldownLedger.TicketExpiredMs - 1, "②3长冷却仍在");
+        led.Clear("http://c/x.m3u8");
+        Check(!led.IsCooling("http://c/x.m3u8"), "②3复活/顶替后手动解冻");
+    }
+
+    // ②4 流活性校验：序号前进+分片时间戳新鲜，防假活
+    {
+        Check(StreamLiveness.IsLive(100, 101, now - 30_000, now), "②4序号前进+分片新鲜=活");
+        Check(!StreamLiveness.IsLive(100, 100, now - 30_000, now), "②4序号不前进=死流（假活拦截）");
+        Check(!StreamLiveness.IsLive(100, 101, now - StreamLiveness.FreshWindowMs - 1, now), "②4分片过期=死流");
+    }
+
+    // ②5 判死双通道+低频复检复活
+    {
+        Check(!DeadSourceLedger.ShouldDeclareDead(true, false), "②5单路失败不判死（防 DNS 抖动误杀）");
+        Check(DeadSourceLedger.ShouldDeclareDead(true, true), "②5双通道全挂才判死");
+        var led = new DeadSourceLedger(() => now);
+        led.MarkDead("src:x");
+        Check(led.IsDead("src:x") && !led.IsDueForRecheck("src:x"), "②5死亡期内走备援不复检");
+        Check(!led.IsDead("other:y"), "②5不同源不串账");
+        now += DeadSourceLedger.RecheckMaxMs + 1;
+        Check(led.IsDueForRecheck("src:x"), "②5复检期到（30–60 分钟窗内）");
+        led.Revive("src:x");
+        Check(!led.IsDead("src:x"), "②5复检通过自动复活（无需人工）");
+        now = 1_000_000_000_000L;
+        var l2 = new DeadSourceLedger(() => now);
+        for (int i = 0; i < 20; i++) l2.MarkDead($"k{i}");
+        now += DeadSourceLedger.RecheckMinMs - 1;
+        Check(!Enumerable.Range(0, 20).Any(i => l2.IsDueForRecheck($"k{i}")), "②5复检期下界 30 分钟（未到不探）");
+        now += DeadSourceLedger.RecheckMaxMs - DeadSourceLedger.RecheckMinMs + 1;
+        Check(Enumerable.Range(0, 20).All(i => l2.IsDueForRecheck($"k{i}")), "②5复检期上界 60 分钟（全窗内必到期）");
+    }
+
+    // ②6 切换预算：单位时间硬上限
+    {
+        var budget = new SwitchBudget(3, 90_000, () => now);
+        Check(budget.TryConsume("c9") && budget.TryConsume("c9") && budget.TryConsume("c9"), "②6预算窗内前 3 次放行");
+        Check(!budget.TryConsume("c9"), "②6窗内第 4 次拒绝（防连环切源拖垮播放）");
+        now += 90_001;
+        Check(budget.TryConsume("c9"), "②6窗口滚动后预算恢复");
+    }
+
+    // ②7 自动搜源管线：发现→静默校验→评分→入库；死源直接顶替；没验活绝不入库
+    {
+        var store = new DynamicSourceStore(() => now);
+        var scout = new SourceScout(new SourceIntelligenceEngine(), store, () => now);
+        var cands = new List<ScoutCandidate>
+        {
+            new("湖北卫视", "http://183.11.239.36:808/hls/46/index.m3u8"),
+            new("湖北卫视", "http://fake.dead/x.m3u8"),
+        };
+        var r = await scout.RunAsync("湖北卫视",
+            () => Task.FromResult(cands),
+            c => Task.FromResult(!c.Url.Contains("fake.dead")), // 静默校验注入：死路验不活
+            existingBestScore: 0, channelKnown: true);
+        Check(r.Best != null && r.Best.Url.Contains("183.11.239.36") && store.Has("湖北卫视"), "②7验活候选评分入库");
+        Check(!r.EnteredAsNewChannel, "②7目录内台只作备源");
+        Check(r.Log.Count(l => l.Contains("未验活不入库")) == 1, "②7没验活的源绝不入库（一步一记录）");
+        var r2 = await scout.RunAsync("玉溪新闻综合",
+            () => Task.FromResult(new List<ScoutCandidate> { new("玉溪新闻综合", "http://10.0.0.1/live.m3u8") }),
+            _ => Task.FromResult(true),
+            existingBestScore: SourceIntelligenceEngine.FullScore, channelKnown: false); // 既有源满分：候选不超过不收录
+        Check(!r2.EnteredAsNewChannel && r2.Best == null, "②7得分不优于既有源不收录（不拿垃圾源凑数）");
+        var r3 = await scout.RunAsync("玉溪新闻综合",
+            () => Task.FromResult(new List<ScoutCandidate> { new("玉溪新闻综合", "http://10.0.0.1/live.m3u8") }),
+            _ => Task.FromResult(true),
+            existingBestScore: 50, channelKnown: false);
+        Check(r3.EnteredAsNewChannel && ChannelClassifier.CategoryOf("玉溪新闻综合") == "地方", "②7目录外新台验活后自动进目录（归类地方）");
+        Check(ChannelClassifier.CategoryOf("CCTV5体育") == "央视" && ChannelClassifier.CategoryOf("东方卫视") == "卫视", "②7台名归类央视/卫视");
+        // 死源顶替：既有分≤0（死）→ 新源直接顶上
+        var r4 = await scout.RunAsync("湖北卫视",
+            () => Task.FromResult(new List<ScoutCandidate> { new("湖北卫视", "http://183.11.239.36:808/hls/46/index.m3u8") }),
+            _ => Task.FromResult(true),
+            existingBestScore: 0, channelKnown: true);
+        Check(r4.ReplacedDead, "②7死源被新源直接顶替（不等复活）");
+    }
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 

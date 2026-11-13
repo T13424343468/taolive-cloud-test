@@ -1616,11 +1616,26 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
 
     // ③ 主源失败 → 备援表直连（不依赖 UserFallback）：湖南卫视主源取流为空（未知源+空流地址=失败），应返回备援 URL
     {
-        var resolver = new StreamResolver();
+        var resolver = new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(true) }; // vc45②：桩探针，沙箱不碰外网
         var hn = new Channel { Name = "湖南卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hnws" };
         var r = await resolver.ResolveWithFailoverAsync(hn);
         Check(r != null && r.Url.Contains("mgtv-hlsal-ldvt"), "治①③主源失败切内置备援（湖南卫视→mgtv）");
         Check(r != null && resolver.Failover.CurrentIndex(hn.EpgKey) >= 0, "治①③备援切换进自愈账（状态机在管）");
+    }
+
+    // ③b vc45 隐患②：备援探死按序让位——首条探死（桩探针指认 74.91 死路）自动进下一条，不硬切死路
+    {
+        var resolver = new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(false) }; // 全探死
+        var hb = new Channel { Name = "湖北卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hbws_3b" };
+        Check(await resolver.ResolveWithFailoverAsync(hb) == null, "vc45②备援全探死不硬切（返回 null 明确失败）");
+        Check(resolver.Failover.CurrentIndex(hb.EpgKey) == 3, "vc45②备援逐条让位钳在末位（湖北 3 路，末路探死即终局）");
+        var resolver2 = new StreamResolver
+        {
+            BackupProbeOverride = (url, _, _) => Task.FromResult(url.Contains("183.11.239.36")), // 仅纯 IP 端探活
+        };
+        var hb2 = new Channel { Name = "湖北卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hbws_3b2" };
+        var r3b = await resolver2.ResolveWithFailoverAsync(hb2);
+        Check(r3b != null && r3b.Url.Contains("183.11.239.36"), "vc45②首条探死自动让位到探活候选（bfgd 死→183.11 活）");
     }
 
     // ④ 稳定后回主源：备援连续成功达 RecoverToPrimaryAfter 轮 → 自动回主源（Index=0）
@@ -1650,7 +1665,7 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         var hb = FallbackSourceRegistry.GetAll("湖北卫视");
         Check(hb.Count == 3 && hb[0].Url.Contains("bfgd") && hb[1].Url.Contains("183.11.239.36") && hb[2].Url.Contains("gmxw.7766.org"),
             "治①⑦湖北三候选按序（bfgd→纯IP端→域名端）");
-        var resolver2 = new StreamResolver();
+        var resolver2 = new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(true) }; // vc45②：桩探针，沙箱不碰外网
         var c1ch = new Channel { Name = "CCTV1综合", SourceId = "dead", StreamUrl = "", EpgKey = "c_cctv1_x7" };
         var r1 = await resolver2.ResolveWithFailoverAsync(c1ch);
         Check(r1 != null && r1.Url.Contains("tsfile/live/0001_1"), "治①⑦首级备援改取 tsfile 独立兜底（74.91 死路降序）");

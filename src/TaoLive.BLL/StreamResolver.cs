@@ -99,6 +99,18 @@ public class StreamResolver
     /// <summary>自愈1：多候选源备援状态（预检与取流共用，恢复自动回主源）。</summary>
     public SourceFailover Failover => _failover;
 
+    /// <summary>
+    /// vc45 隐患②：备援切换前拉流验证钩子（url/referer/ua → 是否可用）。空 = 默认清单级轻探
+    /// （ProbeHotStandbyAsync，segmentLevel=false）；测试可注入桩探针保证确定性（沙箱不碰外网）。
+    /// </summary>
+    public Func<string, string?, string?, Task<bool>>? BackupProbeOverride { get; set; }
+
+    private async Task<bool> ProbeBackupAsync(string url, string? referer, string? ua)
+    {
+        if (BackupProbeOverride != null) return await BackupProbeOverride(url, referer, ua);
+        return (await ProbeHotStandbyAsync(url, referer, ua, segmentLevel: false)).Ok;
+    }
+
     /// <summary>时钟守卫（自愈4）：票据窗口用修正后的时间计算，容忍设备时间偏差。</summary>
     public ClockGuard Clock { get; } = new();
 
@@ -187,6 +199,7 @@ public class StreamResolver
     /// 备援连续成功 SourceFailover.RecoverToPrimaryAfter 轮自动回主源；全候选失败返回 null（UI 明确提示）。
     /// 治顿批①：主源失败后先查备援源注册表（15 卫视+4 央视公共备援），再退用户自有源；
     /// 备援 URL 恒定（非票据型），按 N5 口径不做换票假成功判定。
+    /// vc45 隐患②：备援（内置表/用户源）切换前先清单级轻验拉流，探死候选按序让位，不硬切死路。
     /// </summary>
     public async Task<ResolvedStream?> ResolveWithFailoverAsync(Channel ch, bool force = false)
     {
@@ -203,14 +216,24 @@ public class StreamResolver
             _failover.NextCandidateOnFailure(key, candidateCount); // 主源失败→按序进备援（候选数按实际）
         }
         // 治顿批①：内置备援表优先（登记台免网络二次解析，直连即用）；耗尽退 UserFallback
+        // vc45 隐患②：备援切换前先轻验拉流（清单级）——探死的候选按序让位进下一个，不硬切死路；
+        // 探活才记切换成功（OnSuccess）。探针可注入（测试确定性），默认走 ProbeHotStandbyAsync 清单级。
         var idx = _failover.CurrentIndex(key);
-        if (idx >= 1 && idx <= fbs.Count)
+        while (idx >= 1 && idx <= fbs.Count)
         {
             var fb = fbs[idx - 1];
+            var fbUa = string.IsNullOrEmpty(fb.UserAgent) ? ch.UserAgent : fb.UserAgent;
+            if (!await ProbeBackupAsync(fb.Url, fb.Referer, fbUa))
+            {
+                var prev = idx;
+                _failover.NextCandidateOnFailure(key, candidateCount); // 备援探死 → 下一路
+                idx = _failover.CurrentIndex(key);
+                if (idx == prev) break; // 已钳在末位不再前进：候选耗尽（末路探死即终局，防无限重探）
+                continue;
+            }
             _failover.OnSuccess(key);
             var fbOpts = new List<(string Key, string Value)>();
             if (!string.IsNullOrEmpty(fb.Referer)) fbOpts.Add(("http-referrer", fb.Referer));
-            var fbUa = string.IsNullOrEmpty(fb.UserAgent) ? ch.UserAgent : fb.UserAgent;
             if (!string.IsNullOrEmpty(fbUa)) fbOpts.Add(("http-user-agent", fbUa));
             // 接线位 A（老板 2026-11-12 批准）：备援 URL 落预热池——下轮主源失败可零网络直起；
             // 保鲜期封顶 10 分钟：池命中会挡住主源重取，长保鲜期=回主源被拖死，短保鲜期最晚 10 分钟自愈
@@ -223,7 +246,8 @@ public class StreamResolver
         try
         {
             var alt = await UserFallback(ch);
-            if (string.IsNullOrEmpty(alt))
+            // vc45 隐患②：用户备援同样先验后切——探死按失败钳在末位候选返回 null，不硬切死路
+            if (string.IsNullOrEmpty(alt) || !await ProbeBackupAsync(alt, ch.Referer, ch.UserAgent))
             {
                 _failover.NextCandidateOnFailure(key, candidateCount); // 备援也失败（钳在末位候选）
                 return null;

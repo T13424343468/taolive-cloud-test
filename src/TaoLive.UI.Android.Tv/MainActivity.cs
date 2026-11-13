@@ -74,6 +74,7 @@ public class MainActivity : Activity
     // fix25（老板拍板）：帧率稳档观察——升档后 60 秒观察窗，稳不住自动退回原档；升档门槛加严防拉锯
     private readonly FrameRateKeeper _keeper = new();
     private System.Threading.Timer? _governorTicker;         // ⑨A巡检（5 秒节拍，口径同 SmartGovernor）
+    private int _governorTickInFlight;                       // fix50：巡检节拍互斥——节拍改投线程池后不再经 UI 串行化，用在途标志防重入
 
     // 退出确认（v1.0.9 用户拍板）：播放态按返回弹窗二次确认；确认后真完全关闭，
     // 重开是全新冷启动。弹窗开着时返回键=第二次返回，直接退出（v1.0.12 老板拍板）。
@@ -213,9 +214,17 @@ public class MainActivity : Activity
                 await Task.Delay(1000, ct);
         };
         // v1.0.10 第①项：源健康账落盘本地——重启后已验证源直接可用，换台不用从零再探
+        // fix52（B 路）：健康账读盘+反序列化移出主线程（冷启动不等磁盘，条目增长不再拖慢开机）——
+        // 挂账保持同步（只设引用，探活写入不落空）；就绪前健康表为空兜底：换台走预检重探，语义等价；
+        // 健康账为并发字典，Load 的 TryAdd 不覆盖会话内新条目（既有口径），与探活并发安全
         _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
-        _healthStore.Load();
         _precheck.AttachHealthStore(_healthStore);
+        var bootStore = _healthStore;
+        Task.Run(() =>
+        {
+            try { bootStore.Load(); }
+            catch (Exception ex) { CrashNet.Record("[Boot] 源健康账后台加载异常（空表兜底，交回预检重探）：" + ex.Message); }
+        });
         // v1.0.13 缓存分层：档位目录落盘（24 小时）——重启后各台档位免重抓，换台零网络等待
         VariantTableStore.Shared = new VariantTableStore(FilesDir.AbsolutePath);
         _precheck.StateChanged += (key, state) => _ui.Post(() =>
@@ -281,8 +290,10 @@ public class MainActivity : Activity
                 catch (Exception ex) { CrashNet.Record($"[TicketKeeper] 续票失败下个周期再试：{ex.Message}"); }
             }, null, 240_000, 240_000);
             // ⑨A自动档巡检（v1.0.10 双实例落地）：5 秒节拍喂实测，档位变化走双实例无感切换
+            // fix50（老板 2026-11-13 拍板「同类问题不用问、加快速度」）：节拍改投线程池线程——
+            // 判活/帧率快照/自动档判定的原生重活整体离开 UI 线程；要动界面的动作经 _ui.Post 回 UI
             _governor = new SmartGovernor(_aiTier);
-            _governorTicker = new System.Threading.Timer(_ => _ui.Post(TickGovernor), null, 5000, 5000);
+            _governorTicker = new System.Threading.Timer(_ => TickGovernor(), null, 5000, 5000);
             // fix31 ③：资源观测日志——每 5 分钟一条内存/缓冲水位（载体回退重建不重复挂表）
             if (_resourceTicker == null)
                 _resourceTicker = new System.Threading.Timer(LogResourceWatermark, null, 300_000, 300_000);
@@ -1010,7 +1021,11 @@ public class MainActivity : Activity
         if (mode == SwapMode.SwapOnReady && !string.IsNullOrEmpty(url))
         {
             _pendingTier = newTier;
-            BeginHotSwap(url, LiveQuality.OptionsFor(newTier), 0, reason);
+            // fix50（B 路）：热切整链投后台口径——巡检/先亮后升的判定已在后台线程，第二载体创建
+            // 与视图树操作必须回 UI 线程（Handler.Post 既有口径）；BeginSwap 的原生重活由宿主内部
+            // 投内核线程（fix30 同源口径），UI 只保留触发与结果回调。此处同时修掉「先亮后升」后台
+            // 直调 BeginHotSwap 触碰视图树的潜在违例。
+            _ui.Post(() => BeginHotSwap(url, LiveQuality.OptionsFor(newTier), 0, reason));
         }
         else
         {
@@ -1167,41 +1182,62 @@ public class MainActivity : Activity
     /// <summary>【九】A自动档巡检（5 秒节拍，口径同 SmartGovernor）：档位变化走双实例，绝不重起当前台。</summary>
     private void TickGovernor()
     {
-        var cur = _current;
-        // 批1 A（冻结稿「巡检每 5 秒已喂帧统计，顺路回写」）：卡顿率顺路入健康账——
-        // 口径：首帧已出后播放时钟停滞（IsLive）才算卡顿；起播连接期不算（那段是延迟与失败口径，不污染卡顿账）。
-        // 观测先于自动档守卫：热切换/换台挂起期间照记，不漏窗口；零额外请求
-        bool stalled = cur is not null && _frameForCurrentSwitch && !_host.IsAlive;
-        if (cur is not null && _playSource != null)
-            _precheck.ReportStallObserved(_playSource, stalled);
-        if (cur is null || _host.IsSwapPending || _hotSwap.HasPending) return;
-        var g = _governor;
-        if (g is null) return;
-        // fix25：升档观察窗——稳不住（帧率跌破 85% 或停滞）自动退回原档，判定即收口只退一次
-        if (_keeper.Watching)
+        // fix50（B 路）：本方法整体跑在线程池线程（定时器直调，不再投 UI）——判活、帧率快照、
+        // 卡顿记账等原生/重活全部离开 UI 线程（与已定谳④同型病根的触发入口整链后撤）。
+        // 需要动界面的动作（提示条、换档触发）经 _ui.Post 回 UI 线程，UI 只保留触发与结果回调。
+        // 在途互斥：旧口径靠 UI 线程串行化节拍，改后台后用在途标志保持「同一时刻至多一拍」。
+        if (System.Threading.Interlocked.Exchange(ref _governorTickInFlight, 1) == 1) return; // 上一拍未完：跳过本轮，不排队堆积
+        try
         {
-            var (kOfps, kCfps, _, _, _, _) = _host.SnapshotStats();
-            if (_keeper.Report(System.Environment.TickCount64, kOfps, kCfps, stalled))
+            var cur = _current;
+            // 批1 A（冻结稿「巡检每 5 秒已喂帧统计，顺路回写」）：卡顿率顺路入健康账——
+            // 口径：首帧已出后播放时钟停滞（IsLive）才算卡顿；起播连接期不算（那段是延迟与失败口径，不污染卡顿账）。
+            // 观测先于自动档守卫：热切换/换台挂起期间照记，不漏窗口；零额外请求
+            bool stalled = cur is not null && _frameForCurrentSwitch && !_host.IsAlive;
+            if (cur is not null && _playSource != null)
+                _precheck.ReportStallObserved(_playSource, stalled);
+            if (cur is null || _host.IsSwapPending || _hotSwap.HasPending) return;
+            var g = _governor;
+            if (g is null) return;
+            // fix25：升档观察窗——稳不住（帧率跌破 85% 或停滞）自动退回原档，判定即收口只退一次
+            if (_keeper.Watching)
             {
-                var from = _keeper.FromTier;
-                FlashInfo("升档后帧率撑不住，退回上一档");
-                ApplyTierChange(from, "稳档回退");
-                return;
-            }
-        }
-        if (g.Tick(droppedRate: 0, stalled)) // 丢弃帧计数快照未含：升档路径按无掉帧推进，降档由停滞触发
-        {
-            // fix25：升档门槛加严——实测帧率撑不住原始帧率（或停滞）本轮不升，平稳周期重新计，防来回拉锯
-            if (g.Effective > _aiTier)
-            {
-                var (ofps, cfps, _, _, _, _) = _host.SnapshotStats();
-                if (!FrameRateKeeper.UpgradeAllowed(ofps, cfps, stalled))
+                var (kOfps, kCfps, _, _, _, _) = _host.SnapshotStats();
+                if (_keeper.Report(System.Environment.TickCount64, kOfps, kCfps, stalled))
                 {
-                    _governor = new SmartGovernor(_aiTier);
+                    var from = _keeper.FromTier;
+                    _ui.Post(() =>
+                    {
+                        FlashInfo("升档后帧率撑不住，退回上一档");
+                        ApplyTierChange(from, "稳档回退");
+                    });
                     return;
                 }
             }
-            ApplyTierChange(g.Effective, "⑨A自动档");
+            if (g.Tick(droppedRate: 0, stalled)) // 丢弃帧计数快照未含：升档路径按无掉帧推进，降档由停滞触发
+            {
+                // fix25：升档门槛加严——实测帧率撑不住原始帧率（或停滞）本轮不升，平稳周期重新计，防来回拉锯
+                if (g.Effective > _aiTier)
+                {
+                    var (ofps, cfps, _, _, _, _) = _host.SnapshotStats();
+                    if (!FrameRateKeeper.UpgradeAllowed(ofps, cfps, stalled))
+                    {
+                        _governor = new SmartGovernor(_aiTier);
+                        return;
+                    }
+                }
+                // fix50：ApplyTierChange 内部自行把视图树操作回投 UI（见该方法注释），此处直接调用
+                ApplyTierChange(g.Effective, "⑨A自动档");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 线程池线程无 UI 异常兜底：巡检异常必须落日志，下个节拍续走，绝不吞掉
+            CrashNet.Record("[Governor] 后台巡检异常（下个节拍续走）：" + ex.Message);
+        }
+        finally
+        {
+            System.Threading.Volatile.Write(ref _governorTickInFlight, 0);
         }
     }
 
@@ -2339,7 +2375,14 @@ public class MainActivity : Activity
         _resourceTicker = null;
         _statsTicker?.Dispose(); // ④画面信息行节拍
         _statsTicker = null;
-        _healthStore?.FlushNow(); // v1.0.10：退出前把源健康账落盘
+        // fix51（B 路）：退出落盘移出主线程（对齐 OnPause 的 Task.Run 口径），但进程即将终止——
+        // 后台写盘必须有界等待完成再放行（2 秒上限），防「进程先死文件没写完」丢健康账，不得丢档
+        var exitStore = _healthStore;
+        if (exitStore != null)
+        {
+            try { Task.Run(exitStore.FlushNow).Wait(2000); }
+            catch (Exception ex) { CrashNet.Record("[Exit] 源健康账退出落盘等待异常：" + ex.Message); }
+        }
         _host.Dispose();
         base.OnDestroy();
     }

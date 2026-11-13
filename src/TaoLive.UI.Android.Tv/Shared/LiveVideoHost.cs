@@ -256,11 +256,20 @@ public class LiveVideoHost : IDisposable
         // fix34（移植）：新播放器音量为默认满档，缓存对齐（新内核=new MediaPlayer，无旧音量残留）
         _volume = 100;
         // PL4: RestartKernel 可能由看门狗/自救线程调用，载体 View 挂播放器必须回 UI 线程
+        // vc52 红五：UI 派发的挂载 lambda 异步回 UI 线程执行，期间宿主可能已 Dispose 或队列里又建了
+        // 新内核——晚到挂载把已释放/过期播放器塞给载体（原生引用失效，真机闪退同型）。落卡双复查：
+        // _disposed 复查（Dispose 后不挂）+ ReferenceEquals 复查（_player 已换代时不挂旧内核）
         var carrier = _videoCarrier;
         if (carrier != null)
         {
             var player = _player;
-            if (UiDispatcher != null) UiDispatcher(() => { try { carrier.MediaPlayer = player; } catch { } });
+            if (UiDispatcher != null)
+                UiDispatcher(() =>
+                {
+                    if (Interlocked.Read(ref _disposed) != 0) return;
+                    if (!ReferenceEquals(_player, player)) return;
+                    try { carrier.MediaPlayer = player; } catch { }
+                });
             else carrier.MediaPlayer = player;
         }
         // fix35（移植）：内核播放态事件回写——IsAlive 判活改读缓存，UI 线程零原生调用

@@ -1599,19 +1599,19 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
 
 // ==================== 治顿批①·备援源注册表（fallback_sources） ====================
 {
-    // ① 表完整性：58 路（既有 42 路 + 第四批 16 路：CCTV12 tsfile 顶前+CCTV4/13 tsfile+晋蒙新藏 gmxw 摸排
-    // +安徽域名端+74.91 CCTV1/CCTV5 与 CCTV12 旧路降序观察档，老板 2026-11-13 14:07 令「全收」），
-    // URL 全 http(s) 绝对地址
-    Check(FallbackSourceRegistry.Table.Length == 58, "治①①备援表 58 路（42 既有+第四批 16 路）");
+    // ① 表完整性：84 路（58 路 + 第五批 124 端全目录 26 路：央视新增 7 + 省级 18 + 钱江第二线 1，
+    // 老板 15:3x 令「摸到的都可以直接加进去，摸排停」），URL 全 http(s) 绝对地址
+    Check(FallbackSourceRegistry.Table.Length == 84, "治①①备援表 84 路（58 既有+第五批 26 路）");
     Check(FallbackSourceRegistry.Table.All(e => e.Url.StartsWith("http")),
         "治①①备援表 URL 全绝对地址");
 
-    // ② 频道覆盖：央视频 63 路目录 28 台（vc39 ①c 后含 CCTV2/6、19:2x 后含 CCTV3/5/8；23:0x 第二批浙江/东方/广东/北京/湖北命中；
-    // 09:2x 第三批江苏 applive 后再增 1 台）+ 浙江台目录 3 台，共 31 全命中
+    // ② 频道覆盖：央视频 63 路目录 44 台（vc39 ①c 后含 CCTV2/6、19:2x 后含 CCTV3/5/8；23:0x 第二批浙江/东方/广东/北京/湖北命中；
+    // 09:2x 第三批江苏 applive 后再增 1 台；vc45 第五批新增 CCTV7/9/10/11/14/15/17 与山西/云南/四川/山东/天津/重庆/陕西/河南等省级命中）+
+    // 浙江台目录 3 台，共 47 全命中
     {
         var yspHit = new YangshipinSource().FetchChannels().Count(c => FallbackSourceRegistry.Has(c.Name));
         var cztvHit = new CztvSource().FetchChannels().Count(c => FallbackSourceRegistry.Has(c.Name));
-        Check(yspHit == 28 && cztvHit == 3, $"治①②目录覆盖 31 台（央视频 {yspHit}+浙江 {cztvHit}）");
+        Check(yspHit == 44 && cztvHit == 3, $"治①②目录覆盖 47 台（央视频 {yspHit}+浙江 {cztvHit}）");
     }
 
     // ③ 主源失败 → 备援表直连（不依赖 UserFallback）：湖南卫视主源取流为空（未知源+空流地址=失败），应返回备援 URL
@@ -1619,7 +1619,7 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         var resolver = new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(true) }; // vc45②：桩探针，沙箱不碰外网
         var hn = new Channel { Name = "湖南卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hnws" };
         var r = await resolver.ResolveWithFailoverAsync(hn);
-        Check(r != null && r.Url.Contains("mgtv-hlsal-ldvt"), "治①③主源失败切内置备援（湖南卫视→mgtv）");
+        Check(r != null && r.Url.Contains("tsfile/live/0128_1"), "治①③主源失败切内置备援（湖南卫视→tsfile 0128，C 组零活救活）");
         Check(r != null && resolver.Failover.CurrentIndex(hn.EpgKey) >= 0, "治①③备援切换进自愈账（状态机在管）");
     }
 
@@ -1628,7 +1628,7 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         var resolver = new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(false) }; // 全探死
         var hb = new Channel { Name = "湖北卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hbws_3b" };
         Check(await resolver.ResolveWithFailoverAsync(hb) == null, "vc45②备援全探死不硬切（返回 null 明确失败）");
-        Check(resolver.Failover.CurrentIndex(hb.EpgKey) == 3, "vc45②备援逐条让位钳在末位（湖北 3 路，末路探死即终局）");
+        Check(resolver.Failover.CurrentIndex(hb.EpgKey) == 4, "vc45②备援逐条让位钳在末位（湖北 4 路，末路探死即终局）");
         var resolver2 = new StreamResolver
         {
             BackupProbeOverride = (url, _, _) => Task.FromResult(url.Contains("183.11.239.36")), // 仅纯 IP 端探活
@@ -1679,8 +1679,8 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(c1.Count == 3 && c1[0].Url.Contains("tsfile/live/0001_1") && c1[1].Url.Contains("gslb") && c1[2].Url.Contains("74.91.26.218"),
             "治①⑦央视一台三家族候选按序（tsfile→applive→74.91 观察档）");
         var hb = FallbackSourceRegistry.GetAll("湖北卫视");
-        Check(hb.Count == 3 && hb[0].Url.Contains("bfgd") && hb[1].Url.Contains("183.11.239.36") && hb[2].Url.Contains("gmxw.7766.org"),
-            "治①⑦湖北三候选按序（bfgd→纯IP端→域名端）");
+        Check(hb.Count == 4 && hb[0].Url.Contains("bfgd") && hb[1].Url.Contains("183.11.239.36") && hb[2].Url.Contains("tsfile/live/0132") && hb[3].Url.Contains("gmxw.7766.org"),
+            "治①⑦湖北四候选按序（bfgd→纯IP端→第五批 tsfile 0132→域名端）");
         var resolver2 = new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(true) }; // vc45②：桩探针，沙箱不碰外网
         var c1ch = new Channel { Name = "CCTV1综合", SourceId = "dead", StreamUrl = "", EpgKey = "c_cctv1_x7" };
         var r1 = await resolver2.ResolveWithFailoverAsync(c1ch);
@@ -1697,11 +1697,11 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(c12.Count == 4 && c12[0].Url.Contains("tsfile/live/0012_1") && c12[1].Url.Contains("183.11.239.36") && c12[2].Url.Contains("gmxw.7766.org") && c12[3].Url.Contains(":85/cctv12/"),
             "治①⑧CCTV12 四候选按序（tsfile 顶前，旧直拼路降观察档）");
         var hlj = FallbackSourceRegistry.GetAll("黑龙江卫视");
-        Check(hlj.Count == 2 && hlj[0].Url.Contains("hljws_own") && hlj[1].Url.Contains("bfgd"),
-            "治①⑧黑龙江官方 own 流修正置顶（404 旧路替换，bfgd 备线）");
+        Check(hlj.Count == 3 && hlj[0].Url.Contains("tsfile/live/0143") && hlj[1].Url.Contains("hljws_own") && hlj[2].Url.Contains("bfgd"),
+            "治①⑧黑龙江三候选按序（第五批 tsfile 0143 纯IP顶前→官方 own 流→bfgd 观察档）");
         var sz = FallbackSourceRegistry.GetAll("深圳卫视");
-        Check(sz.Count == 2 && sz[0].Url.Contains("gmxw.7766.org:808/hls/45") && sz[1].Url.Contains("bfgd"),
-            "治①⑧深圳 gmxw /hls/45 补段置顶（缺段死路替换，bfgd 备线）");
+        Check(sz.Count == 3 && sz[0].Url.Contains("tsfile/live/0126") && sz[1].Url.Contains("gmxw.7766.org:808/hls/45") && sz[2].Url.Contains("bfgd"),
+            "治①⑧深圳三候选按序（第五批 tsfile 0126 纯IP顶前→gmxw /hls/45 补段→bfgd 观察档）");
         var ah = FallbackSourceRegistry.GetAll("安徽卫视");
         Check(ah.Count == 2 && ah[0].Url.Contains("183.11.239.36") && ah[1].Url.Contains("gmxw.7766.org:808/hls/40"),
             "治①⑧安徽死路替换双端（纯 IP 首条→域名端备线）");

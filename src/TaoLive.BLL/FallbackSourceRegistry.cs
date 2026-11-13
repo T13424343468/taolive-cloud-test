@@ -24,7 +24,9 @@ public static class FallbackSourceRegistry
 
     private static readonly FallbackEntry[] Satellites =
     {
-        new("湖南卫视", "https://mgtv-hlsal-ldvt.aiyouchannel.com/otv/hlsal/hnws/hnws.m3u8"),
+        // vc45 第五批·C 组零活救活（老板 15:3x 令「摸到的都可以直接加进去，摸排停」）：
+        // 湖南原路（票据型 aiyouchannel）HTTP 000 拒连/超时判死，直替换为 tsfile-124 0128_1（C 组报告 11-13 15:0x）
+        new("湖南卫视", "http://124.165.251.82:85/tsfile/live/0128_1.m3u8?key=txiptv&playlive=1&authid=0"),
         // B 组修正（老板 2026-11-13 14:07 令「全收」）：hljws/hljws.m3u8 为 404 式样错，改官方 own 流
         // （与 Batch2 重复项合并回此处置顶；探活 11-13 午 LIVE）
         new("黑龙江卫视", "https://idclive.hljtv.com:4430/live/hljws_own.m3u8"),
@@ -35,14 +37,18 @@ public static class FallbackSourceRegistry
         // B 组修正：gmxw 40 路缺 /hls/ 段为死路，直接替换为 183.11 纯 IP 端（域名端在 Batch4）
         new("安徽卫视", "http://183.11.239.36:808/hls/40/index.m3u8"),
         new("东南卫视", "http://live.zohi.tv/zb.m3u8"),
+        // 辽宁：原路（9901 直拼）404，124 端阵容无此台（0121 404）——暂无替换源，原路保留占位待真机侧验
         new("辽宁卫视", "http://61.136.172.236:9901/live/lnws.m3u8"),
-        new("江西卫视", "http://112.27.5.218:9901/live/jxws.m3u8"),
+        // vc45 第五批·C 组零活救活：江西原路（9901 直拼）404 判死，直替换为 tsfile-124 0138_1
+        new("江西卫视", "http://124.165.251.82:85/tsfile/live/0138_1.m3u8?key=txiptv&playlive=1&authid=0"),
         new("山西卫视", "http://119.39.9.8:9901/live/shanxiws.m3u8"),
         new("西藏卫视", "http://112.27.5.218:9901/live/xzws.m3u8"),
         new("宁夏卫视", "http://120.76.248.139/live/nxws.m3u8"),
-        new("CGTN西班牙语", "https://espanol-liveali.cgtn.com/live/espanol.m3u8"),
-        new("钱江都市", "https://ali-m-l.cztv.com/lantian/002/index.m3u8"),
-        new("教科影视", "https://ali-m-l.cztv.com/lantian/004/index.m3u8"),
+        // vc45 第五批·C 组救活：CGTN西语原路（官方 liveali）404 判死，直替换为官方阿里端
+        // （2022-08 票据 token 至今活，两级清单+分片全链过，C 组报告 11-13 15:2x；若失效按 CGTN 法语/阿语同族另取）
+        new("CGTN西班牙语", "https://espanol-liveali.cgtn.com/hls/LSveOGBaBw41Ea7ukkVAUdKQ220802LSTexu6xAuFH8VZNBLE1ZNEa220802cd.m3u8"),
+        new("钱江都市", "https://ali-m-l.cztv.com/channels/lantian/channel002/1080p.m3u8"),
+        new("教科影视", "https://ali-m-l.cztv.com/channels/lantian/channel004/1080p.m3u8"),
     };
 
     // ---- CCTV 侧公共备援（v4 已编入的聚合/单源，老板下午卡顿恰在 CCTV1/2/6） ----
@@ -143,9 +149,38 @@ public static class FallbackSourceRegistry
         new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8", ObservationRank: true),
     };
 
-    /// <summary>全量备援表（既有 42 路 + 第四批 16 路，共 58 路）。</summary>
+    // ---- 第五批·124 端全目录收录（老板 2026-11-13 15:3x 令「摸到的都可以直接加进去，摸排停」）----
+    // 摸排详《备援第二家族与jstv换源摸排.md》§十三/§十四：124 端盲扫 0001–0160，39/40 编号全链 LIVE
+    // （清单+分片 206 单发一次过，source_hunt/tsfile_sweep_20261113.jsonl + tsfile39_fullchain.jsonl 留档）。
+    // 编号映射：OG.txt（gitea wangyuyan/WYY live/OG.txt）222 端同编号系（txiptv 同阵容部署），
+    // 8 处同号直中实证（0004/0008/0012/0013/0122/0127/0128/0138）；映射≠免验，收录后随真机验收观察。
+    // 不收：0034（复验 404）；0117/0129/0140（OG 无映射身份待定，凭空标台名=污染节目单）；
+    //       0019 疑 CCTV17/0118 疑山西/0136 疑陕西/0139 疑河南按映射收录，身份待真机画面/EPG 确认（待真机验证清单已列）。
+    // 共族单点警示：全部 39 路同一端点（124.165.251.82:85）——②评分按共族降权；真机可达性随真机验收。
+    private const string TsfileKey = "?key=txiptv&playlive=1&authid=0";
+    private static FallbackEntry Ts(string channelName, string no) =>
+        new(channelName, $"http://124.165.251.82:85/tsfile/live/{no}.m3u8{TsfileKey}");
+
+    private static readonly FallbackEntry[] Batch5 =
+    {
+        // 央视新增六台（CCTV1/2/3/4/5/6/8/12/13 的 tsfile 已在 Batch3/Batch4，不重复加路）
+        Ts("CCTV7国防军事", "0007"), Ts("CCTV9纪录", "0009"), Ts("CCTV10科教", "0010"),
+        Ts("CCTV11戏曲", "0011"), Ts("CCTV14少儿", "0014"), Ts("CCTV15音乐", "0015"),
+        Ts("CCTV17农业农村", "0019"), // 疑 CCTV17（msns 系同号映射，身份待真机确认）
+        // 省级 20 路（湖南 0128/江西 0138 已在 Satellites 替换收口，不重复）
+        Ts("东方卫视", "0107"), Ts("广西卫视", "0113"), Ts("吉林卫视", "0116"),
+        Ts("山西卫视", "0118"), Ts("云南卫视", "0119"), Ts("北京卫视", "0122"),
+        Ts("四川卫视", "0123"), Ts("浙江卫视", "0124"), Ts("广东卫视", "0125"),
+        Ts("深圳卫视", "0126"), Ts("江苏卫视", "0127"), Ts("山东卫视", "0131"),
+        Ts("湖北卫视", "0132"), Ts("天津卫视", "0135"), Ts("陕西卫视", "0136"),
+        Ts("河南卫视", "0139"), Ts("重庆卫视", "0142"), Ts("黑龙江卫视", "0143"),
+        // C 组三台补充第二线：钱江都市浙江广电官方 CDN 双线（ali-m-l 主线在 Satellites）
+        new("钱江都市", "https://ali-xwl.cztv.com/live/channel021080Plxw.m3u8"),
+    };
+
+    /// <summary>全量备援表（58 路 + 第五批 124 端全目录 26 路，共 86 路）。</summary>
     public static readonly FallbackEntry[] Table =
-        Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).Concat(Batch4).ToArray();
+        Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).Concat(Batch4).Concat(Batch5).ToArray();
 
     /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
     private static string Normalize(string name) =>

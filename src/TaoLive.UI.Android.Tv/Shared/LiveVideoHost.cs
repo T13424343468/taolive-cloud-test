@@ -652,6 +652,9 @@ public class LiveVideoHost : IDisposable
         long genAtEnqueue = gen;
         EnqueueNativeOp(() =>
         {
+            // vc52 收口：入队到执行之间宿主可能已释放/停播（FIFO 下本 op 先于释放 op 执行），
+            // 队列内复查不放行脏起播——_disposed 不推进代数，代数守卫拦不住它
+            if (Interlocked.Read(ref _disposed) != 0 || _userStopped) return;
             if (!_genCounter.IsCurrent(genAtEnqueue)) return; // 过期操作整段跳过：换台/重连已推进代数
             try
             {
@@ -971,17 +974,20 @@ public class LiveVideoHost : IDisposable
         _statsRetryTimer = null;
 
         _userStopped = true;
+        _genCounter.NextGeneration(); // vc52 收口：推进代数作废一切未决起播 op（Dispose 不推进代数会漏拦）
         var media = _currentMedia; _currentMedia = null;
         var player = _player; _player = null;
         var libVlc = _libVlc; _libVlc = null;
         _videoCarrier = null;
         // vc52：原生释放整段入队——与停/起同队列保序，杜绝「释放撞上正在跑的队列操作」；
-        // 退出路径有界等待（2 秒上限）对齐 fix51 口径，不把待释放对象带进程即死
+        // 释放顺序=先 Stop 静默播放器再逐层 Dispose（vc52 收口：原顺序 media 先于 Stop，
+        // 释放正在播放的 Media 踩原生引用窗口，与闪退同型）；退出路径有界等待（2 秒上限）
+        // 对齐 fix51 口径，不把待释放对象带进程即死
         var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         EnqueueNativeOp(() =>
         {
-            try { media?.Dispose(); } catch { }
             try { player?.Stop(); } catch { }
+            try { media?.Dispose(); } catch { }
             try { player?.Dispose(); } catch { }
             try { libVlc?.Dispose(); } catch { }
             released.TrySetResult();

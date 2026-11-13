@@ -85,6 +85,20 @@ public class QualityGovernor
     /// <summary>选档网速余量：带宽 ≤ 实测网速 × 0.8 才算撑得住。</summary>
     public const double HeadroomFactor = 0.8;
 
+    /// <summary>
+    /// vc53 拥塞降档余量系数（老板 00:3x 修复批任务 3）：实测吞吐 &lt; 当前档标称码率 × 1.15
+    /// 即判拥塞——码率逼近吞吐上限时缓冲迟早耗尽，降档先手于卡顿（治「看着看着缓冲耗尽冻结」）。
+    /// </summary>
+    public const double CongestionHeadroomFactor = 1.15;
+
+    /// <summary>
+    /// vc53 拥塞判定（纯函数）：实测吞吐为正且当前档标称码率已知、
+    /// 吞吐 < 当前档码率 × 余量系数 → 拥塞。码率未知（0）不判拥塞，不瞎降。
+    /// </summary>
+    public static bool IsCongested(double measuredBps, long variantBandwidthBps) =>
+        measuredBps > 0 && variantBandwidthBps > 0
+        && measuredBps < variantBandwidthBps * CongestionHeadroomFactor;
+
     private readonly List<QualityVariant> _variants;
     private readonly QualityMode _mode;
     private int _index;
@@ -165,5 +179,26 @@ public class QualityGovernor
         if (!_lockNoticeShown) return false;
         _lockNoticeShown = false;
         return true;
+    }
+
+    /// <summary>
+    /// vc53 拥塞降档（修复批任务 3）：调用方按巡检周期喂实测吞吐（bit/s）。
+    /// 当前档码率已知且吞吐撑不住（IsCongested）→ 立即降一档（先手于卡顿，不等缓冲耗尽）；
+    /// 与 Observe(stalled) 同一行进口径：降档不受 MinUpgradeIntervalTicks 限制，连续降档照走。
+    /// 网速未知/码率未知/单档流/已最低档：原档返回（不瞎降、不空转）。
+    /// </summary>
+    public int ObserveThroughput(double measuredBps)
+    {
+        if (IsSingleStream) return _index;
+        var cur = Current;
+        if (!IsCongested(measuredBps, cur.BandwidthBps)) return _index;
+        if (_index > 0)
+        {
+            _index--;
+            _cleanTicks = 0;
+            _sinceLastUpgrade = 0;
+            if (_mode == QualityMode.LockHigh) _lockNoticeShown = true; // 锁定高档拥塞：降档自救 + 温和提示
+        }
+        return _index;
     }
 }

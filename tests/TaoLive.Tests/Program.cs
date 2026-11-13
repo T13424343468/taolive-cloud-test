@@ -780,6 +780,17 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(govHigh.Index == 0 && govHigh.ConsumeLockNotice(), "第20项：锁定高档撑不住→降档自救+温和提示一次");
     Check(!govHigh.ConsumeLockNotice(), "第20项：提示只发一次不重复打扰");
 
+    // vc53 修复批任务 3·拥塞降档：吞吐逼近码率上限先手降档，不等缓冲耗尽
+    Check(QualityGovernor.IsCongested(4_000_000, 4_000_000), "vc53任务3·吞吐低于码率×1.15=拥塞");
+    Check(!QualityGovernor.IsCongested(5_000_000, 4_000_000), "vc53任务3·吞吐高于余量=不拥塞");
+    Check(!QualityGovernor.IsCongested(0, 4_000_000) && !QualityGovernor.IsCongested(4_000_000, 0),
+        "vc53任务3·吞吐未知或码率未知不判拥塞（不瞎降）");
+    var govCong = new QualityGovernor(variants, QualityMode.Auto, measuredBps: 9_000_000);
+    int idxCong = govCong.ObserveThroughput(4_000_000); // 4Mbps 档 ×1.15=4.6M > 4M 实测 → 拥塞
+    Check(idxCong == 0, "vc53任务3·拥塞立即降档（先手于卡顿，不等缓冲耗尽）");
+    int idxCong2 = new QualityGovernor(variants, QualityMode.Auto, measuredBps: 9_000_000).ObserveThroughput(0);
+    Check(idxCong2 == 1, "vc53任务3·吞吐未知不降档（不瞎降）");
+
     // vc53 修复批任务 4·抖动换源：90 秒窗内反复攒水位 3 次=抖动实锤，换源后 5 分钟冷却
     long jt = 1_000_000;
     var jit = new JitterSwitchPolicy(() => jt);

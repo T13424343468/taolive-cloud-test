@@ -105,6 +105,24 @@ public class StreamResolver
     /// </summary>
     public Func<string, string?, string?, Task<bool>>? BackupProbeOverride { get; set; }
 
+    // ---- vc45 ②选源智能化：动态源库消费 + 救急搜源触发 ------------------
+
+    /// <summary>vc45②：动态源库（SourceScout 搜源验活收录的源）。备选序=内置备援表之后、用户源之前；
+    /// 探死直接摘库（死源被新源直接顶替口径，不占候选位等复活）。空 = 既有口径不变。</summary>
+    public DynamicSourceStore? DynamicSources { get; set; }
+
+    /// <summary>vc45②：搜源管线（救急级触发消费）。频道全候选耗尽立即搜源，验活才入库；
+    /// 常规级低频探索由宿主按空闲节奏驱动同一管线。空 = 不搜源（既有口径）。</summary>
+    public SourceScout? Scout { get; set; }
+
+    /// <summary>vc45②：候选发现器（公开免费渠道发现候选，IO 注入）。救急搜源与常规探索共用。</summary>
+    public Func<string, Task<List<ScoutCandidate>>>? DiscoverCandidates { get; set; }
+
+    private readonly ConcurrentDictionary<string, byte> _scoutInflight = new(); // vc45②：同台搜源并发护栏（救急连发不叠加）
+
+    /// <summary>vc45②：候选验活（搜源管线 validate 注入用）——清单级轻验，口径与备援切换前验证一致。</summary>
+    public Task<bool> ValidateCandidateAsync(string url, string? referer, string? ua) => ProbeBackupAsync(url, referer, ua);
+
     private async Task<bool> ProbeBackupAsync(string url, string? referer, string? ua)
     {
         if (BackupProbeOverride != null) return await BackupProbeOverride(url, referer, ua);
@@ -228,7 +246,8 @@ public class StreamResolver
         // 同台多家族收录（央视六台 74.91/tsfile/applive、湖北/广东 bfgd/gmxw 双端）逐级切换，收录即可达；
         // 注册表耗尽再退用户自有源，全候选失败返回 null（UI 明确提示）。
         var fbs = FallbackSourceRegistry.GetAll(ch.Name);
-        var candidateCount = 1 + fbs.Count + (UserFallback != null ? 1 : 0);
+        var dyn = DynamicSources?.Get(ch.Name).ToArray() ?? Array.Empty<DynamicSourceEntry>(); // vc45②：快照——探死摘库不动本轮遍历
+        var candidateCount = 1 + fbs.Count + dyn.Length + (UserFallback != null ? 1 : 0);
         if (_failover.CurrentIndex(key) == 0)
         {
             var primary = await ResolvePlayUrlAsync(ch, force);
@@ -262,7 +281,31 @@ public class StreamResolver
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             return new ResolvedStream { Channel = ch, Url = fb.Url, Options = fbOpts };
         }
-        if (UserFallback == null) return null;
+        // vc45②：动态源库消费——搜源验活收录的源，序在内置备援表之后、用户源之前；
+        // 先验后切（隐患②同口径），探死直接摘库（死源被新源直接顶替，不占候选位等复活）
+        while (idx >= fbs.Count + 1 && idx <= fbs.Count + dyn.Length)
+        {
+            var de = dyn[idx - fbs.Count - 1];
+            var deUa = string.IsNullOrEmpty(de.UserAgent) ? ch.UserAgent : de.UserAgent;
+            if (!await ProbeBackupAsync(de.Url, de.Referer, deUa))
+            {
+                DynamicSources?.Remove(ch.Name, de.Url);
+                var prevD = idx;
+                _failover.NextCandidateOnFailure(key, candidateCount);
+                idx = _failover.CurrentIndex(key);
+                if (idx == prevD) break; // 已钳在末位：候选耗尽（救急搜源在出口触发）
+                continue;
+            }
+            await FailoverOnSuccessWithRecoveryProbeAsync(ch, key);
+            var deOpts = new List<(string Key, string Value)>();
+            if (!string.IsNullOrEmpty(de.Referer)) deOpts.Add(("http-referrer", de.Referer));
+            if (!string.IsNullOrEmpty(deUa)) deOpts.Add(("http-user-agent", deUa));
+            WarmupDisk?.Put($"stream:{key}", de.Url,
+                Math.Min(10 * 60_000, WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            return new ResolvedStream { Channel = ch, Url = de.Url, Options = deOpts };
+        }
+        if (UserFallback == null) { await ScoutEmergencyAsync(ch, key); return null; }
         try
         {
             var alt = await UserFallback(ch);
@@ -270,6 +313,7 @@ public class StreamResolver
             if (string.IsNullOrEmpty(alt) || !await ProbeBackupAsync(alt, ch.Referer, ch.UserAgent))
             {
                 _failover.NextCandidateOnFailure(key, candidateCount); // 备援也失败（钳在末位候选）
+                await ScoutEmergencyAsync(ch, key); // vc45②：全候选耗尽 → 救急搜源
                 return null;
             }
             await FailoverOnSuccessWithRecoveryProbeAsync(ch, key); // vc45 隐患④：达标回主前先探主源
@@ -282,7 +326,37 @@ public class StreamResolver
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             return new ResolvedStream { Channel = ch, Url = alt, Options = opts };
         }
-        catch { return null; }
+        catch { await ScoutEmergencyAsync(ch, key); return null; } // vc45②：用户备援异常同口径触发救急
+    }
+
+    /// <summary>
+    /// vc45②：救急级搜源——全候选（主+内置备援+动态+用户）耗尽立即触发，fire-and-forget 不拖播放；
+    /// 同台并发护栏：搜源进行中不重复触发。验活与切换预算约束在管线内收口（没验活的源绝不入库）。
+    /// </summary>
+    private async Task ScoutEmergencyAsync(Channel channel, string channelKey)
+    {
+        if (Scout == null || DiscoverCandidates == null) return;
+        if (!_scoutInflight.TryAdd(channelKey, 0)) return;
+        var discover = DiscoverCandidates;
+        var scout = Scout;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var known = FallbackSourceRegistry.Has(channel.Name) || (DynamicSources?.Has(channel.Name) ?? false);
+                var resolverRef = this;
+                await scout.RunAsync(
+                    channel.Name,
+                    () => discover(channel.Name),
+                    async c => await resolverRef.ProbeBackupAsync(c.Url, c.Referer,
+                        string.IsNullOrEmpty(c.UserAgent) ? channel.UserAgent : c.UserAgent),
+                    existingBestScore: 0, // 救急=全候选判死，任何验活源均可入库（existingBestScore≤0=顶替口径）
+                    channelKnown: known);
+            }
+            catch { /* 搜源失败不拖播放；过程留档由管线 Log 收口 */ }
+            finally { _scoutInflight.TryRemove(channelKey, out _); }
+        });
+        await Task.CompletedTask;
     }
 
     /// <summary>上海取票/拉流统一 UA（JWT 绑 ua_hash，两侧必须一致）。</summary>

@@ -2166,9 +2166,13 @@ public class MainActivity : Activity
         _epgCts?.Dispose();
         _epgCts = new System.Threading.CancellationTokenSource();
         var ui = _ui;
+        var cts = _epgCts; // vc53 红灯B：捕获本代 CTS——换台后旧令照常取消，读字段会漏抓新一代
         _ = Task.Run(() =>
         {
-            var result = _epgClient.Fetch(ch.EpgKey);
+            CancellationToken token;
+            try { token = cts.Token; }
+            catch (ObjectDisposedException) { return; } // 令牌已释放=换台/退出收场，本轮作废
+            var result = _epgClient.Fetch(ch.EpgKey, token); // 取消令实传——换台/退出可打断在飞请求
             ui.Post(() =>
             {
                 if (seq != _playSeq || _epgPanel is null) return; // 换台后旧节目单作废
@@ -2797,6 +2801,8 @@ public class MainActivity : Activity
         _epgCts?.Cancel(); // B 包第 14 项：退出停节目单拉取
         _epgCts?.Dispose();
         _epgCts = null;
+        _scoutTimer?.Dispose(); // vc53 红灯A：探索计时器随页停（原漏 Dispose，与 _ticketKeeper/_statsTicker 同谱）
+        _scoutTimer = null;
         _ticketKeeper?.Dispose();
         _ticketKeeper = null;
         _statsTicker?.Dispose(); // ④画面信息行节拍

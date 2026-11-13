@@ -45,15 +45,22 @@ public class CntvEpgClient
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(6) };
 
-    /// <summary>拉取指定 EPG 键今日节目单。返回 (当前节目, 后续节目)；映射外/失败/无数据返回 null。</summary>
-    public virtual (Entry Now, List<Entry> Next)? Fetch(string epgKey)
+    /// <summary>拉取指定 EPG 键今日节目单。返回 (当前节目, 后续节目)；映射外/失败/无数据返回 null。
+    /// vc53 红灯B：接受取消令——UI 侧换台/退出可取消在飞请求（原写法 CTS 纯摆设，token 没传进请求）。</summary>
+    public virtual (Entry Now, List<Entry> Next)? Fetch(string epgKey, CancellationToken ct = default)
     {
         if (epgKey is null || !CntvIds.TryGetValue(epgKey, out var c)) return null;
         var day = DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
         try
         {
-            var body = _http.GetStringAsync(string.Format(UrlFmt, c, day)).ConfigureAwait(false).GetAwaiter().GetResult();
+            using var resp = _http.GetAsync(string.Format(UrlFmt, c, day), ct).ConfigureAwait(false).GetAwaiter().GetResult();
+            resp.EnsureSuccessStatusCode();
+            var body = resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false).GetAwaiter().GetResult();
             return ParseWithKey(body, c, DateTime.Now);
+        }
+        catch (OperationCanceledException)
+        {
+            return null; // 取消属正常收场：不落日志不重试
         }
         catch
         {

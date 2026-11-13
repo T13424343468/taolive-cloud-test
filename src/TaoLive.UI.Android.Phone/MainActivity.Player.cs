@@ -66,7 +66,6 @@ namespace TaoLive.UI.Android.Phone
                 if (e.Event!.Action == MotionEventActions.Up)
                 {
                     FinishGesture();
-                    EndRateBoost();
                     ScheduleHide();
                 }
                 e.Handled = true;   // 这一层不与任何按钮重叠, 完整消费手势序列, 单击呼出才稳定
@@ -735,7 +734,7 @@ namespace TaoLive.UI.Android.Phone
         {
             if (_locked) return;
             _gLastX = e.GetX(); _gLastY = e.GetY();
-            _gMode = 0; _gSeekMs = 0;
+            _gMode = 0;
         }
 
         internal void GestureScroll(MotionEvent? e1, MotionEvent? e2, float dx, float dy)
@@ -746,16 +745,9 @@ namespace TaoLive.UI.Android.Phone
             var totalDx = e2.GetX() - _gLastX;
             var totalDy = e2.GetY() - _gLastY;
             if (_gMode == 0)
-                _gMode = Math.Abs(totalDx) > Math.Abs(totalDy) ? 0 : (e1.GetX() < w / 2f ? 2 : 3); // 直播砍件: 横滑快进退整套退场, 横滑视为无效手势
+                _gMode = Math.Abs(totalDx) > Math.Abs(totalDy) ? 0 : (e1.GetX() < w / 2f ? 2 : 3); // 直播砍件: 横滑快进退场, 横滑视为无效手势; vc53 红灯C：_gMode==1 死分支删除（本行只赋 0/2/3，1 不可达）
 
-            if (_gMode == 1)          // 水平滑动: 快进/快退 (v3.25.14 老板定档: 横屏一屏宽=10分钟, 竖屏=5分钟)
-            {
-                var land = (int)Resources!.Configuration!.Orientation == (int)global::Android.Content.Res.Orientation.Landscape;
-                float span = land ? 600000f : 300000f;
-                _gSeekMs = (long)(totalDx / w * span);
-                ShowHint((_gSeekMs >= 0 ? "快进 " : "快退 ") + FormatMs(Math.Abs(_gSeekMs)));
-            }
-            else if (_gMode == 2)     // 左侧上下滑: 亮度
+            if (_gMode == 2)          // 左侧上下滑: 亮度
             {
                 var attr = Window!.Attributes!;
                 float cur = attr.ScreenBrightness < 0 ? 0.5f : attr.ScreenBrightness;
@@ -778,12 +770,7 @@ namespace TaoLive.UI.Android.Phone
 
         internal void FinishGesture()
         {
-            if (_gMode == 1 && _gSeekMs != 0)
-            {
-                var target = Math.Max(0, _lastPosMs + _gSeekMs);
-                _host.SeekTo(target);
-                OnSeekChunkAware(_host.CurrentPath, target);   // v3.17: 手势快进同样走 seek 感知
-            }
+            // vc53 红灯C：_gMode==1（手势快进）随直播砍件不可达，落账分支删除
             _gMode = 0;
         }
 
@@ -946,20 +933,7 @@ namespace TaoLive.UI.Android.Phone
         /// <summary>长按倍速: 按住 3x 快进, 松手恢复原速</summary>
         internal void StartRateBoost()
         {
-            return; // 直播砍件: 倍速/快进整套退场 (含长按 3x)
-            if (_locked || _boosting || !_host.IsPlaying) return;
-            _boosting = true;
-            _boostRate = _currentRate;
-            _host.SetRate(3f);
-            ShowHint("3x 快进中 ▶▶▶", sticky: true);
-        }
-
-        internal void EndRateBoost()
-        {
-            if (!_boosting) return;
-            _boosting = false;
-            _host.SetRate(_boostRate);
-            ShowHint("恢复 " + _boostRate + "x");
+            // 直播砍件: 倍速/快进整套退场 (含长按 3x)；vc53 红灯C：return 后死体删除（v32 教训：编译能过但留尾）
         }
 
         internal void TogglePauseByGesture()
@@ -1071,6 +1045,8 @@ namespace TaoLive.UI.Android.Phone
         /// v3.20.3: 效果预览卡片移除——改为顶栏透明文字状态 (用户反馈卡片占地方且看不懂)。</summary>
         internal void ShowMoreMenu()
         {
+            // vc53 红灯C：分发键由裸字符串 StartsWith 匹配改下标常量——删改菜单行时编译器兜底，不再留字符串尾巴
+            const int Loop = 0, Rotate = 1, AiGear = 2, Aspect = 3, TrackSub = 4, TrackAudio = 5, SmartSub = 7, Bench = 8;
             string[] items =
             {
                 $"循环播放: {(_host.LoopEnabled ? "开" : "关")}",
@@ -1083,15 +1059,15 @@ namespace TaoLive.UI.Android.Phone
                 $"智能字幕: {(AppSettings.Current.SmartSubtitleEnabled ? "开" : "关")}",
                 "实时增强基准",
             };
-            TaoPopup.ShowMenu(this, _playerMoreBtn!, items.Select(t => (t, (Action)(() =>
+            Action At(int i) => i switch
             {
-                if (t.StartsWith("循环播放")) { _host.LoopEnabled = !_host.LoopEnabled; TaoUi.Toast(this, _host.LoopEnabled ? "循环播放: 开" : "循环播放: 关"); }
-                else if (t.StartsWith("自动旋转")) { AppSettings.Current.AutoRotate = !AppSettings.Current.AutoRotate; SaveSettingsSafe(); ApplyRotationMode(); TaoUi.Toast(this, AppSettings.Current.AutoRotate ? "自动旋转: 开 (陀螺仪接管, 全屏钮收起)" : "自动旋转: 关 (竖屏持稳, 全屏钮手动切)"); }
-                else if (t.StartsWith("画质增强")) { ShowAiEnhanceDialog(); }
-                else if (t.StartsWith("画面比例")) ShowAspectDialog();
-                else if (t == "字幕轨道") ShowTrackDialog(true);
-                else if (t == "音轨") ShowTrackDialog(false);
-                else if (t.StartsWith("智能字幕"))
+                Loop => () => { _host.LoopEnabled = !_host.LoopEnabled; TaoUi.Toast(this, _host.LoopEnabled ? "循环播放: 开" : "循环播放: 关"); },
+                Rotate => () => { AppSettings.Current.AutoRotate = !AppSettings.Current.AutoRotate; SaveSettingsSafe(); ApplyRotationMode(); TaoUi.Toast(this, AppSettings.Current.AutoRotate ? "自动旋转: 开 (陀螺仪接管, 全屏钮收起)" : "自动旋转: 关 (竖屏持稳, 全屏钮手动切)"); },
+                AiGear => ShowAiEnhanceDialog,
+                Aspect => ShowAspectDialog,
+                TrackSub => () => ShowTrackDialog(true),
+                TrackAudio => () => ShowTrackDialog(false),
+                SmartSub => () =>
                 {
                     // v3.25.23 智能字幕开关: 开启且在播立即起跑 (无模型先下载, 进度上屏); 关闭即停
                     AppSettings.Current.SmartSubtitleEnabled = !AppSettings.Current.SmartSubtitleEnabled;
@@ -1099,10 +1075,11 @@ namespace TaoLive.UI.Android.Phone
                     if (AppSettings.Current.SmartSubtitleEnabled) _smartSub?.Kick();
                     else _smartSub?.Cancel();
                     TaoUi.Toast(this, AppSettings.Current.SmartSubtitleEnabled ? "智能字幕: 开 (首次使用自动下载识别模型)" : "智能字幕: 关");
-                }
-                else if (t == "实时增强基准") RunRealtimeBenchEntry();
-                else EnterPipMode();
-            }))).ToArray(), belowLeft: true, title: "更多");   // v3.13 投屏/倍速升级为专用按钮, 不再占菜单
+                },
+                Bench => RunRealtimeBenchEntry,
+                _ => EnterPipMode, // 画中画（含未知项兜底，同原口径）
+            };
+            TaoPopup.ShowMenu(this, _playerMoreBtn!, items.Select((t, i) => (t, At(i))).ToArray(), belowLeft: true, title: "更多");   // v3.13 投屏/倍速升级为专用按钮, 不再占菜单
         }
 
         /// <summary>底栏中间状态小字 (v3.20.6): 每个增强不跑的断点如实亮出来——装模型中/磁力流/格式不支持/

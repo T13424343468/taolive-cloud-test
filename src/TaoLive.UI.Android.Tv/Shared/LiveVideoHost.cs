@@ -96,6 +96,12 @@ public class LiveVideoHost : IDisposable
     private double? _origFps; private int _origW, _origH;
     private long _fpsLastMs; private uint _fpsLastDisplayed; private double? _measuredFps;
     private Media? _currentMedia; // ④帧统计来源（Media.Statistics；换台/重连时换新释放旧）
+    // fix35（移植 2026-11-13 修复批A）：观测缓存化——UI 线程零原生调用。
+    // _kernelPlaying 由内核事件回写（原生事件回调线程），IsAlive 只读缓存；
+    // _cachedDisplayed 由看门狗后台线程每 2 秒热点回写，SnapshotStats 只读缓存。
+    // 两者均为 32 位原子量，跨线程直读直写（同 _lastTickMs 口径）。
+    private int _kernelPlaying;
+    private uint _cachedDisplayed;
 
     public event Action<string>? StatusChanged;
 
@@ -105,21 +111,18 @@ public class LiveVideoHost : IDisposable
     /// <summary>画面统计快照（第④项）：原帧率/现帧率/原分辨率/现分辨率。测量缺失给 0/null，UI 显示「检测中」。</summary>
     public (double? OrigFps, double? CurFps, int OrigW, int OrigH, int CurW, int CurH) SnapshotStats()
     {
-        var media = _currentMedia;
-        if (media != null)
+        // fix35（移植）：不再读 Media.Statistics（原生调用），只读看门狗回写的缓存
+        var shown = _cachedDisplayed;
+        if (shown > 0)
         {
-            var st = media.Statistics; // MediaStats 结构体：DisplayedPictures 字段
-            if (st.DisplayedPictures > 0)
+            long now = Environment.TickCount64;
+            if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
             {
-                long now = Environment.TickCount64;
-                if (_fpsLastDisplayed > 0 && now - _fpsLastMs > 800)
-                {
-                    double fps = (st.DisplayedPictures - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
-                    if (fps > 0 && fps < 240) _measuredFps = fps;
-                }
-                _fpsLastDisplayed = (uint)st.DisplayedPictures;
-                _fpsLastMs = now;
+                double fps = (shown - _fpsLastDisplayed) * 1000.0 / (now - _fpsLastMs);
+                if (fps > 0 && fps < 240) _measuredFps = fps;
             }
+            _fpsLastDisplayed = shown;
+            _fpsLastMs = now;
         }
         return (_origFps, _measuredFps, _origW, _origH, _origW, _origH);
     }
@@ -152,7 +155,7 @@ public class LiveVideoHost : IDisposable
         get
         {
             if (_player is null || _userStopped || _streamDead) return false;
-            if (!_player.IsPlaying) return false;
+            if (Volatile.Read(ref _kernelPlaying) == 0) return false; // fix35（移植）：读缓存，零原生调用
             if (!_frameShown) return true; // 连接流程进行中，亮牌与重连由 Play 流程管理
             return PlaybackWatchdog.IsLive(_frameShown, Volatile.Read(ref _lastTickMs), Environment.TickCount64);
         }
@@ -181,6 +184,9 @@ public class LiveVideoHost : IDisposable
         _libVlc = new LibVLC(enableDebugLogs: false);
         // 真机反馈：Amlogic t982 硬解黑屏，默认软解保画面（v1.0.2）
         _player = new MediaPlayer(_libVlc) { EnableHardwareDecoding = false };
+        // fix35（移植）：新内核播放态从假开始，等 Playing 事件回写
+        _kernelPlaying = 0;
+        _cachedDisplayed = 0;
         // PL4: RestartKernel 可能由看门狗/自救线程调用，载体 View 挂播放器必须回 UI 线程
         var carrier = _videoCarrier;
         if (carrier != null)
@@ -189,6 +195,9 @@ public class LiveVideoHost : IDisposable
             if (UiDispatcher != null) UiDispatcher(() => { try { carrier.MediaPlayer = player; } catch { } });
             else carrier.MediaPlayer = player;
         }
+        // fix35（移植）：内核播放态事件回写——IsAlive 判活改读缓存，UI 线程零原生调用
+        _player.Playing += (_, _) => Volatile.Write(ref _kernelPlaying, 1);
+        _player.Paused += (_, _) => Volatile.Write(ref _kernelPlaying, 0);
         _player.EncounteredError += (_, _) => OnStreamError();
         _player.Buffering += (_, e) =>
         {
@@ -197,7 +206,7 @@ public class LiveVideoHost : IDisposable
             // 发现延迟从 2–6 秒压到 ≤1 秒；看门狗降级为兜底，双触发走 5 秒去重窗
             if (e.Cache <= StallRescue.BufferingLowPct) OnBufferingLow();
         };
-        _player.Stopped += (_, _) => { /* 换台/重连的 Stop 有代数守卫，此处无需动作 */ };
+        _player.Stopped += (_, _) => Volatile.Write(ref _kernelPlaying, 0); // fix35（移植）：停播即回写缓存（换台/重连的 Stop 有代数守卫）
         _player.TimeChanged += (_, _) =>
         {
             Volatile.Write(ref _lastTickMs, Environment.TickCount64);
@@ -257,6 +266,17 @@ public class LiveVideoHost : IDisposable
         if (_userStopped || _currentUrl is null) return;
         MaybeRetestHealGate(); // vc39 ⑤：门控启用期每 5 分钟复测系统解析，恢复自动退出
         if (!_frameShown) return;                 // 还没出首帧：连接流程自己管理，不看门狗
+        // fix35（移植）：帧统计缓存回写——后台巡检线程读原生统计，UI 层 SnapshotStats 只读缓存
+        var statsMedia = _currentMedia;
+        if (statsMedia != null)
+        {
+            try
+            {
+                var st = statsMedia.Statistics;
+                if (st.DisplayedPictures > 0) _cachedDisplayed = (uint)st.DisplayedPictures;
+            }
+            catch { /* 释放竞态口径：统计读不碍播放 */ }
+        }
         long last = Volatile.Read(ref _lastTickMs);
         long age = Environment.TickCount64 - last;
         if (!PlaybackWatchdog.IsStalled(_frameShown, last, Environment.TickCount64))
@@ -535,6 +555,7 @@ public class LiveVideoHost : IDisposable
         _measuredFps = null;  // ④：换台重新实测
         _fpsLastDisplayed = 0;
         _fpsLastMs = 0;
+        _cachedDisplayed = 0; // fix35（移植）：换台清帧统计缓存，与新内核对齐
         _origFps = null; _origW = 0; _origH = 0;
         _genCounter.NextGeneration(); // 新一代：旧重连定时器全作废
         StartInternal();

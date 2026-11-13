@@ -25,6 +25,7 @@ namespace TaoLive.UI.Android.Phone
         internal static volatile bool _isLive;              // 播放页直播态（static: VideoHost 回调跨 partial 可读）
         internal ChannelCatalog? _liveCatalog;
         internal StreamResolver? _liveResolver;
+        internal DynamicSourceStore? _liveDynStore; // vc45②：动态源库（搜源验活收录，落盘 dynamic_sources.json）
         internal AiBufferPool? _livePool;
         internal LiveHlsRelay? _liveRelay;
         internal Channel? _liveCurrent;
@@ -47,7 +48,19 @@ namespace TaoLive.UI.Android.Phone
                 {
                     DeviceIdentity.Attach(FilesDir!.AbsolutePath);   // 央视频 guid 设备身份, 与电视版同口径
                     _livePool = new AiBufferPool();
-                    _liveResolver = new StreamResolver();
+                    var resolver = _liveResolver = new StreamResolver();
+                    // vc45②：选源智能化接线（与电视版同口径，无常规级节拍——手机前台约束，救急级已覆盖）
+                    var dynStore = _liveDynStore = new DynamicSourceStore();
+                    var filesDir = FilesDir!.AbsolutePath;
+                    Task.Run(() => DynamicSourceRegistry.Load(dynStore, filesDir));
+                    dynStore.OnChanged = () =>
+                    {
+                        try { DynamicSourceRegistry.Save(dynStore, filesDir); }
+                        catch { /* 落盘失败不拖播放：下次变更重试 */ }
+                    };
+                    resolver.DynamicSources = dynStore;
+                    resolver.Scout = new SourceScout(new SourceIntelligenceEngine(), dynStore);
+                    resolver.DiscoverCandidates = PublicListDiscover.FindAsync;
                     var fav = new FavoriteStore();
                     _liveCatalog = new ChannelCatalog(fav);
                     _liveCatalog.RegisterSource(new YangshipinSource());

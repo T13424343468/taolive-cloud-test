@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading; // vc45②：Interlocked 轮转游标
 using Android.App;
 using Android.Content;
 using Android.Content.PM;
@@ -37,6 +38,9 @@ public class MainActivity : Activity
 {
     private ChannelCatalog _catalog = null!;
     private StreamResolver _resolver = null!;
+    private DynamicSourceStore _dynStore = null!; // vc45②：动态源库（搜源验活收录，落盘 dynamic_sources.json）
+    private System.Threading.Timer? _scoutTimer; // vc45②：常规级探索节拍
+    private int _scoutCursor; // vc45②：轮转游标（每轮顺播清单走，不反复磨同几台）
     private LiveVideoHost _host = null!;
     private FavoriteStore _favorites = null!;
     private ChannelPrecheck _precheck = null!;  // 开机预检握手（v1.0.8）：各台可连状态
@@ -198,6 +202,20 @@ public class MainActivity : Activity
         _catalog.RegisterSource(new CityCandidatesSource()); // v22 第 16 项：地方台 18 路候选源挂链（13 城市+2 省经济，台账 city_channel_candidates.json）
         _catalog.Rebuild();
         _resolver = new StreamResolver();
+        // vc45②：选源智能化接线——动态源库（落盘回灌+变更即存 dynamic_sources.json）+
+        // 救急级搜源触发（全候选耗尽立即搜）+ 候选发现器（公开免费清单，验活才入库）。
+        // 常规级低频探索见 StartRoutineScout()（空闲时段驱动同一管线）。
+        var dynStore = _dynStore = new DynamicSourceStore();
+        Task.Run(() => DynamicSourceRegistry.Load(dynStore, FilesDir!.AbsolutePath));
+        dynStore.OnChanged = () =>
+        {
+            try { DynamicSourceRegistry.Save(dynStore, FilesDir!.AbsolutePath); }
+            catch (Exception se) { CrashNet.Record($"[Scout] 动态源落盘失败（功能不残废）：{se.Message}"); }
+        };
+        _resolver.DynamicSources = dynStore;
+        _resolver.Scout = new SourceScout(new SourceIntelligenceEngine(), dynStore);
+        _resolver.DiscoverCandidates = PublicListDiscover.FindAsync;
+        StartRoutineScout();
         _host = new LiveVideoHost { TotalMemBytes = _totalMem, UiDispatcher = a => _ui.Post(a) }; // ⑩内存水位自适应口径注入；PL4 载体重挂回 UI 线程
         _hotStandby = new HotStandbyKeeper(_resolver, _backoff); // v25 修法七：热备与预热共用同一本退避账（不建第二本）
         // v25 修法七 2b：热备帧级切换接线——LiveVideoHost 断流/自救前先问热备（独立预算 90 秒窗 4 次）
@@ -484,6 +502,36 @@ public class MainActivity : Activity
             return;
         }
         FlashInfo("无信号");
+    }
+
+    // vc45② 常规级：空闲低频探索——每 30 分钟一轮、每轮最多 3 台轮转（方案定稿 §四「只在空闲时段执行」）：
+    // 换台 5 分钟内整轮让路（不抢播放带宽）；搜源管线内受静默校验与预算约束，验活才入库。
+    private void StartRoutineScout()
+    {
+        _scoutTimer = new System.Threading.Timer(async _ =>
+        {
+            try
+            {
+                var scout = _resolver.Scout;
+                var discover = _resolver.DiscoverCandidates;
+                if (scout == null || discover == null) return;
+                var all = _catalog.All.Where(c => !string.IsNullOrEmpty(c.Name)).ToList();
+                if (all.Count == 0) return;
+                for (int i = 0; i < 3; i++)
+                {
+                    if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _tuneBeginMs < 5 * 60_000) return; // 换台即收工
+                    var ch = all[Math.Abs(Interlocked.Increment(ref _scoutCursor)) % all.Count];
+                    var known = FallbackSourceRegistry.Has(ch.Name) || (_dynStore?.Has(ch.Name) ?? false);
+                    await scout.RunAsync(ch.Name,
+                        () => discover(ch.Name),
+                        c => _resolver.ValidateCandidateAsync(c.Url, c.Referer,
+                            string.IsNullOrEmpty(c.UserAgent) ? ch.UserAgent : c.UserAgent),
+                        existingBestScore: 0, // 动态源=与内置表并行的备源，入库判重由库收口（同 URL 更新不叠加）
+                        channelKnown: known);
+                }
+            }
+            catch (Exception se) { CrashNet.Record($"[Scout] 常规探索异常（功能不残废）：{se.Message}"); }
+        }, null, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
     }
 
     private void Play(Channel? ch)

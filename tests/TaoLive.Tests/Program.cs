@@ -1880,6 +1880,64 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
             existingBestScore: 0, channelKnown: true);
         Check(r4.ReplacedDead, "②7死源被新源直接顶替（不等复活）");
     }
+
+    // ②8 UI 接线：动态源库消费（备选序内置表后、用户源前）+ 救急级触发 + 落盘回灌（BLL 全口径）
+    {
+        var store = new DynamicSourceStore();
+        store.Add(new DynamicSourceEntry { ChannelName = "未登记新台", Url = "http://dyn.example/live1.m3u8" });
+
+        // a) 未登记台：主源死+无内置表 → 动态源探活即返回（备选序=内置表后、用户源前）
+        var resolver = new StreamResolver
+        {
+            BackupProbeOverride = (url, _, _) => Task.FromResult(url.Contains("dyn.example")),
+            DynamicSources = store,
+        };
+        var ch = new Channel { Name = "未登记新台", SourceId = "dead", StreamUrl = "", EpgKey = "dyn_8a" };
+        var r8a = await resolver.ResolveWithFailoverAsync(ch);
+        Check(r8a != null && r8a.Url.Contains("dyn.example/live1"), "②8动态源探活即消费（内置表后用户源前）");
+
+        // b) 动态源探死 → 直接摘库（不占候选位）+ 全候选耗尽 → 救急搜源触发（验活入库）
+        store.Add(new DynamicSourceEntry { ChannelName = "救急测试台", Url = "http://dyn.example/dead2.m3u8" });
+        var r2 = new StreamResolver
+        {
+            BackupProbeOverride = (url, _, _) => Task.FromResult(url.Contains("alive3")), // 只有救急新发现的源探活
+            DynamicSources = store,
+            Scout = new SourceScout(new SourceIntelligenceEngine(), store),
+            DiscoverCandidates = _ => Task.FromResult(new List<ScoutCandidate>
+                { new("救急测试台", "http://dyn.example/alive3.m3u8") }),
+        };
+        var ch8b = new Channel { Name = "救急测试台", SourceId = "dead", StreamUrl = "", EpgKey = "dyn_8b" };
+        var r8b = await r2.ResolveWithFailoverAsync(ch8b); // 全候选耗尽返回 null，救急搜源 fire-and-forget
+        Check(r8b == null, "②8全候选耗尽明确失败（救急搜源后台跑）");
+        var wait = 0;
+        while (wait < 40 && !store.Get("救急测试台").Any(e => e.Url.Contains("alive3"))) { await Task.Delay(50); wait++; }
+        Check(store.Get("救急测试台").Any(e => e.Url.Contains("alive3.m3u8")),
+            "②8救急搜源验活自动入库（发现→校验→评分→收录）");
+        Check(!store.Get("救急测试台").Any(e => e.Url.Contains("dead2.m3u8")), "②8动态源探死直接摘库（不占候选位）");
+        // 摘库后救急入库的新源可被再次解析直接用上
+        var r8b2 = await r2.ResolveWithFailoverAsync(ch8b);
+        Check(r8b2 != null && r8b2.Url.Contains("alive3.m3u8"), "②8救急入库新源下一轮解析即用上");
+
+        // c) 动态源落盘回灌（dynamic_sources.json：Save 原子写 + Load 还原）
+        var dir = Path.Combine(Path.GetTempPath(), "vc45_dyn_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        store.Add(new DynamicSourceEntry { ChannelName = "落盘测试台", Url = "http://dyn.example/persist.m3u8" });
+        DynamicSourceRegistry.Save(store, dir);
+        var store2 = new DynamicSourceStore();
+        DynamicSourceRegistry.Load(store2, dir);
+        Check(store2.Has("落盘测试台") && store2.Get("落盘测试台").Any(e => e.Url.Contains("persist.m3u8")),
+            "②8动态源落盘回灌（Save→Load 同口径还原）");
+
+        // d) 判重：同 URL 再入库=更新不叠加（常规低频重复探索不堆栈）
+        var before = store.Get("落盘测试台").Count;
+        store.Add(new DynamicSourceEntry { ChannelName = "落盘测试台", Url = "http://dyn.example/persist.m3u8" });
+        Check(store.Get("落盘测试台").Count == before, "②8动态源判重（同 URL 更新不叠加）");
+
+        // e) 未接动态源库 = 既有口径零变化（regression 钳位：动态为空不占候选）
+        var r8e = await new StreamResolver { BackupProbeOverride = (_, _, _) => Task.FromResult(true) }
+            .ResolveWithFailoverAsync(new Channel { Name = "湖南卫视", SourceId = "dead", StreamUrl = "", EpgKey = "dyn_8e" });
+        Check(r8e != null && r8e.Url.Contains("tsfile/live/0128_1"), "②8未接动态源库=既有备援口径零变化");
+    }
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");

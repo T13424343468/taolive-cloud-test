@@ -586,33 +586,50 @@ public class LiveVideoHost : IDisposable
         _firstFrameExtends = 0; // vc37 查活续期轮次随起播重置
         Volatile.Write(ref _lastTickMs, Environment.TickCount64);
         if (!silent) StatusChanged?.Invoke("连接中…");
-        _player.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
-        _currentMedia?.Dispose(); // ④旧媒体统计源释放
-        // vc39 ⑤：门控启用且代理存活 → 播本地代理 URL（127.0.0.1/?u=原URL），代理按存活通道（DoH 择优）回源；
-        // _currentUrl 保持原 URL（换票比较/换台逻辑不受影响），只在起播这一层换地址
-        string playUrl = _currentUrl!;
-        if (HealGate.IsEngaged && HealKernel.IsAlive && !HlsRewriter.TryUnwrap(playUrl, out _))
+        // fix32（修复批A移植）：原生 Stop/媒体构建整段投后台——VLC 原生 Stop 持锁时主线程排队等锁
+        // 即整机无响应（冻结审计 A1 同型病根）；串行化保序：先停旧台再起新台；状态字段已先行，
+        // 时序由代数守卫+事件回写管（_kernelPlaying 在 Stopped 事件回写复位）
+        var player = _player;
+        var oldMedia = _currentMedia;
+        var cachingIdx = _cachingIndex;
+        var inventoryFull = (_inventoryRefetch || InventoryMode == BufferInventory.Mode.StartFull);
+        Task.Run(() =>
         {
-            playUrl = HlsRewriter.Wrap(playUrl);
-            try { CrashNet.Record($"[LiveVideoHost] 网络自愈门控启用中：本次起播走本地代理（原源 {MaskUrl(_currentUrl)}）"); } catch { }
-        }
-        var media = new Media(_libVlc!, new Uri(playUrl));
-        _currentMedia = media; // ④保留引用：Media.Statistics 提供帧统计
-        // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）；
-        // 1.0.12 发现 B：3 秒库存两档——默认「起播即 3 秒」（库存档兜底，修正②：重连缓存递增口径并入固定库存档，
-        // 不被水位自适应降回去）；补库存档先开画（修正④：换台口径=先开画后补库存），首帧后静默重接补到 3 秒
-        int ladder = CacheLadder.At(_cachingIndex);
-        int caching = (_inventoryRefetch || InventoryMode == BufferInventory.Mode.StartFull)
-            ? Math.Max(BufferInventory.TargetMs, ladder)
-            : ladder;
-        media.AddOption($":network-caching={caching}");
-        media.AddOption($":live-caching={Math.Max(1200, caching)}");
-        foreach (var opt in _currentOptions) media.AddOption(opt);
-        // fix32（移植 2026-11-13 修复批A）：轨道解析整段投后台——media.Parse 是阻塞原生重活，
-        // 换台路径此处在 UI 线程跑，解析慢一拍就整机卡一拍；重试定时器路径已在后台，口径一致
-        var statsTarget = media;
-        _ = Task.Run(() => ParseMediaStats(statsTarget));
-        _player.Play(media);
+            try
+            {
+                player?.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
+                try { oldMedia?.Dispose(); } catch { } // ④旧媒体统计源释放
+                // vc39 ⑤：门控启用且代理存活 → 播本地代理 URL（127.0.0.1/?u=原URL），代理按存活通道（DoH 择优）回源；
+                // _currentUrl 保持原 URL（换票比较/换台逻辑不受影响），只在起播这一层换地址
+                string playUrl = _currentUrl!;
+                if (HealGate.IsEngaged && HealKernel.IsAlive && !HlsRewriter.TryUnwrap(playUrl, out _))
+                {
+                    playUrl = HlsRewriter.Wrap(playUrl);
+                    try { CrashNet.Record($"[LiveVideoHost] 网络自愈门控启用中：本次起播走本地代理（原源 {MaskUrl(_currentUrl)}）"); } catch { }
+                }
+                var media = new Media(_libVlc!, new Uri(playUrl));
+                _currentMedia = media; // ④保留引用：Media.Statistics 提供帧统计
+                // 直播低延迟：缓存阶梯（首连 1200ms，重连 2500→4000→6000 自适应软解跟不上的流）；
+                // 1.0.12 发现 B：3 秒库存两档——默认「起播即 3 秒」（库存档兜底，修正②：重连缓存递增口径并入固定库存档，
+                // 不被水位自适应降回去）；补库存档先开画（修正④：换台口径=先开画后补库存），首帧后静默重接补到 3 秒
+                int ladder = CacheLadder.At(cachingIdx);
+                int caching = inventoryFull
+                    ? Math.Max(BufferInventory.TargetMs, ladder)
+                    : ladder;
+                media.AddOption($":network-caching={caching}");
+                media.AddOption($":live-caching={Math.Max(1200, caching)}");
+                foreach (var opt in _currentOptions) media.AddOption(opt);
+                // fix32（修复批A移植）：轨道解析整段投后台——media.Parse 是阻塞原生重活，慢一拍整机卡一拍
+                var statsTarget = media;
+                _ = Task.Run(() => ParseMediaStats(statsTarget));
+                player?.Play(media);
+            }
+            catch (Exception ex)
+            {
+                try { CrashNet.Record("[LiveVideoHost] 后台起播异常（自救链兜底）：" + ex.Message); } catch { }
+                OnStreamError();
+            }
+        });
         StartFirstFrameTimer();   // PL2: 首帧超时兜底
     }
 

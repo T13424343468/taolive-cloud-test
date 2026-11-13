@@ -254,6 +254,12 @@ public class SelfHealProxyKernel : IDisposable
     private System.Net.HttpListener? _listener;
     private CancellationTokenSource? _cts;
 
+    // vc52 黄四：AcceptLoop 每请求 Task.Run 无并发上限——坏源慢响应时回源任务无限堆积，
+    // 线程池/连接被分片拖死（长跑劣化）。加信号量限流（network-streaming 评审 P2 建议 8–16 取 12），
+    // 满载新请求 503 快速失败（VLC 对分片 503 会重试，不锁死播放链）
+    internal const int MaxConcurrentForwards = 12;
+    private readonly SemaphoreSlim _inflight = new(MaxConcurrentForwards, MaxConcurrentForwards);
+
     // 评审观察①修法（最重红）：回源 HttpClient 不得走系统解析——SystemDnsBroken 场景裸 HttpClient 同样 502，
     // ⑤在目标病根下等于没生效。SocketsHttpHandler.ConnectCallback 按 DoH 择优解析拿 IP 直连（SNI 由 handler
     // 按原请求主机补齐，TLS 不受影响）；连接超时 5 秒，IP 逐个试不连坏 IP 死磕。
@@ -392,10 +398,18 @@ public class SelfHealProxyKernel : IDisposable
                 MarkDead();
                 return;
             }
+            // vc52 黄四：满载快速失败——Wait(0) 同步探测不阻塞 accept 环；超限 503 立即回，
+            // 不入队（回源任务由 finally 保证 Release）
+            if (!_inflight.Wait(0, ct))
+            {
+                try { ctx.Response.StatusCode = 503; ctx.Response.Close(); } catch { }
+                continue;
+            }
             _ = Task.Run(async () =>
             {
                 try { await HandleAsync(ctx, ct); }
                 catch (Exception ex) { Report($"代理单请求失败：{ex.Message}"); try { ctx.Response.StatusCode = 502; ctx.Response.Close(); } catch { } }
+                finally { _inflight.Release(); }
             }, ct);
         }
     }

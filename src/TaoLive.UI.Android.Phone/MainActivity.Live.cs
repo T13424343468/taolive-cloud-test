@@ -52,15 +52,20 @@ namespace TaoLive.UI.Android.Phone
                     // vc45②：选源智能化接线（与电视版同口径，无常规级节拍——手机前台约束，救急级已覆盖）
                     var dynStore = _liveDynStore = new DynamicSourceStore();
                     var filesDir = FilesDir!.AbsolutePath;
-                    Task.Run(() => DynamicSourceRegistry.Load(dynStore, filesDir));
+                    // vc46E 时序修复：先赋 OnChanged 再启动回灌——回灌窗口内 Add 不再触发 OnChanged=null 漏存
                     dynStore.OnChanged = () =>
                     {
                         try { DynamicSourceRegistry.Save(dynStore, filesDir); }
                         catch { /* 落盘失败不拖播放：下次变更重试 */ }
                     };
+                    Task.Run(() => DynamicSourceRegistry.Load(dynStore, filesDir));
                     resolver.DynamicSources = dynStore;
                     resolver.Scout = new SourceScout(new SourceIntelligenceEngine(), dynStore);
                     resolver.DiscoverCandidates = PublicListDiscover.FindAsync;
+                    // vc46②9：三本账接线（与电视版同口径：冷却/判死/预算全量启用）
+                    resolver.Cooldowns = new FailureCooldownLedger();
+                    resolver.DeadLedger = new DeadSourceLedger();
+                    resolver.Budget = new SwitchBudget();
                     var fav = new FavoriteStore();
                     _liveCatalog = new ChannelCatalog(fav);
                     _liveCatalog.RegisterSource(new YangshipinSource());

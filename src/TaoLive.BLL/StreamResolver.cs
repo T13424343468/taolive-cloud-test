@@ -118,15 +118,51 @@ public class StreamResolver
     /// <summary>vc45②：候选发现器（公开免费渠道发现候选，IO 注入）。救急搜源与常规探索共用。</summary>
     public Func<string, Task<List<ScoutCandidate>>>? DiscoverCandidates { get; set; }
 
+    // ---- vc46②9 选源智能化接线：三本账（可注入，null=禁用=既有口径零变化，同 DynamicSources 模式） ----
+
+    /// <summary>vc46②9-1：失败模式分级冷却账本——403 票过 5 分钟 / 超时 15 分钟 / DNS 死 60 分钟 / 伪 200 拉黑。
+    /// 冷却中候选跳过探活直接让位（省时延），探活成功即解除。</summary>
+    public FailureCooldownLedger? Cooldowns { get; set; }
+
+    /// <summary>vc46②9-2：判死账本——双通道证据（本轮探死+账内已有冷却记录）才判死，30–60 分钟低频复检复活；
+    /// 复检期到放行探活，通过即复活。动态源不进本账（维持摘库口径，死源被新源顶替）。</summary>
+    public DeadSourceLedger? DeadLedger { get; set; }
+
+    /// <summary>vc46②9-3：切换预算——90 秒窗 4 次硬上限（含主→备/让位/用户源全部切换动作），耗尽即停走救急。</summary>
+    public SwitchBudget? Budget { get; set; }
+
     private readonly ConcurrentDictionary<string, byte> _scoutInflight = new(); // vc45②：同台搜源并发护栏（救急连发不叠加）
 
     /// <summary>vc45②：候选验活（搜源管线 validate 注入用）——清单级轻验，口径与备援切换前验证一致。</summary>
     public Task<bool> ValidateCandidateAsync(string url, string? referer, string? ua) => ProbeBackupAsync(url, referer, ua);
 
+    /// <summary>
+    /// vc46②9-5：候选验活深探（搜源管线 validate 换装）——分片级（清单+首分片头校验，segmentLevel:true），
+    /// 比切换前轻探（清单级）深一层：垃圾文案伪 200 在清单级已挡，死分片在分片级挡。
+    /// 序号前进+时间戳新鲜窗（StreamLiveness）属播放期实测回写口径——搜源一次性验活拿不到两次取样，做到分片级即收口。
+    /// 切换前验证维持轻探不换（换深探会把切台时延拉长，违背「快失败快转向」）。
+    /// </summary>
+    public async Task<bool> ValidateCandidateDeepAsync(string url, string? referer, string? ua)
+    {
+        if (BackupProbeOverride != null) return await BackupProbeOverride(url, referer, ua); // 桩注入=统一走桩（沙箱零外网）
+        return (await ProbeHotStandbyAsync(url, referer, ua, segmentLevel: true)).Ok;
+    }
+
     private async Task<bool> ProbeBackupAsync(string url, string? referer, string? ua)
     {
-        if (BackupProbeOverride != null) return await BackupProbeOverride(url, referer, ua);
-        return (await ProbeHotStandbyAsync(url, referer, ua, segmentLevel: false)).Ok;
+        var (_, ok) = await ProbeBackupClassifiedAsync(url, referer, ua);
+        return ok;
+    }
+
+    /// <summary>
+    /// vc46②9-1：分类探针——探活同时回报失败模式（供冷却账分级入账）。
+    /// BackupProbeOverride 桩只有 bool，模式不可得时按超时档兜底（保守短冷却：好源 15 分钟内自愈重探）。
+    /// </summary>
+    private async Task<(SourceFailureMode? Mode, bool Ok)> ProbeBackupClassifiedAsync(string url, string? referer, string? ua)
+    {
+        if (BackupProbeOverride != null) return (SourceFailureMode.Timeout, await BackupProbeOverride(url, referer, ua));
+        var (ok, rejected, mode) = await ProbeHotStandbyClassifiedAsync(url, referer, ua, segmentLevel: false);
+        return (ok ? (SourceFailureMode?)null : mode, ok);
     }
 
     /// <summary>
@@ -249,24 +285,57 @@ public class StreamResolver
         var fbs = FallbackSourceRegistry.GetAll(ch.Name);
         var dyn = DynamicSources?.Get(ch.Name).ToArray() ?? Array.Empty<DynamicSourceEntry>(); // vc45②：快照——探死摘库不动本轮遍历
         var candidateCount = 1 + fbs.Count + dyn.Length + (UserFallback != null ? 1 : 0);
+        // vc46②9-3：让位统一收口——预算消耗+索引推进；预算耗尽=false（停，同全耗尽口径走救急）。
+        bool Advance()
+        {
+            if (Budget != null && !Budget.TryConsume(key)) return false;
+            _failover.NextCandidateOnFailure(key, candidateCount);
+            return true;
+        }
         if (_failover.CurrentIndex(key) == 0)
         {
             var primary = await ResolvePlayUrlAsync(ch, force);
             if (primary != null) return primary;
-            _failover.NextCandidateOnFailure(key, candidateCount); // 主源失败→按序进备援（候选数按实际）
+            if (!Advance()) { await ScoutEmergencyAsync(ch, key); return null; } // 主源失败→按序进备援（候选数按实际）
         }
         // 治顿批①：内置备援表优先（登记台免网络二次解析，直连即用）；耗尽退 UserFallback
         // vc45 隐患②：备援切换前先轻验拉流（清单级）——探死的候选按序让位进下一个，不硬切死路；
         // 探活才记切换成功（OnSuccess）。探针可注入（测试确定性），默认走 ProbeHotStandbyAsync 清单级。
+        // vc46②9-1/2：冷却/判死账面挡板——冷却中候选跳过探活直接让位（省时延）；
+        // 探死按失败模式入冷却账；连死（本轮探死+账内已有记录）升级判死；复检期到放行，探活通过即复活。
+        bool CoolingOrDead(string url) =>
+            (DeadLedger != null && DeadLedger.IsDead(url) && !DeadLedger.IsDueForRecheck(url)) // 死亡期内不探不选
+            || (Cooldowns?.IsCooling(url) ?? false); // 冷却期内不探不选
         var idx = _failover.CurrentIndex(key);
         while (idx >= 1 && idx <= fbs.Count)
         {
             var fb = fbs[idx - 1];
             var fbUa = string.IsNullOrEmpty(fb.UserAgent) ? ch.UserAgent : fb.UserAgent;
-            if (!await ProbeBackupAsync(fb.Url, fb.Referer, fbUa))
+            bool dead;
+            if (CoolingOrDead(fb.Url)) { dead = true; } // 账面判死/冷却：不探活直接让位
+            else
+            {
+                // vc46②9-2 连死证据：冷却期跳过探活期间账不重记，账内历史痕迹（含已过期）+本轮再探再死=两路证据
+                var hasHistory = Cooldowns?.HasRecord(fb.Url) ?? false;
+                var (mode, ok) = await ProbeBackupClassifiedAsync(fb.Url, fb.Referer, fbUa);
+                if (!ok)
+                {
+                    Cooldowns?.Record(fb.Url, mode ?? SourceFailureMode.Timeout);
+                    if (DeadLedger != null && (hasHistory || DeadLedger.IsDead(fb.Url)))
+                        DeadLedger.MarkDead(fb.Url); // 本轮探死+账内历史失败痕迹=双通道证据；复检期探死=重新入账刷新复检期
+                    dead = true;
+                }
+                else
+                {
+                    Cooldowns?.Clear(fb.Url); // 探活成功：解除冷却
+                    if (DeadLedger?.IsDead(fb.Url) == true) DeadLedger.Revive(fb.Url); // 复检通过自动复活
+                    dead = false;
+                }
+            }
+            if (dead)
             {
                 var prev = idx;
-                _failover.NextCandidateOnFailure(key, candidateCount); // 备援探死 → 下一路
+                if (!Advance()) { await ScoutEmergencyAsync(ch, key); return null; } // ②9-3：预算耗尽=停
                 idx = _failover.CurrentIndex(key);
                 if (idx == prev) break; // 已钳在末位不再前进：候选耗尽（末路探死即终局，防无限重探）
                 continue;
@@ -288,11 +357,19 @@ public class StreamResolver
         {
             var de = dyn[idx - fbs.Count - 1];
             var deUa = string.IsNullOrEmpty(de.UserAgent) ? ch.UserAgent : de.UserAgent;
-            if (!await ProbeBackupAsync(de.Url, de.Referer, deUa))
+            bool deadDyn;
+            if (CoolingOrDead(de.Url)) { deadDyn = true; } // ②9-1：冷却中跳过探活（动态源不进判死账——摘库即顶替口径）
+            else
             {
-                DynamicSources?.Remove(ch.Name, de.Url);
+                var (_, ok) = await ProbeBackupClassifiedAsync(de.Url, de.Referer, deUa);
+                if (!ok) { Cooldowns?.Record(de.Url, SourceFailureMode.Timeout); deadDyn = true; }
+                else { Cooldowns?.Clear(de.Url); deadDyn = false; }
+            }
+            if (deadDyn)
+            {
                 var prevD = idx;
-                _failover.NextCandidateOnFailure(key, candidateCount);
+                DynamicSources?.Remove(ch.Name, de.Url); // vc46H 注：candidateCount 为循环前快照，摘库不动本轮遍历（本轮候选已定，下轮 Get 取新库）——快照口径行为正确，非缺陷
+                if (!Advance()) { await ScoutEmergencyAsync(ch, key); return null; } // ②9-3：预算耗尽=停
                 idx = _failover.CurrentIndex(key);
                 if (idx == prevD) break; // 已钳在末位：候选耗尽（救急搜源在出口触发）
                 continue;
@@ -310,13 +387,23 @@ public class StreamResolver
         try
         {
             var alt = await UserFallback(ch);
-            // vc45 隐患②：用户备援同样先验后切——探死按失败钳在末位候选返回 null，不硬切死路
-            if (string.IsNullOrEmpty(alt) || !await ProbeBackupAsync(alt, ch.Referer, ch.UserAgent))
+            // vc45 隐患②：用户备援同样先验后切——探死按失败钳在末位候选返回 null，不硬切死路；
+            // vc46②9-1：用户备援冷却中同样跳过探活（不重复记账，直接按失败走救急）
+            if (string.IsNullOrEmpty(alt) || Cooldowns?.IsCooling(alt) == true)
             {
-                _failover.NextCandidateOnFailure(key, candidateCount); // 备援也失败（钳在末位候选）
+                if (!Advance()) { await ScoutEmergencyAsync(ch, key); return null; } // ②9-3：预算耗尽=停
+                await ScoutEmergencyAsync(ch, key); // 全候选耗尽 → 救急搜源
+                return null;
+            }
+            var (_, okUser) = await ProbeBackupClassifiedAsync(alt, ch.Referer, ch.UserAgent);
+            if (!okUser)
+            {
+                Cooldowns?.Record(alt, SourceFailureMode.Timeout);
+                if (!Advance()) { await ScoutEmergencyAsync(ch, key); return null; } // ②9-3：预算耗尽=停
                 await ScoutEmergencyAsync(ch, key); // vc45②：全候选耗尽 → 救急搜源
                 return null;
             }
+            Cooldowns?.Clear(alt);
             await FailoverOnSuccessWithRecoveryProbeAsync(ch, key); // vc45 隐患④：达标回主前先探主源
             var opts = new List<(string Key, string Value)>();
             if (!string.IsNullOrEmpty(ch.Referer)) opts.Add(("http-referrer", ch.Referer));
@@ -349,8 +436,8 @@ public class StreamResolver
                 await scout.RunAsync(
                     channel.Name,
                     () => discover(channel.Name),
-                    async c => await resolverRef.ProbeBackupAsync(c.Url, c.Referer,
-                        string.IsNullOrEmpty(c.UserAgent) ? channel.UserAgent : c.UserAgent),
+                    async c => await resolverRef.ValidateCandidateDeepAsync(c.Url, c.Referer,
+                        string.IsNullOrEmpty(c.UserAgent) ? channel.UserAgent : c.UserAgent), // vc46②9-5：救急搜源验活换分片级深探
                     existingBestScore: 0, // 救急=全候选判死，任何验活源均可入库（existingBestScore≤0=顶替口径）
                     channelKnown: known);
             }
@@ -667,6 +754,19 @@ public class StreamResolver
     /// </summary>
     public async Task<(bool Ok, bool Rejected)> ProbeHotStandbyAsync(string url, string? referer, string? ua, bool segmentLevel)
     {
+        var (ok, rejected, _) = await ProbeHotStandbyClassifiedAsync(url, referer, ua, segmentLevel);
+        return (ok, rejected);
+    }
+
+    /// <summary>
+    /// vc46②9-1：分类版热备探针——失败同时回报模式：403/429=TicketExpired（票过短冷却）、
+    /// 伪 200=ContentInvalid（拉黑档）、超时/异常/网络失败=Timeout（中冷却）。
+    /// DNS 级故障在本包表现为连接超时/异常（DNS 择优已短路直返原 URL，见 PickEndpointAsync 短路口径），
+    /// 统一归 Timeout 档不特判 DnsDead（档差只影响账面时长，不影响跳过判定）。
+    /// </summary>
+    public async Task<(bool Ok, bool Rejected, SourceFailureMode Mode)> ProbeHotStandbyClassifiedAsync(
+        string url, string? referer, string? ua, bool segmentLevel)
+    {
         string? manifest;
         try
         {
@@ -675,16 +775,21 @@ public class StreamResolver
             if (!string.IsNullOrEmpty(ua)) req.Headers.TryAddWithoutValidation("User-Agent", ua);
             using var resp = await Http.SendAsync(req);
             if (!resp.IsSuccessStatusCode)
-                return (false, (int)resp.StatusCode is 403 or 429);
+            {
+                var rejected = (int)resp.StatusCode is 403 or 429;
+                return (false, rejected, rejected ? SourceFailureMode.TicketExpired : SourceFailureMode.Timeout);
+            }
             manifest = await resp.Content.ReadAsStringAsync();
         }
-        catch { return (false, false); } // 网络级失败：不入账（修法七 1b）
-        // vc45 隐患⑤：假 200 判死——200+非 m3u8 文案=死（74.91 伪 200 教训），不计服务器明确拒绝
-        if (!string.IsNullOrEmpty(manifest) && !LooksLikeManifest(manifest)) return (false, false);
-        if (!segmentLevel || string.IsNullOrEmpty(manifest)) return (true, false);
+        catch { return (false, false, SourceFailureMode.Timeout); } // 网络级失败：不入拒绝账（修法七 1b）
+        // vc45 隐患⑤：假 200 判死——200+非 m3u8 文案=死（74.91 伪 200 教训），不计服务器明确拒绝；
+        // vc46②9-1：伪 200 分类为 ContentInvalid（拉黑档，等搜源顶替）
+        if (!string.IsNullOrEmpty(manifest) && !LooksLikeManifest(manifest))
+            return (false, false, SourceFailureMode.ContentInvalid);
+        if (!segmentLevel || string.IsNullOrEmpty(manifest)) return (true, false, SourceFailureMode.Timeout);
         // 清单 → 首个分片（相对路径转绝对）→ 几 KB 级分片头校验
         var segMatch = Regex.Match(manifest, "^(?!#)[^\\r\\n]+\\.(?:ts|m4s|mp4)[^\\r\\n]*", RegexOptions.Multiline);
-        if (!segMatch.Success) return (true, false); // 无分片行（主清单/嵌套）：清单级即通过
+        if (!segMatch.Success) return (true, false, SourceFailureMode.Timeout); // 无分片行（主清单/嵌套）：清单级即通过
         var segUrl = segMatch.Value.Trim();
         if (!segUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
@@ -694,9 +799,9 @@ public class StreamResolver
         var verdict = await ProbeUrlVerdictAsync(segUrl, referer, ua);
         return verdict switch
         {
-            ProbeVerdict.Reachable => (true, false),
-            ProbeVerdict.Rejected => (false, true),
-            _ => (false, false),
+            ProbeVerdict.Reachable => (true, false, SourceFailureMode.Timeout),
+            ProbeVerdict.Rejected => (false, true, SourceFailureMode.TicketExpired),
+            _ => (false, false, SourceFailureMode.Timeout),
         };
     }
 

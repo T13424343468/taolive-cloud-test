@@ -133,11 +133,16 @@ public class HotStandbyKeeper
     /// <summary>
     /// 主路断 → 备路可用即返回备路流（帧级切换，画面跳 2–3 秒可接受）。
     /// 粘住备路（2a）：切换后本台会话热备清零——不再自动回主路，换台/重进台按健康表自然回归。
-    /// 切换预算独立（2b：不占 5 秒去重、90 秒窗 4 次）由 LiveVideoHost 侧计数。
+    /// 切换预算（2b：90 秒窗 4 次）：vc46 起统一由 resolver.Budget 账本收口，帧级切换同样消耗预算
+    /// （耗尽返回 null，主路走既有自救链），防连环切源拖垮播放。
     /// </summary>
     public async Task<(string Url, List<(string Key, string Value)> Options)?> TrySwitchAsync()
     {
         if (!_standbyOk || _standbyUrl is null || _channel is null) return null;
+        // vc46②9-3：热备帧级切换同样受切换预算约束（此前注释说预算由 LiveVideoHost 侧计数——实际接线位在
+        // resolver 账本，此注释与事实不符；vc46 起统一收口：帧级切换消耗一次预算，耗尽返回 null 走原自救链）。
+        if (_resolver.Budget != null && !_resolver.Budget.TryConsume(_channel.EpgKey))
+            return null;
         _standbyOk = false; // 粘住备路：本台会话不再自动回主路
         var ch = _channel;
         var opts = new List<(string Key, string Value)>();

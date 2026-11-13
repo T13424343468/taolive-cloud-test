@@ -94,7 +94,10 @@ public class WarmupStore
         Flush(nowMs);
     }
 
-    private long UsedBytesLocked() => _cache.Values.Sum(e => (long)e.Body.Length * 2); // UTF-16 近似
+    // vc46G 注释勘误：Body 是 C# string（UTF-16 内存表示），Length×2 是其内存字节的近似
+    // （ASCII 内容实际占 1 字节/字符×2 后偏大，CJK 内容 BMP 内恰为 ×2）——缓存容量是软顶，
+    // 近似偏大只会提前清最旧条目，方向安全；精确字节数须按 UTF-8 编码全量计量，代价不值。
+    private long UsedBytesLocked() => _cache.Values.Sum(e => (long)e.Body.Length * 2);
 
     private long CapBytesLocked()
     {

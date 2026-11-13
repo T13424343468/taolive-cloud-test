@@ -181,6 +181,10 @@ public sealed class FailureCooldownLedger
     /// <summary>冷却期内不再选它（拉黑=永久冷却，等搜源顶替）。</summary>
     public bool IsCooling(string url) => RemainingMs(url) > 0;
 
+    /// <summary>vc46②9-2：历史失败痕迹（含已过期的记录）——连死判定的第二证：冷却期跳过探活期间
+    /// 账不会重记，过期后再探再死即构成「两次独立探死证据」（账内留痕，探活成功才清账）。</summary>
+    public bool HasRecord(string url) => _until.ContainsKey(url);
+
     /// <summary>复检复活/顶替后解除冷却。</summary>
     public void Clear(string url) => _until.TryRemove(url, out _);
 }
@@ -300,9 +304,13 @@ public sealed class DynamicSourceStore
     /// <summary>台名归一（与 FallbackSourceRegistry.Normalize 同口径：去空格全半角）。</summary>
     public static string Normalize(string name) => (name ?? "").Replace(" ", "").Replace("　", "");
 
-    /// <summary>入库（验活通过才调；同名归一台下按分降序）。</summary>
-    public void Add(DynamicSourceEntry e)
+    /// <summary>入库（验活通过才调；同名归一台下按分降序）。
+    /// vc46B：同 URL 已在内置备援表时拒绝入库——内置表候选遍历已覆盖该 URL，动态库再收=同一 URL 双探
+    /// （内置表探一遍、动态库再探一遍），白耗探活时延还翻倍请求；注册表 URL 与动态库互斥收口。
+    /// 返回 false=拒收（重复 URL），调用方按未入库口径记日志。</summary>
+    public bool Add(DynamicSourceEntry e)
     {
+        if (FallbackSourceRegistry.ContainsUrl(e.Url)) return false; // vc46B：内置表已收录，动态库不重复收录
         var key = Normalize(e.ChannelName);
         e.ChannelKey = key;
         e.AddedUtcMs = _nowMs();
@@ -314,6 +322,7 @@ public sealed class DynamicSourceStore
             list.Sort((a, b) => b.Score.CompareTo(a.Score)); // 谁分高谁顶上
         }
         OnChanged?.Invoke();
+        return true;
     }
 
     public IReadOnlyList<DynamicSourceEntry> Get(string channelName) =>
@@ -478,11 +487,13 @@ public sealed class SourceScout
         }
         if (bestEntry != null)
         {
-            _store.Add(bestEntry);
-            result.Best = bestEntry;
-            result.EnteredAsNewChannel = bestEntry.IsNewChannel;
-            result.ReplacedDead = existingBestScore <= 0; // 既有分≤0（死/冷却）= 顶替
-            result.Log.Add($"[搜源] {channelName} 收录 {bestEntry.Url}（{(bestEntry.IsNewChannel ? "新频道进目录" : "备源")}，分 {bestEntry.Score:F1}）");
+            bool added = _store.Add(bestEntry); // vc46B：内置表同 URL 拒收=未入库（不白占动态库候选位）
+            result.Best = added ? bestEntry : null;
+            result.EnteredAsNewChannel = added && bestEntry.IsNewChannel;
+            result.ReplacedDead = added && existingBestScore <= 0; // 既有分≤0（死/冷却）= 顶替
+            result.Log.Add(added
+                ? $"[搜源] {channelName} 收录 {bestEntry.Url}（{(bestEntry.IsNewChannel ? "新频道进目录" : "备源")}，分 {bestEntry.Score:F1}）"
+                : $"[搜源] {channelName} 候选 {bestEntry.Url} 与内置备援表同 URL，不重复收录（vc46B）");
         }
         else
         {

@@ -645,11 +645,16 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
 
 // ============ v1.0.8 第19项·自愈化十项专项断言（用户 00:07 确认十项全要）============
 {
-    // 自愈1·多候选源备援：主源失败切备援、连续成功自动回主源、单候选不折腾
-    var fo = new SourceFailover();
+    // 自愈1·多候选源备援：主源失败切备援、驻留满后连续成功自动回主源、单候选不折腾
+    // （vc46②9-4：回主加最少驻留 2 分钟——换源刚发生就回主=画面顿挫来回抖，先驻留观察）
+    long foT = 0;
+    var fo = new SourceFailover(() => foT);
     Check(fo.NextCandidateOnFailure("ch", 2) == 1, "自愈1：主源失败切备援候选");
     fo.OnSuccess("ch"); fo.OnSuccess("ch");
-    Check(fo.CurrentIndex("ch") == 0, "自愈1：备援连续成功2轮自动回主源");
+    Check(fo.CurrentIndex("ch") == 1, "自愈1：备援连续成功2轮达回主阈值（驻留未满先不回，vc46②9-4）");
+    foT += SwitchAdvisor.MinDwellMs;
+    fo.OnSuccess("ch");
+    Check(fo.CurrentIndex("ch") == 0, "自愈1：驻留满后连续成功自动回主源");
     Check(fo.NextCandidateOnFailure("solo", 1) == 0, "自愈1：无备援时停在主源不折腾");
     // 自愈2·取票多版本：内置 v1 出票、注册新版本按序追加、坏版本不拖垮
     var urls = TicketAlgorithms.TryAll("2004652103:900001:fhd", 1794016800, CkeyAlgorithmV1.GuidConst);
@@ -731,31 +736,6 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(KeyAlias.ToCanonical(88888) is null, "自愈10：未知键返回空（记录后按未接管处理）");
 }
 
-// ============ v1.0.8 第19项·通道化架构（用户 00:01 拍板：所有方式做成通道、按频道实际选择）============
-{
-    var router = new LaneRouter();
-    router.Register(new StubLane("ysp"));
-    router.Register(new StubLane("cztv"));
-    router.Register(new StubLane("user-m3u"));
-    // 未登记路由：按 CanHandle 命中
-    var ch = new Channel { EpgKey = "c1", SourceId = "yangshipin" };
-    Check(router.CurrentLane("c1", ch)?.LaneId == "ysp", "通道化：未登记路由按 CanHandle 命中内置通道");
-    // 登记路由：首选→失败降级备选→耗尽明确失败→恢复回首选
-    router.SetRoute("c1", new[] { "ysp", "cztv", "user-m3u" });
-    Check(router.CurrentIndex("c1") == 0, "通道化：路由登记后从首选通道开始");
-    var degraded = router.AdvanceOnFailure("c1", ch);
-    Check(degraded?.LaneId == "cztv", "通道化：首选失败自动降级备选通道");
-    Check(router.CurrentLane("c1", ch)?.LaneId == "cztv", "通道化：当前通道随降级切换");
-    router.AdvanceOnFailure("c1", ch);
-    Check(router.CurrentLane("c1", ch)?.LaneId == "user-m3u", "通道化：备选再败降级兜底通道");
-    Check(router.AdvanceOnFailure("c1", ch) is null, "通道化：全部通道耗尽=明确失败（UI 提示不静默）");
-    // 恢复回首选（自愈1 备援状态共用）
-    router.MarkSuccess("c1"); router.MarkSuccess("c1");
-    Check(router.CurrentIndex("c1") == 0 && router.CurrentLane("c1", ch)?.LaneId == "ysp", "通道化：兜底连续成功2轮自动回首选");
-    // 同 LaneId 幂等注册
-    router.Register(new StubLane("ysp"));
-    Check(router.RouteOf("none").Count == 0, "通道化：未登记路由的台返回空候选（按 CanHandle 兜底）");
-}
 
 // ============ v1.0.8 第20项：清晰度档位自适应（用户 00:07 拍板：保画面保流畅选择或切换） ============
 {
@@ -1638,17 +1618,22 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(r3b != null && r3b.Url.Contains("183.11.239.36"), "vc45②首条探死自动让位到探活候选（bfgd 死→183.11 活）");
     }
 
-    // ④ 稳定后回主源：备援连续成功达 RecoverToPrimaryAfter 轮 → 自动回主源（Index=0）
+    // ④ 稳定后回主源：备援连续成功达 RecoverToPrimaryAfter 轮 + 驻留满 → 自动回主源（Index=0）
     {
-        var f = new SourceFailover();
+        long f1t = 0;
+        var f = new SourceFailover(() => f1t);
         f.NextCandidateOnFailure("k1", 2); // 主源失败 → 备援
-        f.OnSuccess("k1"); f.OnSuccess("k1"); // 连续 2 轮成功
-        Check(f.CurrentIndex("k1") == 0, "治①④备援连续成功 2 轮自动回主源");
+        f.OnSuccess("k1"); f.OnSuccess("k1"); // 连续 2 轮成功（驻留未满先不回，vc46②9-4）
+        Check(f.CurrentIndex("k1") == 1, "治①④备援连续成功 2 轮达回主阈值（驻留未满先不回）");
+        f1t += SwitchAdvisor.MinDwellMs;
+        f.OnSuccess("k1");
+        Check(f.CurrentIndex("k1") == 0, "治①④备援连续成功且驻留满自动回主源");
     }
 
     // ④b vc45 隐患④：回主源稳定确认期——达标回主前先探主源，探不活留备援（确认期继续累计），确认活才回主
     {
-        var f = new SourceFailover();
+        long f4t = 0;
+        var f = new SourceFailover(() => f4t);
         f.NextCandidateOnFailure("k4", 2); // 主源失败 → 备援
         bool primaryAlive = false;
         await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
@@ -1658,6 +1643,7 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
         Check(f.CurrentIndex("k4") == 1, "vc45④确认期继续累计不清零（下轮达标再探）");
         primaryAlive = true;
+        f4t += SwitchAdvisor.MinDwellMs; // vc46②9-4：驻留满才回主
         await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
         Check(f.CurrentIndex("k4") == 0, "vc45④主源探活确认后回主");
     }
@@ -1847,19 +1833,20 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
     }
 
     // ②7 自动搜源管线：发现→静默校验→评分→入库；死源直接顶替；没验活绝不入库
+    // （vc46B：候选 URL 避开内置备援表真实条目——注册表同 URL 动态库拒收，不重复收录）
     {
         var store = new DynamicSourceStore(() => now);
         var scout = new SourceScout(new SourceIntelligenceEngine(), store, () => now);
         var cands = new List<ScoutCandidate>
         {
-            new("湖北卫视", "http://183.11.239.36:808/hls/46/index.m3u8"),
+            new("湖北卫视", "http://scout.example/hb1.m3u8"),
             new("湖北卫视", "http://fake.dead/x.m3u8"),
         };
         var r = await scout.RunAsync("湖北卫视",
             () => Task.FromResult(cands),
             c => Task.FromResult(!c.Url.Contains("fake.dead")), // 静默校验注入：死路验不活
             existingBestScore: 0, channelKnown: true);
-        Check(r.Best != null && r.Best.Url.Contains("183.11.239.36") && store.Has("湖北卫视"), "②7验活候选评分入库");
+        Check(r.Best != null && r.Best.Url.Contains("scout.example/hb1") && store.Has("湖北卫视"), "②7验活候选评分入库");
         Check(!r.EnteredAsNewChannel, "②7目录内台只作备源");
         Check(r.Log.Count(l => l.Contains("未验活不入库")) == 1, "②7没验活的源绝不入库（一步一记录）");
         var r2 = await scout.RunAsync("玉溪新闻综合",
@@ -1875,7 +1862,7 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(ChannelClassifier.CategoryOf("CCTV5体育") == "央视" && ChannelClassifier.CategoryOf("东方卫视") == "卫视", "②7台名归类央视/卫视");
         // 死源顶替：既有分≤0（死）→ 新源直接顶上
         var r4 = await scout.RunAsync("湖北卫视",
-            () => Task.FromResult(new List<ScoutCandidate> { new("湖北卫视", "http://183.11.239.36:808/hls/46/index.m3u8") }),
+            () => Task.FromResult(new List<ScoutCandidate> { new("湖北卫视", "http://scout.example/hb1.m3u8") }),
             _ => Task.FromResult(true),
             existingBestScore: 0, channelKnown: true);
         Check(r4.ReplacedDead, "②7死源被新源直接顶替（不等复活）");
@@ -1938,6 +1925,140 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
             .ResolveWithFailoverAsync(new Channel { Name = "湖南卫视", SourceId = "dead", StreamUrl = "", EpgKey = "dyn_8e" });
         Check(r8e != null && r8e.Url.Contains("tsfile/live/0128_1"), "②8未接动态源库=既有备援口径零变化");
     }
+
+    // ==================== vc46 ②9 选源智能化接线（五组件产线消费，老板「有问题的全改」令） ====================
+    {
+        // ②9-1 分级冷却：探死入账 + 冷却中候选跳过探活直接让位（省时延）
+        {
+            long t = 0;
+            var cooldowns = new FailureCooldownLedger(() => t);
+            int probeCalls = 0;
+            var store = new DynamicSourceStore();
+            var resolver = new StreamResolver
+            {
+                BackupProbeOverride = (_, _, _) => { probeCalls++; return Task.FromResult(false); }, // 全候选探死
+                Cooldowns = cooldowns,
+                DynamicSources = store,
+            };
+            var ch = new Channel { Name = "广东卫视", SourceId = "dead", StreamUrl = "", EpgKey = "i91a" };
+            await resolver.ResolveWithFailoverAsync(ch); // 第一轮：全候选逐一探死入账
+            var first = probeCalls;
+            Check(first > 0, "②9-1 首轮全候选逐一探活");
+            await resolver.ResolveWithFailoverAsync(ch); // 第二轮：全候选冷却中=零探活直接让位
+            Check(probeCalls == first, "②9-1 冷却中候选跳过探活（账面挡板零网络）");
+            t += FailureCooldownLedger.TimeoutMs + 1; // 冷却过期
+            await resolver.ResolveWithFailoverAsync(ch); // 第三轮：冷却过期重新逐一探
+            Check(probeCalls > first, "②9-1 冷却过期恢复探活（分级短冷却 15 分钟自愈重探）");
+        }
+
+        // ②9-2 判死复活：连死升级判死 → 死亡期内零探活 → 复检期放行 → 探活成功自动复活
+        {
+            long t = 0;
+            var cooldowns = new FailureCooldownLedger(() => t);
+            var dead = new DeadSourceLedger(() => t);
+            int probeCalls = 0;
+            var store = new DynamicSourceStore();
+            var resolver = new StreamResolver
+            {
+                BackupProbeOverride = (_, _, _) => { probeCalls++; return Task.FromResult(false); },
+                Cooldowns = cooldowns,
+                DeadLedger = dead,
+                DynamicSources = store,
+            };
+            var ch = new Channel { Name = "湖南卫视", SourceId = "dead", StreamUrl = "", EpgKey = "i92a" };
+            var tailUrl = FallbackSourceRegistry.GetAll("湖南卫视")[^1].Url;
+            await resolver.ResolveWithFailoverAsync(ch); // 第一轮：末位候选探死（首证，账无痕迹不判死）
+            Check(!dead.IsDead(tailUrl), "②9-2 单次探死不判死（防单路抖动误杀）");
+            await resolver.ResolveWithFailoverAsync(ch); // 第二轮：冷却跳过（零探活）
+            t += FailureCooldownLedger.TimeoutMs + 1;    // 冷却过期，账留历史痕迹
+            await resolver.ResolveWithFailoverAsync(ch); // 第三轮：再探再死+账内历史痕迹=双通道 → 判死
+            Check(dead.IsDead(tailUrl), "②9-2 连死（本轮探死+账内历史痕迹）升级判死");
+            probeCalls = 0;
+            await resolver.ResolveWithFailoverAsync(ch); // 第四轮：死亡期内零探活
+            Check(probeCalls == 0, "②9-2 死亡期内零探活（频道走备援）");
+            t += DeadSourceLedger.RecheckMaxMs + 1;      // 复检期到（推过最大散列）
+            await resolver.ResolveWithFailoverAsync(ch); // 复检轮：放行探活（探死→重新入账刷新复检期）
+            Check(probeCalls > 0, "②9-2 复检期到放行探活（死亡期内零探活，复检期不再陪葬）");
+            // 探活成功自动复活
+            resolver.BackupProbeOverride = (_, _, _) => Task.FromResult(true);
+            t += DeadSourceLedger.RecheckMaxMs + 1;
+            await resolver.ResolveWithFailoverAsync(ch);
+            Check(!dead.IsDead(tailUrl), "②9-2 复检探活通过自动复活");
+        }
+
+        // ②9-3 切换预算：90 秒窗硬上限——耗尽即停（不再连环探活），救急照触发
+        {
+            var budget = new SwitchBudget(maxPerWindow: 1, windowMs: 10 * 60_000, nowMs: () => 0); // 1 次切换即耗尽
+            int probeCalls = 0;
+            var store = new DynamicSourceStore();
+            var resolver = new StreamResolver
+            {
+                BackupProbeOverride = (_, _, _) => { probeCalls++; return Task.FromResult(false); },
+                Budget = budget,
+                DynamicSources = store,
+            };
+            var ch = new Channel { Name = "浙江卫视", SourceId = "dead", StreamUrl = "", EpgKey = "i93a" };
+            await resolver.ResolveWithFailoverAsync(ch); // 主源切出(耗尽)→fb1 探死→让位被预算挡停
+            Check(probeCalls == 1, "②9-3 预算耗尽即停（不再连环探活，硬上限 1 次切换）");
+            probeCalls = 0;
+            var r93b = await resolver.ResolveWithFailoverAsync(ch); // 窗内预算已空：不再切源（当前候选探完即停）
+            Check(r93b == null && resolver.Failover.CurrentIndex(ch.EpgKey) == 1,
+                "②9-3 窗内预算耗尽不再切源（防连环切源拖垮播放）");
+        }
+
+        // ②9-4 最少驻留：切换后 2 分钟内不回主（防换源顿挫来回抖）；驻留满自动回主
+        {
+            long t = 0;
+            var failover = new SourceFailover(() => t);
+            failover.NextCandidateOnFailure("k", 3); // 主源失败切到备援 1
+            await failover.OnSuccessAsync("k");
+            await failover.OnSuccessAsync("k");      // 连续 2 轮达标，但驻留未满
+            Check(failover.CurrentIndex("k") == 1, "②9-4 驻留未满（<2 分钟）不回主");
+            t += SwitchAdvisor.MinDwellMs;
+            await failover.OnSuccessAsync("k");
+            Check(failover.CurrentIndex("k") == 0, "②9-4 驻留满自动回主（探针为空按原口径）");
+        }
+
+        // ②9-5 搜源深探：validate 换分片级——override 桩注入时统一走桩（沙箱零外网口径）
+        {
+            var resolver = new StreamResolver
+            { BackupProbeOverride = (url, _, _) => Task.FromResult(url.Contains("deep-ok")) };
+            Check(await resolver.ValidateCandidateDeepAsync("http://x/deep-ok.m3u8", null, null),
+                "②9-5 深探走分片级（桩注入统一走桩口径）");
+            Check(!await resolver.ValidateCandidateDeepAsync("http://x/dead.m3u8", null, null),
+                "②9-5 深探拒死源（搜源验活换深探不收垃圾清单）");
+        }
+
+        // vc46B 注册表 URL 查重：内置表已收录的 URL 动态库拒收（免同一 URL 双探）
+        {
+            var store = new DynamicSourceStore();
+            var regUrl = FallbackSourceRegistry.GetAll("湖南卫视")[0].Url;
+            Check(FallbackSourceRegistry.ContainsUrl(regUrl), "vc46B 全表 URL 查重口径就绪");
+            Check(!store.Add(new DynamicSourceEntry { ChannelName = "湖南卫视", Url = regUrl }),
+                "vc46B 内置表同 URL 动态库拒收（不重复收录）");
+            Check(!store.Get("湖南卫视").Any(e => e.Url == regUrl), "vc46B 拒收后动态库不含该 URL");
+            var scout = new SourceScout(new SourceIntelligenceEngine(), store);
+            var r = await scout.RunAsync("湖南卫视", () => Task.FromResult(new List<ScoutCandidate> { new("湖南卫视", regUrl) }),
+                _ => Task.FromResult(true), existingBestScore: 0, channelKnown: true);
+            Check(r.Best == null && r.Log.Any(l => l.Contains("不重复收录")),
+                "vc46B 搜源管线对内置表同 URL 不入库（一步一记录）");
+        }
+
+        // vc46E 回灌即存：先赋 OnChanged 再 Load——回灌窗口内 Add 不再漏触发回调
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "vc46_dyn_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var seed = new DynamicSourceStore();
+            seed.Add(new DynamicSourceEntry { ChannelName = "回灌测试台", Url = "http://dyn.example/replay.m3u8" });
+            DynamicSourceRegistry.Save(seed, dir);
+            var store = new DynamicSourceStore();
+            int changed = 0;
+            store.OnChanged = () => changed++; // 先赋回调（修复后口径）
+            DynamicSourceRegistry.Load(store, dir);
+            Check(changed > 0 && store.Get("回灌测试台").Any(e => e.Url.Contains("replay.m3u8")),
+                "vc46E 回灌先赋 OnChanged 再 Load（回灌条目落库即落盘，不再漏存）");
+        }
+    }
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
@@ -1962,18 +2083,5 @@ class TestAlgoV2 : ITicketAlgorithm
     public string? Build(string channelId, long epochSeconds, string guid) => $"v2://{channelId}/{epochSeconds}";
 }
 
-// 通道测试桩（通道化：三候选通道）
-class StubLane : IStreamLane
-{
-    public string LaneId { get; }
-    public StubLane(string id) => LaneId = id;
-    public bool CanHandle(Channel ch) => LaneId switch
-    {
-        "ysp" => ch.SourceId == "yangshipin",
-        "cztv" => ch.SourceId == "cztv",
-        _ => true, // user-m3u 兜底全收
-    };
-    public Task<string?> FetchAsync(Channel ch) => Task.FromResult<string?>($"http://{LaneId}/stream.m3u8");
-}
 
 // 桩源：三类可播 + 1 路接不进（骨架专用，真实源回填后换正式源）

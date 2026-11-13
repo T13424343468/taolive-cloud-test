@@ -206,15 +206,21 @@ public class MainActivity : Activity
         // 救急级搜源触发（全候选耗尽立即搜）+ 候选发现器（公开免费清单，验活才入库）。
         // 常规级低频探索见 StartRoutineScout()（空闲时段驱动同一管线）。
         var dynStore = _dynStore = new DynamicSourceStore();
-        Task.Run(() => DynamicSourceRegistry.Load(dynStore, FilesDir!.AbsolutePath));
+        // vc46E 时序修复：先赋 OnChanged 再启动回灌——此前 Task.Run(Load) 在先，回灌窗口内 Add 触发
+        // OnChanged=null 漏存（回灌读出的条目落库却回不到盘，重启即丢）。
         dynStore.OnChanged = () =>
         {
             try { DynamicSourceRegistry.Save(dynStore, FilesDir!.AbsolutePath); }
             catch (Exception se) { CrashNet.Record($"[Scout] 动态源落盘失败（功能不残废）：{se.Message}"); }
         };
+        Task.Run(() => DynamicSourceRegistry.Load(dynStore, FilesDir!.AbsolutePath));
         _resolver.DynamicSources = dynStore;
         _resolver.Scout = new SourceScout(new SourceIntelligenceEngine(), dynStore);
         _resolver.DiscoverCandidates = PublicListDiscover.FindAsync;
+        // vc46②9：三本账接线（选源智能化产线消费）——冷却/判死/预算全量启用
+        _resolver.Cooldowns = new FailureCooldownLedger();
+        _resolver.DeadLedger = new DeadSourceLedger();
+        _resolver.Budget = new SwitchBudget();
         StartRoutineScout();
         _host = new LiveVideoHost { TotalMemBytes = _totalMem, UiDispatcher = a => _ui.Post(a) }; // ⑩内存水位自适应口径注入；PL4 载体重挂回 UI 线程
         _hotStandby = new HotStandbyKeeper(_resolver, _backoff); // v25 修法七：热备与预热共用同一本退避账（不建第二本）
@@ -526,8 +532,8 @@ public class MainActivity : Activity
                     var known = FallbackSourceRegistry.Has(ch.Name) || (_dynStore?.Has(ch.Name) ?? false);
                     await scout.RunAsync(ch.Name,
                         () => discover(ch.Name),
-                        c => _resolver.ValidateCandidateAsync(c.Url, c.Referer,
-                            string.IsNullOrEmpty(c.UserAgent) ? ch.UserAgent : c.UserAgent),
+                        c => _resolver.ValidateCandidateDeepAsync(c.Url, c.Referer,
+                            string.IsNullOrEmpty(c.UserAgent) ? ch.UserAgent : c.UserAgent), // vc46②9-5：常规探索验活换分片级深探
                         existingBestScore: 0, // 动态源=与内置表并行的备源，入库判重由库收口（同 URL 更新不叠加）
                         channelKnown: known);
                 }

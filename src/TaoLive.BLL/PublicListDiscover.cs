@@ -26,6 +26,9 @@ public static class PublicListDiscover
     private static long _cacheAtMs;
     private static readonly object _gate = new();
     private const int CacheMs = 10 * 60_000;
+    // vc46C single-flight：进行中的拉网任务按 feed 收口（per-key Task 缓存）——此前锁内判空放锁拉网，
+    // 并发到期 N 个调用方各拉一遍全表（N 倍带宽+响应放大）；改为首个调用方建 Task，其余 await 同一任务。
+    private static readonly Dictionary<string, Task<List<ScoutCandidate>>> _listTasks = new(StringComparer.Ordinal);
 
     /// <summary>按台名找候选（最多 5 条；归一包含匹配，宁缺毋滥——宽匹配靠校验兜底，污染风险不进库）。</summary>
     public static async Task<List<ScoutCandidate>> FindAsync(string channelName)
@@ -40,11 +43,35 @@ public static class PublicListDiscover
         }).Take(5).ToList();
     }
 
-    private static async Task<List<ScoutCandidate>> GetListAsync()
+    private static Task<List<ScoutCandidate>> GetListFlightAsync()
     {
         lock (_gate)
-            if (_cache != null && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _cacheAtMs < CacheMs)
-                return _cache;
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_cache != null && nowMs - _cacheAtMs < CacheMs)
+                return Task.FromResult(_cache); // 新鲜缓存直接命中
+            // 缓存过期：取/建本 feed 的 single-flight 任务（进行中拉网所有并发调用方共用）
+            if (_listTasks.TryGetValue("list", out var flight)) return flight;
+            flight = Task.Run(FetchFeedsAsync);
+            _listTasks["list"] = flight;
+            return flight;
+        }
+    }
+
+    private static async Task<List<ScoutCandidate>> GetListAsync()
+    {
+        var found = await GetListFlightAsync();
+        lock (_gate)
+        {
+            _cache = found;
+            _cacheAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _listTasks.Remove("list"); // vc46C：落袋即清——后续走缓存判定，过期时重建 flight
+        }
+        return found;
+    }
+
+    private static async Task<List<ScoutCandidate>> FetchFeedsAsync()
+    {
         var found = new List<ScoutCandidate>();
         foreach (var url in Feeds)
         {
@@ -70,11 +97,6 @@ public static class PublicListDiscover
                 }
             }
             catch { /* 拉 feed 失败换下一家；全失败=本轮无候选，不拖播放 */ }
-        }
-        lock (_gate)
-        {
-            _cache = found;
-            _cacheAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
         return found;
     }

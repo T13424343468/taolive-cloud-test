@@ -163,7 +163,8 @@ public static class FallbackSourceRegistry
 
     private static readonly FallbackEntry[] Batch5 =
     {
-        // 央视新增六台（CCTV1/2/3/4/5/6/8/12/13 的 tsfile 已在 Batch3/Batch4，不重复加路）
+        // 央视新增七条（vc46I 勘误：注释原写「六台」实为 7 条——CCTV7/9/10/11/14/15 + 疑 CCTV17（0019）；
+        // CCTV1/2/3/4/5/6/8/12/13 的 tsfile 已在 Batch3/Batch4，不重复加路）
         Ts("CCTV7国防军事", "0007"), Ts("CCTV9纪录", "0009"), Ts("CCTV10科教", "0010"),
         Ts("CCTV11戏曲", "0011"), Ts("CCTV14少儿", "0014"), Ts("CCTV15音乐", "0015"),
         Ts("CCTV17农业农村", "0019"), // 疑 CCTV17（msns 系同号映射，身份待真机确认）
@@ -178,9 +179,13 @@ public static class FallbackSourceRegistry
         new("钱江都市", "https://ali-xwl.cztv.com/live/channel021080Plxw.m3u8"),
     };
 
-    /// <summary>全量备援表（58 路 + 第五批 124 端全目录 26 路，共 86 路）。</summary>
+    /// <summary>全量备援表（58 路 + 第五批 124 端全目录 26 路，共 84 路；测试断言 Table.Length==84 锚定）。</summary>
     public static readonly FallbackEntry[] Table =
         Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).Concat(Batch4).Concat(Batch5).ToArray();
+
+    /// <summary>vc46B：全表 URL 精确查重（搜源入库前置——注册表已收录的同 URL 不再进动态库，免同一 URL 双探）。</summary>
+    public static bool ContainsUrl(string url) =>
+        Table.Any(e => string.Equals(e.Url, url, StringComparison.Ordinal));
 
     /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
     private static string Normalize(string name) =>

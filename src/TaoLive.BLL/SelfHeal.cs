@@ -17,9 +17,14 @@ namespace TaoLive.BLL;
 /// </summary>
 public class SourceFailover
 {
-    private sealed class CandidateState { public int Index; public int RecoverStreak; }
+    private sealed class CandidateState { public int Index; public int RecoverStreak; public long LastSwitchMs; }
 
     private readonly ConcurrentDictionary<string, CandidateState> _states = new();
+    private readonly Func<long> _nowMs;
+
+    /// <summary>vc46②9-4：时钟可注入（测试假时钟推进驻留窗；默认真实毫秒钟）。</summary>
+    public SourceFailover(Func<long>? nowMs = null) =>
+        _nowMs = nowMs ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
     /// <summary>备援候选连续成功多少轮后回主源。</summary>
     public const int RecoverToPrimaryAfter = 2;
@@ -29,8 +34,10 @@ public class SourceFailover
     {
         var st = _states.GetOrAdd(channelKey, _ => new CandidateState());
         if (candidateCount <= 1) { st.Index = 0; st.RecoverStreak = 0; return 0; }
+        var prev = st.Index;
         st.Index = Math.Min(st.Index + 1, candidateCount - 1);
         st.RecoverStreak = 0;
+        if (st.Index != prev) st.LastSwitchMs = _nowMs(); // vc46②9-4：切换即记驻留起点
         return st.Index;
     }
 
@@ -49,10 +56,14 @@ public class SourceFailover
         st.RecoverStreak++;
         if (st.RecoverStreak >= RecoverToPrimaryAfter)
         {
+            // vc46②9-4：最少驻留——距上次切换不足 SwitchAdvisor.MinDwellMs 不回主（防换源画面顿挫来回抖）。
+            // 迟滞带不适用本路径：搜源入库已按分差顶替（existingBestScore 口径），备援是兜底序无分数对比。
+            if (_nowMs() - st.LastSwitchMs < SwitchAdvisor.MinDwellMs) return false;
             if (primaryRecoveryProbe != null && !await primaryRecoveryProbe())
                 return false; // 主源未确认恢复：留备援，确认期不清零，下轮达标再探
             st.Index = 0;
             st.RecoverStreak = 0;
+            st.LastSwitchMs = _nowMs();
         }
         return true;
     }

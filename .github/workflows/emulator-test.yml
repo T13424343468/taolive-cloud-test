@@ -136,7 +136,7 @@ jobs:
       - name: Install APK
         run: |
           # ARM32 APK on x86_64 image relies on houdini translation
-          adb install -r TaoLive-tv-v1.0-vc33-32bit.apk
+          adb install -r TaoLive.apk
           adb shell pm list packages | grep taolive || echo "PACKAGE_NOT_FOUND"
 
       - name: Launch app and capture evidence
@@ -160,7 +160,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tao-live-vc33-cloud-evidence
+          name: tao-live-vc48-crash-evidence
           path: |
             logcat-full.txt
             launch-60s.png

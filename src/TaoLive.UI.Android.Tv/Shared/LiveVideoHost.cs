@@ -583,9 +583,13 @@ public class LiveVideoHost : IDisposable
     {
         long gen = _genCounter.NextGeneration(); // 新一代：旧重连/旧自救路径全部作废
         if (announce) StatusChanged?.Invoke("正在换信号，请稍候…"); // 1.0.12 定格+角标：不黑屏不亮全屏牌
+        RefreshedStream? fresh = null;
         if (ReconnectRefresher != null)
+            fresh = await RefreshStreamAsync("静默重取流");
+        // vc52 黄二：写账与起播收 _startLock（与热备同口径）——无锁直写时热备路径可并发落账，
+        // 产生「A 路径 URL + B 路径合并请求头」交叉错配（CDN 拒绝，白耗重连阶梯与切换预算）
+        lock (_startLock)
         {
-            var fresh = await RefreshStreamAsync("静默重取流");
             if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 期间换台：作废
             if (fresh?.Url != null && fresh.Url != _currentUrl)
             {
@@ -595,9 +599,8 @@ public class LiveVideoHost : IDisposable
                 if (fresh.Options != null)
                     _currentOptions = MergeOptions(_currentOptions, fresh.Options);
             }
+            StartInternal(silent: true);
         }
-        if (_userStopped || !_genCounter.IsCurrent(gen)) return;
-        StartInternal(silent: true);
     }
 
     /// <summary>
@@ -822,18 +825,22 @@ public class LiveVideoHost : IDisposable
         {
             timer.Dispose();
             if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 代数守卫：换台后旧重连作废
-            // 重连前重新取票（v1.0.8）：过期票据重试必败，先换新鲜入口再起播；
+            // 重连前重新取票（v1.0.8）：过期票据重试必败，先取新鲜入口再起播；
             // 1.0.12 发现 A：走统一换票入口按连续失败分级——第 1 次同源、第 2 次起委托切备援
             var fresh = await RefreshStreamAsync("重连");
-            if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 换票期间换台
-            if (fresh?.Url != null && fresh.Url != _currentUrl)
+            // vc52 黄二：写账与起播收 _startLock（与热备同口径），防 URL/请求头交叉错配
+            lock (_startLock)
             {
-                _currentUrl = fresh.Url;
-                // A 类 P1·缺键才补：同上，重连换票绝不整表覆盖丢请求头
-                if (fresh.Options != null)
-                    _currentOptions = MergeOptions(_currentOptions, fresh.Options);
+                if (_userStopped || !_genCounter.IsCurrent(gen)) return; // 换票期间换台
+                if (fresh?.Url != null && fresh.Url != _currentUrl)
+                {
+                    _currentUrl = fresh.Url;
+                    // A 类 P1·缺键才补：同上，重连换票绝不整表覆盖丢请求头
+                    if (fresh.Options != null)
+                        _currentOptions = MergeOptions(_currentOptions, fresh.Options);
+                }
+                StartInternal();
             }
-            StartInternal();
         };
         timer.Start();
     }
@@ -958,14 +965,18 @@ public class LiveVideoHost : IDisposable
     {
         long gen = _genCounter.Current; // 期间换台：作废（Play 流程自己接管）
         var fresh = await RefreshStreamAsync("耗尽兜底");
-        if (_userStopped || _frameShown || !_genCounter.IsCurrent(gen)) return;
-        if (fresh?.Url != null && fresh.Url != _currentUrl)
+        // vc52 黄二：写账与起播收 _startLock（与热备同口径），防 URL/请求头交叉错配
+        lock (_startLock)
         {
-            _currentUrl = fresh.Url;
-            if (fresh.Options != null)
-                _currentOptions = MergeOptions(_currentOptions, fresh.Options); // 缺键才补，同 A 类 P1 口径
+            if (_userStopped || _frameShown || !_genCounter.IsCurrent(gen)) return;
+            if (fresh?.Url != null && fresh.Url != _currentUrl)
+            {
+                _currentUrl = fresh.Url;
+                if (fresh.Options != null)
+                    _currentOptions = MergeOptions(_currentOptions, fresh.Options); // 缺键才补，同 A 类 P1 口径
+            }
+            StartInternal(silent: true);
         }
-        StartInternal(silent: true);
     }
 
     public void Stop()

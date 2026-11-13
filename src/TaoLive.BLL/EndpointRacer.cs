@@ -23,7 +23,9 @@ public static class EndpointRacer
     }
 
     /// <summary>
-    /// 竞速：跳过退避期源后并行探测，首个 Alive 即胜出（其余探测不取消自然收尾）。
+    /// 竞速：跳过退避期源后并行探测，首个 Alive 即胜出并立即返回。
+    /// vc53 刀4（画面平稳优先令同批）：输家不再拖胜者——原实现胜出后仍等全部输家收尾（最长拖满 4 秒预算），
+    /// 改为胜出即返回，输家废弃自灭（结果丢弃、异常吞掉，不漏未观察异常）。
     /// 返回胜者 SourceId；全部失败或全部退避返回 null。budgetMs=统一 4 秒预算。
     /// </summary>
     public static async Task<string?> RaceAsync(
@@ -56,10 +58,20 @@ public static class EndpointRacer
             var finished = await Task.WhenAny(tasks);
             tasks.Remove(finished);
             var (sourceId, outcome) = await finished;
+            if (outcome == Outcome.Alive && winner is null)
+            {
+                winner = sourceId; // 先到先得；后面 Alive 不改判
+                // 输家废弃自灭：不观结果不阻塞胜者，只接异常（探针内部已兜成 Dead，防御性再吞一层）
+                foreach (var loser in tasks)
+                    _ = loser.ContinueWith(static fin =>
+                    {
+                        try { _ = fin.Result; }
+                        catch { /* 废弃收尾：胜者已定，输家结果丢弃 */ }
+                    }, TaskScheduler.Default);
+                return winner;
+            }
             if (outcome == Outcome.Limited && onLimited != null)
                 await onLimited(sourceId); // 竞速触发 403：写同一本退避账（调用方落账）
-            if (outcome == Outcome.Alive && winner is null)
-                winner = sourceId; // 先到先得；后面 Alive 不改判
         }
         return winner;
     }

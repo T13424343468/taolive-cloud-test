@@ -332,6 +332,14 @@ public class LiveVideoHost : IDisposable
                 BuildKernel();
                 StartInternal();
             }
+            catch (Exception ex)
+            {
+                // vc52 红二：op 内 BuildKernel/StartInternal 抛异常时，旧写法只有 finally 复位互斥，
+                // 无人接盘——内核已毁起播未成，画面黑死。落日志后交自救链（OnStreamError 内部自查
+                // _userStopped，先问热备再走 2/4/6 秒阶梯与耗尽兜底，不与 finally 复位冲突）
+                try { CrashNet.Record("[LiveVideoHost] 软重启失败（自救链接管）：" + ex.Message); } catch { }
+                OnStreamError();
+            }
             finally { _kernelRebuilding = false; }
         });
     }

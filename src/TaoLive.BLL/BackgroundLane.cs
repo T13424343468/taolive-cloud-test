@@ -11,10 +11,18 @@ namespace TaoLive.BLL;
 /// - 播放取流/换台不进车道（优先级最高，天然插队）；车道只管后台任务串行；
 /// - 首帧未落地零后台网络：FirstFrameLanded=false 时后台任务一律等待（消费不超一份）；
 /// - 有画面在播时后台单请求间隔 ≥10 秒（整轮 10 分钟级）；空闲（无画面）维持调用方既有节拍。
+/// - 车道优先级（老板 01:16 令，vc53 任务12）：播放救助（Rescue）> 常规后台（Standard）> 慢探摸源（Scout）。
 /// 纯逻辑可测：时钟注入。唤醒后的等待用 Task.Delay 轮询（电视端 IO 定时器足量，避免复杂唤醒原语）。
 /// </summary>
 public static class BackgroundLane
 {
+    /// <summary>车道档位（老板 01:16 令）：
+    /// Rescue=救急搜源（播放救助：主源/备援耗尽才触发，属播放链自愈——跳过首帧门控与播放间隔，
+    /// 只守全局串行；否则播放起不来时自救反被自家车道锁死）；
+    /// Standard=常规后台（预检/预热/续票/EPG，现行口径：首帧门控+间隔）；
+    /// Scout=慢探摸源（仅待机闲时：播放中停摸=人在看零摸源，首帧门控+间隔同常规）。</summary>
+    public enum LaneTier { Rescue = 0, Standard = 1, Scout = 2 }
+
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     /// <summary>首帧是否落地（UI 在首帧事件置 true；换台/断流起播时置 false）。volatile：读多写一。</summary>
@@ -49,19 +57,19 @@ public static class BackgroundLane
     }
 
     /// <summary>
-    /// 后台网络任务过车道：首帧门控 → 间隔让路 → 全局串行执行。
+    /// 后台网络任务过车道：首帧门控 → 间隔让路 → 全局串行执行（档位语义见 LaneTier）。
     /// 串行=同一时刻至多一个后台网络任务在飞（严禁多源同时探测/拉取的唯一执行点）。
     /// 播放请求绝不调用本方法（不排队、即发）。
     /// </summary>
-    public static async Task RunAsync(Func<Task> work, CancellationToken ct = default)
+    public static async Task RunAsync(Func<Task> work, CancellationToken ct = default, LaneTier tier = LaneTier.Standard)
     {
-        await RunAsync<object?>(async () => { await work().ConfigureAwait(false); return null; }, ct).ConfigureAwait(false);
+        await RunAsync<object?>(async () => { await work().ConfigureAwait(false); return null; }, ct, tier).ConfigureAwait(false);
     }
 
     /// <summary>带返回值的车道执行（探针 bool 等结果透传）：排队与限速逻辑与无返回版本完全一致。</summary>
-    public static async Task<T> RunAsync<T>(Func<Task<T>> work, CancellationToken ct = default)
+    public static async Task<T> RunAsync<T>(Func<Task<T>> work, CancellationToken ct = default, LaneTier tier = LaneTier.Standard)
     {
-        await WaitTurnAsync(ct).ConfigureAwait(false);
+        await WaitTurnAsync(ct, tier).ConfigureAwait(false);
         try
         {
             Volatile.Write(ref _lastRunMs, Now());
@@ -70,11 +78,23 @@ public static class BackgroundLane
         finally { Gate.Release(); }
     }
 
-    private static async Task WaitTurnAsync(CancellationToken ct)
+    private static async Task WaitTurnAsync(CancellationToken ct, LaneTier tier)
     {
+        if (tier == LaneTier.Rescue)
+        {
+            // 救助档：只守全局串行（播放链自愈不排队等门控/间隔——自救被自家车道锁死=自残）
+            await Gate.WaitAsync(ct).ConfigureAwait(false);
+            return;
+        }
         while (true)
         {
             ct.ThrowIfCancellationRequested();
+            // 摸源档：播放中停摸（老板 01:16：慢探仅待机闲时，人在看=零摸源）
+            if (tier == LaneTier.Scout && Playing)
+            {
+                await Task.Delay(500, ct).ConfigureAwait(false);
+                continue;
+            }
             // 首帧门控：未落地时零后台网络（含排队中的也不放行）
             while (!FirstFrameLanded)
             {

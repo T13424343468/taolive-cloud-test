@@ -809,6 +809,50 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     static long CooldownProbe() => JitterSwitchPolicy.CooldownMs;
 }
 
+// ============ vc53 任务12·车道分级（救助直行/摸源待机/常规原口径） ============
+{
+    bool ff0 = BackgroundLane.FirstFrameLanded;
+    bool pl0 = BackgroundLane.Playing;
+    try
+    {
+        // A 救助档：首帧未落地+播放中照样立即执行（播放救助只守全局串行）
+        BackgroundLane.SetFirstFrameLanded(false);
+        BackgroundLane.SetPlaying(true);
+        var rescueRan = new TaskCompletionSource();
+        var rescue = BackgroundLane.RunAsync(async () => { rescueRan.TrySetResult(); await Task.Yield(); return 0; }, tier: BackgroundLane.LaneTier.Rescue);
+        await Task.WhenAny(rescueRan.Task, Task.Delay(2000));
+        Check(rescueRan.Task.IsCompleted, "车道12·救助档跳过首帧门控与播放间隔立即执行（播放自愈不被自家车道锁死）");
+        await rescue;
+
+        // B 摸源档：播放中停摸；待机后放行
+        BackgroundLane.SetFirstFrameLanded(true);
+        var scoutRan = new TaskCompletionSource();
+        var scout = BackgroundLane.RunAsync(async () => { scoutRan.TrySetResult(); await Task.Yield(); return 0; }, tier: BackgroundLane.LaneTier.Scout);
+        await Task.Delay(80);
+        Check(!scoutRan.Task.IsCompleted, "车道12·摸源档播放中停摸不放行（人在看=零摸源）");
+        BackgroundLane.SetPlaying(false);
+        await Task.WhenAny(scoutRan.Task, Task.Delay(4000));
+        Check(scoutRan.Task.IsCompleted, "车道12·摸源档待机后放行");
+        await scout;
+
+        // C 常规档：首帧门控现行口径回归（不因分级放开）
+        BackgroundLane.SetFirstFrameLanded(false);
+        var stdRan = new TaskCompletionSource();
+        var std = BackgroundLane.RunAsync(async () => { stdRan.TrySetResult(); await Task.Yield(); return 0; });
+        await Task.Delay(80);
+        Check(!stdRan.Task.IsCompleted, "车道12·常规档首帧未落地不放行（现行口径不变）");
+        BackgroundLane.SetFirstFrameLanded(true);
+        await Task.WhenAny(stdRan.Task, Task.Delay(4000));
+        Check(stdRan.Task.IsCompleted, "车道12·首帧落地后常规档放行");
+        await std;
+    }
+    finally
+    {
+        BackgroundLane.SetFirstFrameLanded(ff0);
+        BackgroundLane.SetPlaying(pl0);
+    }
+}
+
 // ============ v1.0.8·机制互扰审查（设计自洽铁律：组合场景下画面能出来不卡顿） ============
 {
     // 组合A：反复切台时代数守卫作废旧重连——旧代定时器触发不覆盖新台

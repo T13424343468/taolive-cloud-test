@@ -19,6 +19,9 @@ namespace TaoLive.BLL;
 public class StreamDnsPicker
 {
     private const int CacheTtlMs = 10 * 60 * 1000;
+    /// <summary>v46 修（B2）：最后一路独苗解析的观察上限——DoH 各自带 3s 超时，系统 DNS 无超时
+    /// （OS DNS 栈自超时常态 5–15s，Broken 假活场景可挂数十秒）；只剩系统解析时给 10s 上限，超时按全挂兜底。</summary>
+    private const int LastLegTimeoutMs = 10_000;
 
     private readonly Func<string, Task<IPAddress[]>> _systemResolve;
     private readonly Func<string, string, Task<IPAddress[]>> _dohResolve; // (server, host)
@@ -61,7 +64,18 @@ public class StreamDnsPicker
         var pending = new List<Task<IPAddress[]>>(all);
         while (pending.Count > 0)
         {
-            await Task.WhenAny(pending);
+            // v46 修（B2）：WhenAny 后若 DoH 均空、pending 只剩系统解析，旧写法无限挂等——
+            // 独苗路加 10s 上限观察，超时按 DNS 全挂走 SocketException 兜底
+            var wait = pending.Count == 1
+                ? Task.WhenAny(pending).WaitAsync(TimeSpan.FromMilliseconds(LastLegTimeoutMs))
+                : Task.WhenAny(pending);
+            Task<IPAddress[]> done;
+            try { done = await wait; }
+            catch (TimeoutException)
+            {
+                throw new System.Net.Sockets.SocketException(); // 最后一根独苗超 10s：与全挂同型交上层兜底
+            }
+            await done;
             var partial = all.Where(t => t.IsCompletedSuccessfully)
                 .SelectMany(t => t.Result)
                 .Where(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)

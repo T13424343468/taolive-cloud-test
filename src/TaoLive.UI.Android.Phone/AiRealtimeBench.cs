@@ -161,12 +161,16 @@ namespace TaoLive.UI.Android.Phone
 
                 var info = new MediaCodec.BufferInfo();
                 bool fedEos = false, decEos = false;
+                // v46 修（死循环审计 B4）：心跳出口口径对齐 AudioPcmExtractor E11——喂入或产出任一有进展即清零，
+                // 连续约 1 秒双零判解码器卡死。旧写法 idle 只在 fedEos 后计数，若解码器在 EOS 喂入前卡死
+                // （输入缓冲满、喂入与产出双零）会永久空转
                 int idle = 0;
                 while (frames.Count < maxFrames && !decEos)
                 {
+                    int inIdx = -1;
                     if (!fedEos)
                     {
-                        int inIdx = dec.DequeueInputBuffer(10000);
+                        inIdx = dec.DequeueInputBuffer(10000);
                         if (inIdx >= 0)
                         {
                             ByteBuffer? ib = dec.GetInputBuffer(inIdx);
@@ -182,9 +186,10 @@ namespace TaoLive.UI.Android.Phone
                     }
 
                     int outIdx = dec.DequeueOutputBuffer(info, 10000);
+                    idle = (inIdx >= 0 || outIdx >= 0) ? 0 : idle + 1;
+                    if (idle > 50) decEos = true;   // 喂入与产出连续约 1 秒双零 = 卡死，收尾
                     if (outIdx >= 0)
                     {
-                        idle = 0;
                         if ((info.Flags & MediaCodecBufferFlags.EndOfStream) != 0) decEos = true;
                         else
                         {
@@ -200,10 +205,6 @@ namespace TaoLive.UI.Android.Phone
                             }
                             dec.ReleaseOutputBuffer(outIdx, false);
                         }
-                    }
-                    else if (outIdx == -1)
-                    {
-                        if (fedEos && ++idle > 50) decEos = true;   // EOS 后拿不到输出别死等
                     }
                 }
                 return frames;

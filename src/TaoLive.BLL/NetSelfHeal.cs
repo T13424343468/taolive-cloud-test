@@ -410,6 +410,18 @@ public class SelfHealProxyKernel : IDisposable
             else { ctx.Response.StatusCode = 400; ctx.Response.Close(); return; }
         }
 
+        // v46 修（自环兜底 B1）：target 指向本代理自身（127.0.0.1/localhost + 本端口）且非 ?u= 解包形态
+        // （如清单被污染或误填本机地址）时，Forward 会打回自身监听器形成无限代理链——
+        // Forward 超时逐层 502 虽不永久存活，但触发时是 15 秒连接风暴；与 /ping 同口径入口短路直回 404
+        if (Uri.TryCreate(target, UriKind.Absolute, out var selfCheck)
+            && (selfCheck.Host == "127.0.0.1" || selfCheck.Host == "localhost")
+            && selfCheck.Port == HlsRewriter.ProxyPort)
+        {
+            ctx.Response.StatusCode = 404;
+            ctx.Response.Close();
+            return;
+        }
+
         // 评审观察①修法：回源解析已下沉到 Forward 的 ConnectCallback（DoH 择优 IP 直连），
         // 此处不再空跑 ResolveAsync（旧写法结果丢弃，SystemDnsBroken 场景照样 502）
 

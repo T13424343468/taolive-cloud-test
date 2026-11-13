@@ -552,7 +552,9 @@ namespace AllPlayer.BLL
                     }
                     catch (Exception)
                     {
-                        // 忽略单次连接异常, 继续服务
+                        // 忽略单次连接异常, 继续服务; v46 修: 退避 500ms——
+                        // listener 存活但持续失败 (如 fd 耗尽 EMFILE) 时裸 continue 会热自旋打满 CPU
+                        await Task.Delay(500);
                     }
                 }
             }

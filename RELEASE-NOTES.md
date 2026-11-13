@@ -1,3 +1,34 @@
+# 道映电视版 vc46（1.0.12）交付说明
+
+**发布日期：2026-11-13 · 包名 com.taolive.tv · versionCode 46 / versionName 1.0.12**
+
+## 本批内容（vc46「有问题的全改」+ 死循环专项审计）
+
+- **vc46 五组件接线**：StreamResolver 三本可注入账本（冷却/判死/切换预算）、分类探针（403/429=票据过期、伪200=内容无效、网络失败=超时）、候选遍历账面挡板、连死判死+复检复活、帧级切换预算统一收口、回主驻留 ≥2 分钟、分片级深探。
+- **死循环专项审计（老板令：审一轮改一轮至清零）**：全源码 26757 行四路静态审计（TaoLive.BLL / AllPlayer.BLL / Phone UI / Tv UI），第一轮判级 A=0 B=7 C=80+，七处 B 级全部落码修复，第二轮复审七处 diff 零新增发现，全量回归 574 PASS / 0 FAIL 零警零错：
+  1. AllPlayer.BLL 三处 Accept 环（HlsStreamService/LocalStreamServer/CastService）：accept 持续失败裸 continue 热自旋 → 加 500ms 退避；
+  2. TaoLive.BLL NetSelfHeal：代理自环链兜底（target 指向本机代理端口入口短路 404，与 /ping 同口径）；
+  3. TaoLive.BLL StreamDnsPicker：最后一路系统 DNS 无超时挂等 → 独苗路 10s 上限，超时按全挂兜底；
+  4. Phone AiSegmentRunner：主编码环解码器卡死无出口 → E11 同款心跳出口（约 30 秒双零判死，整段弃用）；
+  5. Phone AiRealtimeBench：idle 只在 EOS 喂入后计数，卡死早于 EOS 时永久空转 → 口径对齐 E11（喂入/产出任一有进展即清零）。
+- **vc46B/C/E 等记录级修复**：动态库拒收内置表同 URL（拒收留痕）、PublicListDiscover single-flight、Tv/Phone 回灌先赋 OnChanged 再 Load 时序、StreamLanes 摘除、UTF-16 注释清理、注释勘误。
+
+## 测试
+
+逻辑全测 574 PASS / 0 FAIL，零错零警（含 vc46 新增 13 项断言与死循环审计修复回归）。
+打包：aapt2 badging 核对 package/com.taolive.tv、versionCode 46、versionName 1.0.12 一致；apksigner 验签通过。
+
+## 已知事项（不隐瞒）
+
+1. 热备帧级切换预算、驻留回主、分片深探等 vc46 五组件均为新接线，真机表现待验证（清单随交付附）。
+2. 16 KB 页对齐告警（libvlc/libtaoai 既有三方内核产物）不变。
+
+## 回滚
+
+如真机异常，卸载即回滚；无系统级改动。
+
+---
+
 # 道映（TaoLive 手机版）1.0.0-r1 交付说明
 
 **发布日期：2026-11-11 · 包名 com.taolive.phone · versionCode 1 / versionName 1.0.0-r1 · 应用名「道映」**

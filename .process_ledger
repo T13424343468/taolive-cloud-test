@@ -1,0 +1,1 @@
+{"type":"process","line":"④内核自愈提前","cmd":"dotnet run --project tests/TaoLive.Tests (Release)","start":"2026-11-12T17:0x","end":"2026-11-12T17:1x","log":"/tmp/stall_selfheal_tests.log","status":"done 449/0"}

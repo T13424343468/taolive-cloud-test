@@ -249,7 +249,8 @@ namespace AllPlayer.BLL
                 TcpClient client;
                 try { client = await _listener.AcceptTcpClientAsync(); }
                 catch (Exception) when (!_running) { break; }
-                catch { continue; }
+                // v46 修: 退避 500ms——listener 存活但持续失败 (如 fd 耗尽 EMFILE) 时裸 continue 会热自旋打满 CPU
+                catch { await Task.Delay(500); continue; }
                 _ = Task.Run(() => Handle(client));
             }
         }

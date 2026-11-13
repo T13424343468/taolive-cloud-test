@@ -284,6 +284,12 @@ namespace TaoLive.UI.Android.Phone
                 long lastFedUs = 0;
                 _prevSr = null;   // 段首重置（插帧交接不跨段）
 
+                // v46 修（死循环审计 B3）：心跳出口——解码器既喂不进也吐不出连续约 30 秒 = 编解码器卡死
+                // （真机偶发，触发时整段 while(!encEos) 空转打满 CPU，且分段工作线程串行排队被永久堵死）。
+                // 口径同 AudioPcmExtractor E11：喂入或产出任一有进展即清零；IdleLimit 轮（两路 10ms 等待 × 1500）≈30 秒
+                const int IdleLimit = 1500;
+                int idle = 0;
+
                 if (chunkEndUs > 0)
                 {
                     // 分段：只喂视频轨（音频走 CopyAudioRange），起点对齐段起最近同步帧
@@ -296,9 +302,10 @@ namespace TaoLive.UI.Android.Phone
                     while (_paused != null && _paused()) System.Threading.Thread.Sleep(200);
 
                     // 1) 喂解码器
+                    int inIdx = -1;
                     if (!decEos)
                     {
-                        int inIdx = decoder.DequeueInputBuffer(10000);
+                        inIdx = decoder.DequeueInputBuffer(10000);
                         if (inIdx >= 0)
                         {
                             ByteBuffer? ib = decoder.GetInputBuffer(inIdx);
@@ -446,6 +453,10 @@ namespace TaoLive.UI.Android.Phone
                             else decoder.ReleaseOutputBuffer(dOut, false);
                         }
                     }
+
+                    // v46 修（死循环审计 B3）：心跳出口——喂入与产出连续约 30 秒双零 = 解码器卡死，给失败出口
+                    idle = (inIdx >= 0 || dOut >= 0) ? 0 : idle + 1;
+                    if (idle > IdleLimit) return null;   // 整段弃用（finally 统一释放），分段账本不动、下次再排
 
                     // 3) 编码输出 → mux
                     while (true)

@@ -11,6 +11,10 @@
     <ApplicationDisplayVersion>1.0.21</ApplicationDisplayVersion>
     <ApplicationTitle>道映</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- vc50（2026-11-13）：对齐 1.x 交付线裁剪口径——SdkOnly 默认裁剪会误裁运行库（System.Runtime.Numerics 47%、
+         probe5 严格装载 17 件真伤 TypeLoadException）；v31 定稿 25 件白名单原样移植（构建树线 2026-11-12 同病同治） -->
+    <AndroidLinkMode Condition="'$(Configuration)' == 'Release'">SdkOnly</AndroidLinkMode>
+    <_ExtraTrimmerArgs Condition="'$(Configuration)' == 'Release'">--action copy System.Collections --action copy System.Collections.Concurrent --action copy System.Collections.NonGeneric --action copy System.Collections.Specialized --action copy System.ComponentModel.TypeConverter --action copy System.Diagnostics.DiagnosticSource --action copy System.Diagnostics.Process --action copy System.IO.FileSystem.DriveInfo --action copy System.Linq --action copy System.Net.Http --action copy System.Net.HttpListener --action copy System.Net.NameResolution --action copy System.Net.Primitives --action copy System.Net.Requests --action copy System.Net.Security --action copy System.Net.WebProxy --action copy System.Private.Uri --action copy System.Private.Xml.Linq --action copy System.Security.Claims --action copy System.Security.Cryptography --action copy System.Text.Encodings.Web --action copy System.Text.Json --action copy System.Text.RegularExpressions --action copy System.Threading.Channels --action copy System.Runtime.Numerics</_ExtraTrimmerArgs>
     <!-- 32 位专用构建（TCL 50V8G）；双架构通用构建见 build-android 变体 -->
     <RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers>
     <RootNamespace>TaoLive.UI.Android.Tv</RootNamespace>

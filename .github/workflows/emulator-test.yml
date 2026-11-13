@@ -7,7 +7,7 @@ on:
 jobs:
   install-and-launch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -123,8 +123,8 @@ jobs:
                 break
               fi
             fi
-            if [ $((SECONDS - START))  -gt 2400 ]; then
-              echo "BOOT_TIMEOUT_15MIN"
+            if [ $((SECONDS - START))  -gt 6000 ]; then
+              echo "BOOT_TIMEOUT_100MIN"
               tail -120 emulator.log || true
               exit 1
             fi

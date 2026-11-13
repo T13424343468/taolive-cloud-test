@@ -3,6 +3,7 @@ using TaoLive.BLL;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Channels;
 using LibVLCSharp.Shared;
 
 namespace TaoLive.UI.Android.Tv.Shared;
@@ -78,6 +79,54 @@ public class LiveVideoHost : IDisposable
     private System.Threading.Timer? _firstFrameTimer;    // PL2: 首帧超时兜底定时器
     private int _firstFrameExtends;                      // vc37: 首帧查活续期轮次（起播重置，封顶 2）
     private const int FirstFrameTimeoutMs = 20_000;      // PL2: 首帧硬超时=问热备→自救阶梯；vc37 12s→20s（真机 11-12：慢网络起播被 12s 自救打断循环）
+
+    // vc52 卡死根治（真机 11-13 复发实锤）：播放器原生操作全量串行队列——
+    // 病根=fix32 起播投 Task.Run 后线程池不保序，连切几台时多个 Stop+Play 并发咬住同一播放器的
+    // 原生锁，RestartKernel 又在他线程直接 Dispose，正在跑的操作踩已释放对象，原生层僵死；
+    // UI 线程一碰载体挂载即整机无响应。修法=单读者先进先出队列承载全部原生 Stop/Play/Dispose/软重启，
+    // 队列内代数守卫：过期操作整段跳过（晚到旧操作不再踩新台）；UI 线程零原生等待（Stop/Dispose 只排队）。
+    private readonly Channel<Action> _startQueue = Channel.CreateUnbounded<Action>(
+        new UnboundedChannelOptions { SingleReader = true });
+    private int _startQueuePumpRunning;   // 队列泵单飞护栏（CAS 起泵，全生命周期常驻）
+    private int _startQueueDepth;         // 队列深度观测（防积压预警落日志，不干预行进）
+
+    private void EnsureStartQueuePump()
+    {
+        if (Interlocked.CompareExchange(ref _startQueuePumpRunning, 1, 0) != 0) return;
+        _ = Task.Run(PumpStartQueueAsync);
+    }
+
+    /// <summary>vc52：原生操作统一入队口——深度计数每笔必增（泵侧每笔必减，口径对齐），
+    /// 积压 ≥8 笔落一次预警日志（连切多台时可见，不干预行进）；随后确保泵活并投递。
+    /// 所有原生 Stop/Play/Dispose/软重启都必须经此入队，禁止绕过队列直碰播放器原生层。</summary>
+    private void EnqueueNativeOp(Action op)
+    {
+        int depth = Interlocked.Increment(ref _startQueueDepth);
+        if (depth >= 8)
+        {
+            try { CrashNet.Record($"[LiveVideoHost] 原生操作队列积压 {depth} 笔（连切多台，逐台消解中）"); } catch { }
+        }
+        EnsureStartQueuePump();
+        _startQueue.Writer.TryWrite(op);
+    }
+
+    private async Task PumpStartQueueAsync()
+    {
+        var reader = _startQueue.Reader;
+        while (await reader.WaitToReadAsync())
+        {
+            while (reader.TryRead(out var op))
+            {
+                try { op(); }
+                catch (Exception ex)
+                {
+                    try { CrashNet.Record("[LiveVideoHost] 起播队列操作异常（自救链兜底）：" + ex.Message); } catch { }
+                }
+                Interlocked.Decrement(ref _startQueueDepth);
+            }
+        }
+    }
+
 
     // vc39 ⑤深版网络自愈：门控+三分判别+本地代理内核（BLL 纯逻辑），宿主只做触发与播放链接线。
     // 进程级单例：内核端口监听全局一份；门控为全局态（系统解析坏是整机事实，不按台隔离）。
@@ -243,25 +292,32 @@ public class LiveVideoHost : IDisposable
             _watchdog = new Timer(OnWatchdogTick, null, 2000, 2000);
     }
 
-    /// <summary>⑫③软重启播放内核：重建设播环境（不动系统），同流继续。互斥防连环重启。</summary>
+    /// <summary>⑫③软重启播放内核：重建设播环境（不动系统），同流继续。互斥防连环重启。
+    /// vc52：原生停/释放段整段入队——与起播队列同一串行通道，彻底杜绝「他线程 Dispose 撞上正在跑的
+    /// 队列操作踩已释放对象」的咬锁（真机 11-13 整机卡死实锤根因之二）。</summary>
     public void RestartKernel()
     {
         if (_kernelRebuilding || _userStopped || _currentUrl is null) return;
         _kernelRebuilding = true;
-        try
+        long genNow = _genCounter.Current;
+        EnqueueNativeOp(() =>
         {
-            _genCounter.NextGeneration(); // PL9: 软重启推进代数，作废旧定时器/旧回调，防旧代回调踩新内核
-            try { _player?.Stop(); } catch { /* 已停不碍重建 */ }
-            try { _currentMedia?.Dispose(); } catch { }
-            _currentMedia = null;
-            try { _player?.Dispose(); } catch { }
-            try { _libVlc?.Dispose(); } catch { }
-            _player = null; _libVlc = null;
-            _frameShown = false;
-            BuildKernel();
-            StartInternal();
-        }
-        finally { _kernelRebuilding = false; }
+            try
+            {
+                if (_userStopped || !_genCounter.IsCurrent(genNow)) return;
+                _genCounter.NextGeneration(); // PL9: 软重启推进代数，作废旧定时器/旧回调，防旧代回调踩新内核
+                try { _player?.Stop(); } catch { /* 已停不碍重建 */ }
+                try { _currentMedia?.Dispose(); } catch { }
+                _currentMedia = null;
+                try { _player?.Dispose(); } catch { }
+                try { _libVlc?.Dispose(); } catch { }
+                _player = null; _libVlc = null;
+                _frameShown = false;
+                BuildKernel();
+                StartInternal();
+            }
+            finally { _kernelRebuilding = false; }
+        });
     }
 
     private void OnWatchdogTick(object? state)
@@ -586,15 +642,17 @@ public class LiveVideoHost : IDisposable
         _firstFrameExtends = 0; // vc37 查活续期轮次随起播重置
         Volatile.Write(ref _lastTickMs, Environment.TickCount64);
         if (!silent) StatusChanged?.Invoke("连接中…");
-        // fix32（修复批A移植）：原生 Stop/媒体构建整段投后台——VLC 原生 Stop 持锁时主线程排队等锁
-        // 即整机无响应（冻结审计 A1 同型病根）；串行化保序：先停旧台再起新台；状态字段已先行，
-        // 时序由代数守卫+事件回写管（_kernelPlaying 在 Stopped 事件回写复位）
+        // vc52 串行队列版（fix32 主刀迭代）：原生 Stop/媒体构建/Play 整段入队——单读者先进先出，
+        // 连切几台也严格按「先停旧台再起新台」逐台执行，多操作再无并发咬锁；队列内代数守卫，
+        // 过期操作整段跳过（晚到旧操作不踩新台）；UI 线程零原生等待
         var player = _player;
         var oldMedia = _currentMedia;
         var cachingIdx = _cachingIndex;
         var inventoryFull = (_inventoryRefetch || InventoryMode == BufferInventory.Mode.StartFull);
-        Task.Run(() =>
+        long genAtEnqueue = gen;
+        EnqueueNativeOp(() =>
         {
+            if (!_genCounter.IsCurrent(genAtEnqueue)) return; // 过期操作整段跳过：换台/重连已推进代数
             try
             {
                 player?.Stop(); // 换台/重连先停旧播放；Stop 触发的回调由代数守卫作废
@@ -626,7 +684,7 @@ public class LiveVideoHost : IDisposable
             }
             catch (Exception ex)
             {
-                try { CrashNet.Record("[LiveVideoHost] 后台起播异常（自救链兜底）：" + ex.Message); } catch { }
+                try { CrashNet.Record("[LiveVideoHost] 队列起播异常（自救链兜底）：" + ex.Message); } catch { }
                 OnStreamError();
             }
         });
@@ -871,7 +929,12 @@ public class LiveVideoHost : IDisposable
         _genCounter.NextGeneration(); // 作废未决重连
         StopExhaustedRecovery(); // v25 真机修复：手动停止即收摊
         _firstFrameTimer?.Dispose(); _firstFrameTimer = null;    // PL2
-        _player?.Stop();
+        // vc52：原生停播入队——UI 线程（OnPause）零原生等待，停播与起播/软重启同队列保序
+        var player = _player;
+        if (player is { } p)
+        {
+            EnqueueNativeOp(() => { try { p.Stop(); } catch { /* 已停/已释放不碍 */ } });
+        }
     }
 
     /// <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。
@@ -908,11 +971,22 @@ public class LiveVideoHost : IDisposable
         _statsRetryTimer = null;
 
         _userStopped = true;
-        _currentMedia?.Dispose();
-        _currentMedia = null;
-        _player?.Dispose();
-        _libVlc?.Dispose();
+        var media = _currentMedia; _currentMedia = null;
+        var player = _player; _player = null;
+        var libVlc = _libVlc; _libVlc = null;
         _videoCarrier = null;
+        // vc52：原生释放整段入队——与停/起同队列保序，杜绝「释放撞上正在跑的队列操作」；
+        // 退出路径有界等待（2 秒上限）对齐 fix51 口径，不把待释放对象带进程即死
+        var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EnqueueNativeOp(() =>
+        {
+            try { media?.Dispose(); } catch { }
+            try { player?.Stop(); } catch { }
+            try { player?.Dispose(); } catch { }
+            try { libVlc?.Dispose(); } catch { }
+            released.TrySetResult();
+        });
+        try { released.Task.Wait(2000); } catch { }
     }
 
     /// <summary>【十二】失败归因（ConnectFailure 分类口径）：逐类落日志，不笼统「连接失败」。</summary>

@@ -78,6 +78,24 @@ public class StreamResolver
     /// <summary>备援候选解析（自愈1）：主源失败后由 UI/预检注入（用户自有 m3u 按台名匹配等）。</summary>
     public Func<Channel, Task<string?>>? UserFallback { get; set; }
 
+    /// <summary>
+    /// vc45 隐患①修复：热备候选不再只走 UserFallback（内置备援表此前完全不覆盖）。
+    /// 口径=与 ResolveWithFailoverAsync 同一注册表序：主 URL 恰为注册表某路时取「下一路」（环绕），
+    /// 否则取注册表首条非主源路；注册表无可用路才退 UserFallback。备援 URL 恒定非票据型，重复调用返回同值。
+    /// </summary>
+    public async Task<string?> ResolveStandbyCandidateAsync(Channel ch, string mainUrl)
+    {
+        var fbs = FallbackSourceRegistry.GetAll(ch.Name);
+        int mainIdx = -1;
+        for (int i = 0; i < fbs.Count; i++)
+            if (string.Equals(fbs[i].Url, mainUrl, StringComparison.Ordinal)) { mainIdx = i; break; }
+        if (mainIdx >= 0 && fbs.Count > 1)
+            return fbs[(mainIdx + 1) % fbs.Count].Url; // 主路本身是备援路 → 热备取下一路（环绕）
+        for (int i = 0; i < fbs.Count; i++)
+            if (!string.Equals(fbs[i].Url, mainUrl, StringComparison.Ordinal)) return fbs[i].Url;
+        return UserFallback != null ? await UserFallback(ch) : null;
+    }
+
     /// <summary>自愈1：多候选源备援状态（预检与取流共用，恢复自动回主源）。</summary>
     public SourceFailover Failover => _failover;
 

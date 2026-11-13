@@ -73,9 +73,8 @@ public class HotStandbyKeeper
         try
         {
             await Task.Delay(5_000, ct); // 修法七 1c：连接完成 5 秒后再起校验流
-            // 备援候选：与 ResolveWithFailover 同一口径（用户自有 m3u 按台名匹配）
-            var fallback = _resolver.UserFallback;
-            var alt = fallback != null ? await fallback(ch) : null;
+            // 备援候选：与 ResolveWithFailoverAsync 同一注册表序（vc45 隐患①：内置备援表优先，非主源下一路；注册表无路退用户源）
+            var alt = await _resolver.ResolveStandbyCandidateAsync(ch, mainUrl);
             if (session != Volatile.Read(ref _session)) return; // 期间换台：作废
             // 修法七 3b：同流去重——备路与主路完全相同则热备无意义，保持单路
             if (string.IsNullOrEmpty(alt) || string.Equals(alt, mainUrl, StringComparison.Ordinal)) return;
@@ -92,7 +91,7 @@ public class HotStandbyKeeper
                 if (SourceProfileStore.ClassifyUrl(_standbyUrl) is SourceKind.ShortSign or SourceKind.TicketShort
                     && Environment.TickCount64 - _standbyFetchedMs > StandbyTicketTtlMs)
                 {
-                    var fresh = fallback != null ? await fallback(ch) : null;
+                    var fresh = await _resolver.ResolveStandbyCandidateAsync(ch, mainUrl);
                     if (session != Volatile.Read(ref _session)) return;
                     if (!string.IsNullOrEmpty(fresh) && !string.Equals(fresh, _standbyUrl, StringComparison.Ordinal))
                     {

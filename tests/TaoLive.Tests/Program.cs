@@ -1681,6 +1681,23 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(xz.Count == 2 && xz[1].Url.Contains("183.11.239.36:808/hls/64"),
             "治①⑧西藏新增 183.11 单条（gmxw 域名端空清单例外）");
     }
+
+    // ⑨ vc45 隐患①：热备候选覆盖内置备援表（原 HotStandbyKeeper 只走 UserFallback，内置备援完全不覆盖）——
+    // 注册表首条非主源路优先；主 URL 本身是注册表某路时取下一路环绕；注册表无路退用户源（原口径保留）
+    {
+        var resolver3 = new StreamResolver();
+        var hbCh = new Channel { Name = "湖北卫视", SourceId = "dead", StreamUrl = "", EpgKey = "c_hbws_t9" };
+        var sb1 = await resolver3.ResolveStandbyCandidateAsync(hbCh, "http://main-not-in-registry/x.m3u8");
+        Check(sb1 != null && sb1.Contains("bfgd"), "vc45①热备候选=注册表首条非主源路（湖北→bfgd）");
+        var fbsHb = FallbackSourceRegistry.GetAll("湖北卫视");
+        var sb2 = await resolver3.ResolveStandbyCandidateAsync(hbCh, fbsHb[0].Url);
+        Check(sb2 == fbsHb[1].Url, "vc45①主路恰为备援路→热备取下一路（环绕）");
+        resolver3.UserFallback = _ => Task.FromResult<string?>("http://user-fallback/x.m3u8");
+        var oddCh = new Channel { Name = "不存在的台", SourceId = "dead", StreamUrl = "", EpgKey = "odd_t9" };
+        Check(await resolver3.ResolveStandbyCandidateAsync(oddCh, "http://main/y.m3u8") == "http://user-fallback/x.m3u8",
+            "vc45①注册表无路退用户源（原口径保留）");
+        resolver3.UserFallback = null;
+    }
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");

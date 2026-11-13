@@ -1599,9 +1599,10 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
 
 // ==================== 治顿批①·备援源注册表（fallback_sources） ====================
 {
-    // ① 表完整性：47 路（34 既有 + 第三批 13 路：tsfile 央视六台+gmxw CCTV5+applive CCTV1+湖北/广东双端+江苏 applive，
-    // 老板 2026-11-13 09:2x 令「把最新的全部收录」），URL 全 http(s) 绝对地址
-    Check(FallbackSourceRegistry.Table.Length == 47, "治①①备援表 47 路（34 既有+第三批 13 路）");
+    // ① 表完整性：58 路（既有 42 路 + 第四批 16 路：CCTV12 tsfile 顶前+CCTV4/13 tsfile+晋蒙新藏 gmxw 摸排
+    // +安徽域名端+74.91 CCTV1/CCTV5 与 CCTV12 旧路降序观察档，老板 2026-11-13 14:07 令「全收」），
+    // URL 全 http(s) 绝对地址
+    Check(FallbackSourceRegistry.Table.Length == 58, "治①①备援表 58 路（42 既有+第四批 16 路）");
     Check(FallbackSourceRegistry.Table.All(e => e.Url.StartsWith("http")),
         "治①①备援表 URL 全绝对地址");
 
@@ -1640,21 +1641,45 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
     // ⑥ 台名归一匹配：去空格后一致即命中（「CCTV1 综合」变体也命中 CCTV1综合）
     Check(FallbackSourceRegistry.Has("CCTV1 综合"), "治①⑥台名归一匹配（空格容忍）");
 
-    // ⑦ 多家族候选按序可达（vc43⑥ 生效性修复）：同台收录多路时运行时逐级取用，不只首条
+    // ⑦ 多家族候选按序可达（vc43⑥ 生效性修复）：同台收录多路时运行时逐级取用，不只首条；
+    // vc43⑦ 后 CCTV1 首级为 tsfile（74.91 路 404 三采样稳定死，B 组降序至观察档）
     {
         var c1 = FallbackSourceRegistry.GetAll("CCTV1综合");
-        Check(c1.Count == 3 && c1[0].Url.Contains("74.91.26.218") && c1[1].Url.Contains("tsfile/live/0001_1") && c1[2].Url.Contains("gslb"),
-            "治①⑦央视一台三家族候选按序（74.91→tsfile→applive）");
+        Check(c1.Count == 3 && c1[0].Url.Contains("tsfile/live/0001_1") && c1[1].Url.Contains("gslb") && c1[2].Url.Contains("74.91.26.218"),
+            "治①⑦央视一台三家族候选按序（tsfile→applive→74.91 观察档）");
         var hb = FallbackSourceRegistry.GetAll("湖北卫视");
         Check(hb.Count == 3 && hb[0].Url.Contains("bfgd") && hb[1].Url.Contains("183.11.239.36") && hb[2].Url.Contains("gmxw.7766.org"),
             "治①⑦湖北三候选按序（bfgd→纯IP端→域名端）");
         var resolver2 = new StreamResolver();
         var c1ch = new Channel { Name = "CCTV1综合", SourceId = "dead", StreamUrl = "", EpgKey = "c_cctv1_x7" };
         var r1 = await resolver2.ResolveWithFailoverAsync(c1ch);
-        Check(r1 != null && r1.Url.Contains("74.91.26.218"), "治①⑦首级备援仍取稳定档（74.91）");
+        Check(r1 != null && r1.Url.Contains("tsfile/live/0001_1"), "治①⑦首级备援改取 tsfile 独立兜底（74.91 死路降序）");
         resolver2.Failover.NextCandidateOnFailure(c1ch.EpgKey, 4); // r1 后已在第 1 候选，再进一级到第 2 候选
         var r2 = await resolver2.ResolveWithFailoverAsync(c1ch);
-        Check(r2 != null && r2.Url.Contains("tsfile/live/0001_1"), "治①⑦第 2 候选可达（tsfile 独立兜底）");
+        Check(r2 != null && r2.Url.Contains("gslb"), "治①⑦第 2 候选可达（applive 票据家族）");
+    }
+
+    // ⑧ 第四批收录与 B 组修正（老板 14:07 令「全收」）：CCTV12 tsfile 顶前、黑龙江/深圳官方流修正、
+    // 74.91 死路（CCTV1/CCTV5）降序观察档
+    {
+        var c12 = FallbackSourceRegistry.GetAll("CCTV12社会与法");
+        Check(c12.Count == 4 && c12[0].Url.Contains("tsfile/live/0012_1") && c12[1].Url.Contains("183.11.239.36") && c12[2].Url.Contains("gmxw.7766.org") && c12[3].Url.Contains(":85/cctv12/"),
+            "治①⑧CCTV12 四候选按序（tsfile 顶前，旧直拼路降观察档）");
+        var hlj = FallbackSourceRegistry.GetAll("黑龙江卫视");
+        Check(hlj.Count == 2 && hlj[0].Url.Contains("hljws_own") && hlj[1].Url.Contains("bfgd"),
+            "治①⑧黑龙江官方 own 流修正置顶（404 旧路替换，bfgd 备线）");
+        var sz = FallbackSourceRegistry.GetAll("深圳卫视");
+        Check(sz.Count == 2 && sz[0].Url.Contains("gmxw.7766.org:808/hls/45") && sz[1].Url.Contains("bfgd"),
+            "治①⑧深圳 gmxw /hls/45 补段置顶（缺段死路替换，bfgd 备线）");
+        var ah = FallbackSourceRegistry.GetAll("安徽卫视");
+        Check(ah.Count == 2 && ah[0].Url.Contains("183.11.239.36") && ah[1].Url.Contains("gmxw.7766.org:808/hls/40"),
+            "治①⑧安徽死路替换双端（纯 IP 首条→域名端备线）");
+        var c5 = FallbackSourceRegistry.GetAll("CCTV5体育");
+        Check(c5.Count == 3 && c5[0].Url.Contains("tsfile/live/0005_1") && c5[1].Url.Contains("gmxw.7766.org:808/hls/93") && c5[2].Url.Contains("74.91.26.218"),
+            "治①⑧CCTV5 三候选按序（伪 200 74.91 路降观察档）");
+        var xz = FallbackSourceRegistry.GetAll("西藏卫视");
+        Check(xz.Count == 2 && xz[1].Url.Contains("183.11.239.36:808/hls/64"),
+            "治①⑧西藏新增 183.11 单条（gmxw 域名端空清单例外）");
     }
 }
 

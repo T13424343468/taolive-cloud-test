@@ -24,11 +24,15 @@ public static class FallbackSourceRegistry
     private static readonly FallbackEntry[] Satellites =
     {
         new("湖南卫视", "https://mgtv-hlsal-ldvt.aiyouchannel.com/otv/hlsal/hnws/hnws.m3u8"),
-        new("黑龙江卫视", "https://idclive.hljtv.com:4430/hljws/hljws.m3u8"),
+        // B 组修正（老板 2026-11-13 14:07 令「全收」）：hljws/hljws.m3u8 为 404 式样错，改官方 own 流
+        // （与 Batch2 重复项合并回此处置顶；探活 11-13 午 LIVE）
+        new("黑龙江卫视", "https://idclive.hljtv.com:4430/live/hljws_own.m3u8"),
         new("内蒙古卫视", "https://play1-qk.nmtv.cn/live/nmgws/nmgws.m3u8"),
         new("新疆卫视", "http://218.84.12.186:8001/hls/1/index.m3u8"),
-        new("深圳卫视", "http://gmxw.7766.org:808/45/index.m3u8"),
-        new("安徽卫视", "http://gmxw.7766.org:808/40/index.m3u8"),
+        // B 组修正：gmxw 45 路缺 /hls/ 段为死路，补正为 /hls/45/（与 Batch2 重复项合并回此处置顶）
+        new("深圳卫视", "http://gmxw.7766.org:808/hls/45/index.m3u8"),
+        // B 组修正：gmxw 40 路缺 /hls/ 段为死路，直接替换为 183.11 纯 IP 端（域名端在 Batch4）
+        new("安徽卫视", "http://183.11.239.36:808/hls/40/index.m3u8"),
         new("东南卫视", "http://live.zohi.tv/zb.m3u8"),
         new("辽宁卫视", "http://61.136.172.236:9901/live/lnws.m3u8"),
         new("江西卫视", "http://112.27.5.218:9901/live/jxws.m3u8"),
@@ -44,7 +48,8 @@ public static class FallbackSourceRegistry
 
     private static readonly FallbackEntry[] Cctv =
     {
-        new("CCTV1综合", "http://74.91.26.218:82/cctv1/index.m3u8"),
+        // B 组降序（老板 14:07 令）：CCTV1 74.91 路 404 三采样稳定死、CCTV5 74.91 路伪 200 错误文案型，
+        // 两路挪到 Batch4 末位独立家族之后观察，不再顶前；CCTV12 旧路同理挪 Batch4 观察。
         // 17:18 支援摸排收录（老板 17:30 令）：全链实测 清单200→首分片206 实数据；与 CCTV1 同源族单点，
         // 评分侧按单点降权；纯 IP 字面量不走系统解析，对解析僵死场景天然免疫（与⑤网络自愈互为逃生线）
         new("CCTV2财经", "http://74.91.26.218:82/live/cctv2hd.m3u8"),
@@ -53,10 +58,8 @@ public static class FallbackSourceRegistry
         // （清单→相对分片按重定向后最终基址 5.5MB 实 TS）；cctv5plushd 已死（「没有配置任何服务器」）不收。
         // 同源族单点特性不变，评分侧按单点降权；央视备援 6→9 路
         new("CCTV3综艺", "http://74.91.26.218:82/live/cctv3hd.m3u8"),
-        new("CCTV5体育", "http://74.91.26.218:82/live/cctv5hd.m3u8"),
         new("CCTV8电视剧", "http://74.91.26.218:82/live/cctv8hd.m3u8"),
         new("CCTV4中文国际", "https://dash2.antik.sk/cctv4/index.m3u8"),
-        new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8"),
         new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8"),
     };
 
@@ -78,8 +81,7 @@ public static class FallbackSourceRegistry
         new("广东卫视", "http://120.76.248.139/live/bfgd/4200000092.m3u8"),                // bfgd（单发重测过）
         new("北京卫视", "http://120.76.248.139/live/bfgd/4200000083.m3u8"),                // bfgd（单发重测过）
         new("湖北卫视", "http://120.76.248.139/live/bfgd/4200000102.m3u8"),                // bfgd（单发重测过）
-        new("黑龙江卫视", "https://idclive.hljtv.com:4430/live/hljws_own.m3u8"),           // hljtv 黑龙江官方 own 流
-        new("深圳卫视", "http://gmxw.7766.org:808/hls/45/index.m3u8"),                     // gmxw id45（清单标注口径，分片按目录拼）
+        // 黑龙江官方 own 流与深圳 gmxw /hls/45 已在 Satellites 修正置顶，此处重复项合并（B 组 14:07 令）
     };
 
     // ---- 第三批·最新全部收录（老板 2026-11-13 09:2x 令「把最新的全部收录」）----
@@ -109,9 +111,40 @@ public static class FallbackSourceRegistry
         new("江苏卫视", "http://107.150.60.122/live/jswshd.m3u8"),               // applive 票据家族（jstv 换源 B 主推）
     };
 
-    /// <summary>全量备援表（34 路既有 + 第三批 13 路，共 47 路）。</summary>
+    // ---- 第四批·零活兜底台救活（老板 2026-11-13 14:07 令「全收」）----
+    // 探活口径：projects/1377423/tools/probe_fallback.py 全链单发，11-13 午实测全 LIVE（收录清单已验）。
+    // 收录原则：首条优先纯 IP 免解析；同台活源在前；183.11/gmxw.7766 双端计 1 家族（②评分共族降权）。
+    // 本批后零活台 15→7。
+
+    private static readonly FallbackEntry[] Batch4 =
+    {
+        // CCTV12社会与法：tsfile 顶前 + gmxw 双端 id30；旧 cctv12 直拼路（11-12 预研收录）降末位观察
+        new("CCTV12社会与法", "http://124.165.251.82:85/tsfile/live/0012_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV12社会与法", "http://183.11.239.36:808/hls/30/index.m3u8"),
+        new("CCTV12社会与法", "http://gmxw.7766.org:808/hls/30/index.m3u8"),
+        // CCTV4/13：tsfile 独立兜底（静态 key 非票据轮换，纯 IP 免解析）
+        new("CCTV4中文国际", "http://124.165.251.82:85/tsfile/live/0004_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV13新闻", "http://124.165.251.82:85/tsfile/live/0013_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        // 山西/内蒙古/新疆：gmxw id59/60/65 双端（183.11 纯 IP 首条 + 域名端备线）
+        new("山西卫视", "http://183.11.239.36:808/hls/59/index.m3u8"),
+        new("山西卫视", "http://gmxw.7766.org:808/hls/59/index.m3u8"),
+        new("内蒙古卫视", "http://183.11.239.36:808/hls/60/index.m3u8"),
+        new("内蒙古卫视", "http://gmxw.7766.org:808/hls/60/index.m3u8"),
+        new("新疆卫视", "http://183.11.239.36:808/hls/65/index.m3u8"),
+        new("新疆卫视", "http://gmxw.7766.org:808/hls/65/index.m3u8"),
+        // 西藏：仅 183.11 端 id64 一条（gmxw 域名端 id64 空清单例外，无双端冗余）
+        new("西藏卫视", "http://183.11.239.36:808/hls/64/index.m3u8"),
+        // 安徽域名端（纯 IP 端在 Satellites 置顶）
+        new("安徽卫视", "http://gmxw.7766.org:808/hls/40/index.m3u8"),
+        // B 组降序观察档：74.91 CCTV1（404 三采样稳定死）/CCTV5（伪 200 错误文案型）与 CCTV12 旧直拼路
+        new("CCTV1综合", "http://74.91.26.218:82/cctv1/index.m3u8"),
+        new("CCTV5体育", "http://74.91.26.218:82/live/cctv5hd.m3u8"),
+        new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8"),
+    };
+
+    /// <summary>全量备援表（既有 42 路 + 第四批 16 路，共 58 路）。</summary>
     public static readonly FallbackEntry[] Table =
-        Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).ToArray();
+        Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).Concat(Batch4).ToArray();
 
     /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
     private static string Normalize(string name) =>

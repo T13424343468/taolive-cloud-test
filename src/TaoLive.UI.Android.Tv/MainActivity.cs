@@ -157,6 +157,11 @@ public class MainActivity : Activity
         // 全局兜底：未捕获异常先落日志再放行，崩溃原因可查可报，不再无声闪退（v1.0.7）
         Java.Lang.Thread.DefaultUncaughtExceptionHandler =
             new UncaughtCrashPeer(Java.Lang.Thread.DefaultUncaughtExceptionHandler);
+        // [vc47测试通道] 托管侧崩溃钩补盲（vc47 埋点审计补）：
+        // Java 钩子只接 Java 线程抛物；async void 生命周期/后台线程的托管未捕获异常走 AppDomain 事件——打开即崩的最常见形态。
+        // 双钩对同一次崩溃可能各报一次，RecordNow 已按同文 5 秒去重。稳定后随通道整撤。
+        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            CrashNet.RecordNow($"[托管未捕获]{(e.IsTerminating ? "(终止)" : "")} {e.ExceptionObject}");
 
         // 低配设备档位：32 位芯片或内存不足 3GB 软解带不动 4K/8K，超高清台直接不进节目单（雷一：带不动就别点）
         _abi32 = Build.SupportedAbis?.Any(a => a == "armeabi-v7a") == true;
@@ -1527,8 +1532,19 @@ public class MainActivity : Activity
         }
         catch (Exception ex) { healthLine = "健康账读取失败：" + ex.Message; }
 
+        // [vc47测试通道] 云端回传 URL 亮出（诊断摘要附一份，报我即可全量取证；稳定后整撤）
+        string relayLine;
+        try
+        {
+            var relay = CrashCloudRelay.LastUrl(this);
+            relayLine = CrashCloudRelay.Enabled
+                ? (relay is null ? "无（尚未发生可回传的崩溃）" : $"上次崩溃已回传 {relay}（报我即可）")
+                : "通道已停用";
+        }
+        catch (Exception ex) { relayLine = "回传账读取失败：" + ex.Message; }
+
         return DiagLog.BuildSnapshot(versionLine, clockLine, networkLine, startupLine, healthLine,
-            DiagLog.RecentFailuresFromLog(tail, 10));
+            DiagLog.RecentFailuresFromLog(tail, 10)) + $"\n【崩溃回传】{relayLine}";
     }
 
     private void ShowInfoBar(string text)
@@ -2652,7 +2668,22 @@ public class MainActivity : Activity
     protected override void OnResume()
     {
         base.OnResume();
-        if (!_resumedOnce) { _resumedOnce = true; return; } // 首启：OnCreate 已起播，不重复
+        if (!_resumedOnce)
+        {
+            _resumedOnce = true;
+            // [vc47测试通道] 上次崩溃的云端回传 URL 亮出（报我即可全量取证；稳定后整撤）
+            try
+            {
+                if (_prefs!.GetBoolean("last_relay_new", false))
+                {
+                    var relay = CrashCloudRelay.LastUrl(this);
+                    _prefs.Edit()!.PutBoolean("last_relay_new", false)!.Apply();
+                    if (relay != null) FlashInfo($"上次崩溃已回传 {relay}（把这行字报我）");
+                }
+            }
+            catch { }
+            return; // 首启：OnCreate 已起播，不重复
+        }
         if (_current != null)
         {
             // lifecycle P1：列表开着回前台也统一重接（列表浮层在上、画面在下，不冲突）——

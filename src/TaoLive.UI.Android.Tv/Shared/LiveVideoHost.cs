@@ -746,10 +746,11 @@ public class LiveVideoHost : IDisposable
                     return;
                 }
                 try { CrashNet.Record($"[LiveVideoHost] 起播 {FirstFrameTimeoutMs / 1000}s 未出首帧, 按断流自救"); } catch { }
+                long genAtFrameTimeout = _genCounter.Current; // vc52 黄三：同口径快照代数，晚到不进阶梯
                 _ = Task.Run(async () =>
                 {
                     if (await TryHotStandbyAsync("首帧超时")) return;
-                    OnStreamErrorFallthrough();   // 计自救阶梯：2/4/6 秒换票重接
+                    OnStreamErrorFallthrough(genAtFrameTimeout);   // 计自救阶梯：2/4/6 秒换票重接
                 });
             }
             catch { }
@@ -780,18 +781,25 @@ public class LiveVideoHost : IDisposable
     private void OnStreamError()
     {
         if (_userStopped) return;
+        // vc52 黄三：旧内核 EncounteredError 晚到会污染新会话——原生事件线程排队，换台/软重启推进代数后
+        // 晚到的旧事件直通自救阶梯，消耗新会话 _retriesLeft 并误显「信号中断」。入口快照代数：
+        // 晚到（代数已不当前）不问热备不进阶梯；入口内自查 _userStopped 口径不变
+        long genAtError = _genCounter.Current;
         _streamDead = true; // 断流等待期按已死处理（回前台须重播，不能拿死流当活）
         // v25 修法七：断流先问热备——备路就绪即帧级切换（不等 2/4/6 秒重连），失败继续原阶梯
         _ = Task.Run(async () =>
         {
+            if (!_genCounter.IsCurrent(genAtError)) return; // 晚到旧代事件整段作废
             if (await TryHotStandbyAsync("VLC 断流")) return;
-            OnStreamErrorFallthrough();
+            OnStreamErrorFallthrough(genAtError);
         });
     }
 
-    private void OnStreamErrorFallthrough()
+    private void OnStreamErrorFallthrough(long? genAtError = null)
     {
         if (_userStopped) return;
+        // vc52 黄三：断流事件在问热备/等待期推进代数（换台）→ 阶梯入口再守一次，不消耗新会话重试预算
+        if (genAtError is { } g && !_genCounter.IsCurrent(g)) return;
         NotePlayFailure("断流"); // vc39 ⑤：起播失败记账（≥3 连败+系统解析坏证据链成立才启用门控）
         if (_retriesLeft <= 0)
         {

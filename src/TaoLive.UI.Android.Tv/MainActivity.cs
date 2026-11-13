@@ -315,11 +315,13 @@ public class MainActivity : Activity
             await PrecheckLoopAsync(precheckCts.Token);
         });
         // 画面信息行已随第二刀摘除，刷新 ticker 一并停发（不创建）
+        // 画面平稳优先令（00:32）：续票也过后台单车道——不与预检/预热并发发请求；播放取流不经车道（优先级最高）
         _ticketKeeper = new System.Threading.Timer(async _ =>
         {
             var cur = _current;
             if (cur is null) return;
-            try { await _resolver.ResolvePlayUrlAsync(cur, force: true); }
+            try { await BackgroundLane.RunAsync(() => _resolver.ResolvePlayUrlAsync(cur, force: true)); }
+            catch (OperationCanceledException) { }
             catch (Exception ex) { CrashNet.Record($"[TicketKeeper] 续票失败下个周期再试：{ex.Message}"); }
         }, null, 240_000, 240_000);
     }
@@ -377,6 +379,8 @@ public class MainActivity : Activity
             _frameEverShown = true;            // 首帧落地：延迟亮牌基准开启，此后换台先留旧画面
             _frameForCurrentSwitch = true;
             _foregroundBusy = false;           // A⑥ PauseGate：连接完成，预热恢复
+            BackgroundLane.SetFirstFrameLanded(true); // 画面平稳优先令：首帧落地才放行后台网络
+            BackgroundLane.SetPlaying(true);          // 播放中：后台单请求间隔 ≥10 秒档
             if (_carrierTexture) CarrierPolicy.MarkOk(this); // 纹理载体活到首帧：判兼容
             if (_current != null) _precheck.MarkState(_current, ChannelHealth.Alive); // 播放实测存活
             _videoContainer?.SetBackgroundColor(Color.Transparent); // ⑦新流首帧到齐：撤底色亮画面
@@ -548,6 +552,8 @@ public class MainActivity : Activity
         if (ch is null) return;
         _hotStandby?.Stop(); // v25 修法七 1c：换台即停热备（会话代数作废，校验流不再漏跑）
         _foregroundBusy = true; // A⑥ PauseGate：换台/连接期间预热让路
+        BackgroundLane.SetFirstFrameLanded(false); // 画面平稳优先令：换台起播期间零后台网络，首帧落地再放行
+        BackgroundLane.SetPlaying(false);          // 起播中不算在播（后台车道空闲节拍，反正门控拦着）
         int seq = ++_playSeq;
         _current = ch;
         _frameForCurrentSwitch = false;
@@ -2780,6 +2786,8 @@ public class MainActivity : Activity
         _precheckCts?.Cancel();
         _precheckCts?.Dispose();
         _precheckCts = null;
+        BackgroundLane.SetPlaying(false);      // 退出播放：车道恢复空闲档（服务预热继续按其节拍）
+        BackgroundLane.SetFirstFrameLanded(false);
         _hotStandby?.Stop(); // v25 修法七 1c：退出即停热备校验流（会话代数作废，不再漏跑）
         if (_envReceiver != null)
         {

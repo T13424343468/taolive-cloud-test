@@ -216,7 +216,8 @@ public class ChannelPrecheck
                 {
                     if (ct.IsCancellationRequested) return;
                     bool ok;
-                    try { ok = await _probe(ch).ConfigureAwait(false); }
+                    try { ok = await BackgroundLane.RunAsync(() => _probe(ch), ct).ConfigureAwait(false); } // 画面平稳优先令：过全局单车道（首帧门控+播放中≥10s 间隔+全局串行）
+                    catch (OperationCanceledException) { return; } // 车道取消（停预检）原样收场，不记探测失败
                     catch { ok = false; }
                     WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     anyOk |= ok;

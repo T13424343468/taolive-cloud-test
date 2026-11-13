@@ -574,6 +574,17 @@ public class StreamResolver
         => await ProbeUrlVerdictAsync(url, referer, ua) == ProbeVerdict.Reachable;
 
     /// <summary>
+    /// vc45 隐患⑤：假 200 判死口径（vc43 74.91 伪 200 教训落码）——响应体非空却无任何 m3u8 标记
+    /// （#EXTM3U/#EXTINF/#EXT-X-）即死（如 74.91 伪 200 返回「没有配置任何服务器」文案）。
+    /// 体空不做判定（空清单另有分片级校验兜底）。
+    /// </summary>
+    public static bool LooksLikeManifest(string? body) =>
+        !string.IsNullOrEmpty(body)
+        && (body.Contains("#EXTM3U", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("#EXTINF", StringComparison.OrdinalIgnoreCase)
+            || body.Contains("#EXT-X-", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
     /// v25 修法七：热备校验流轻探。segmentLevel=true 时「清单 + 单分片头」（拉清单后取首个分片，
     /// Range 0–2047 几 KB 级，不建视频传输不解码）；false 时仅清单级（央视频同源备路降档，同 IP 不建双会话）。
     /// 请求画像与播放链路完全同口径（referer/ua 由调用方透传播放统一头，修法七 1d）。
@@ -593,6 +604,8 @@ public class StreamResolver
             manifest = await resp.Content.ReadAsStringAsync();
         }
         catch { return (false, false); } // 网络级失败：不入账（修法七 1b）
+        // vc45 隐患⑤：假 200 判死——200+非 m3u8 文案=死（74.91 伪 200 教训），不计服务器明确拒绝
+        if (!string.IsNullOrEmpty(manifest) && !LooksLikeManifest(manifest)) return (false, false);
         if (!segmentLevel || string.IsNullOrEmpty(manifest)) return (true, false);
         // 清单 → 首个分片（相对路径转绝对）→ 几 KB 级分片头校验
         var segMatch = Regex.Match(manifest, "^(?!#)[^\\r\\n]+\\.(?:ts|m4s|mp4)[^\\r\\n]*", RegexOptions.Multiline);

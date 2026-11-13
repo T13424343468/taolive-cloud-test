@@ -1752,6 +1752,16 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(FallbackSourceRegistry.GetAll("CCTV13新闻")[0].Url.Contains("tsfile"), "vc45③CCTV13 tsfile 纯 IP 兜底归位域名备线前");
         Check(FallbackSourceRegistry.GetAll("CCTV4中文国际")[0].Url.Contains("tsfile"), "vc45③CCTV4 tsfile 纯 IP 兜底归位域名备线前");
     }
+
+    // ⑪ vc45 隐患⑤：假 200 判死口径落码——200+非 m3u8 文案=死（74.91 伪 200 教训）
+    {
+        Check(!StreamResolver.LooksLikeManifest("没有配置任何服务器"), "vc45⑤伪 200 错误文案判死（74.91 教训）");
+        Check(!StreamResolver.LooksLikeManifest("<html><body>error</body></html>"), "vc45⑤200+HTML 错误页判死");
+        Check(!StreamResolver.LooksLikeManifest(""), "vc45⑤体空不做判定（分片级校验兜底）");
+        Check(!StreamResolver.LooksLikeManifest(null), "vc45⑤体 null 不做判定");
+        Check(StreamResolver.LooksLikeManifest("#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts"), "vc45⑤标准清单判定活");
+        Check(StreamResolver.LooksLikeManifest("#EXTINF:10.0,\nseg0.ts"), "vc45⑤仅分片行清单判定活（容忍缺 EXTM3U 头）");
+    }
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");

@@ -1098,13 +1098,24 @@ public class MainActivity : Activity
         FlashInfo(_autostartEnabled ? "开机自启：开（首次生效需先开过一次 App）" : "开机自启：关");
     }
 
+    /// <summary>fix53（修复批移植，审计 A5 低危收口）：按尾偏移读日志尾部，主线程 IO 有界，不再整读全文件。</summary>
+    private static string ReadLogTail(string filePath, int maxBytes)
+    {
+        using var fs = new System.IO.FileStream(filePath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+        var start = Math.Max(0, fs.Length - maxBytes);
+        fs.Seek(start, System.IO.SeekOrigin.Begin);
+        using var reader = new System.IO.StreamReader(fs);
+        return reader.ReadToEnd();
+    }
+
     private void ShowCrashLog()
     {
         try
         {
             var path = new Java.IO.File(FilesDir, "taolive_crash.log");
             if (!path.Exists()) { FlashInfo("暂无崩溃日志"); return; } // 空态提示（v1.0.9 第⑩项）
-            var text = System.IO.File.ReadAllText(path.AbsolutePath);
+            // fix53（修复批移植）：不再整读文件——面板只展示尾部内容，按尾偏移最多读 64KB，主线程 IO 开销有界
+            var text = ReadLogTail(path.AbsolutePath, 64 * 1024);
             if (text.Length > 16000) text = "…\n" + text[^16000..];
             // B 包第 9 项：崩溃日志窗改全屏水墨面板——深底大字可滚动，确认键一键清理、返回键关闭
             // v22 第 10 项改版（老板 20:37 拍板，整段参照第 11 项退出弹窗做法）：全屏自管——窗底透明+半透明水墨面板，

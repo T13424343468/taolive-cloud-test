@@ -1277,7 +1277,7 @@ public class MainActivity : Activity
                 row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(2)); // vc41：紧凑对齐自诊断（上 20→12、缩进统一 24）
 
                 var minus = new TextView(this) { Text = "−", Gravity = GravityFlags.Center };
-                var value = new TextView(this) { Gravity = GravityFlags.Center };
+                var value = new TextView(this) { Gravity = GravityFlags.Start }; // vc45 病根1：值靠左与说明对齐（原居中致上下行错位）
                 var plus = new TextView(this) { Text = "+", Gravity = GravityFlags.Center };
 
                 int btn = Dp(40); // 2.5U 方块

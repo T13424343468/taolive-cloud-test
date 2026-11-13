@@ -35,12 +35,26 @@ public class SourceFailover
     }
 
     /// <summary>当前候选成功：主源清零计数；备援候选累计连续成功，达标即静默回主源。</summary>
-    public void OnSuccess(string channelKey)
+    public void OnSuccess(string channelKey) => OnSuccessAsync(channelKey).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// 当前候选成功（异步版，vc45 隐患④·回主源稳定确认期）：主源清零计数；备援候选累计连续成功，
+    /// 达标且主源探活确认（探针由调用方注入）才回主源——主源未确认恢复则留在备援，
+    /// 确认期继续累计（下轮达标再探），防「回死源二次断流」。探针为空按原口径达标即回主（纯逻辑测试兼容）。
+    /// </summary>
+    public async Task<bool> OnSuccessAsync(string channelKey, Func<Task<bool>>? primaryRecoveryProbe = null)
     {
         var st = _states.GetOrAdd(channelKey, _ => new CandidateState());
-        if (st.Index == 0) { st.RecoverStreak = 0; return; }
+        if (st.Index == 0) { st.RecoverStreak = 0; return true; }
         st.RecoverStreak++;
-        if (st.RecoverStreak >= RecoverToPrimaryAfter) { st.Index = 0; st.RecoverStreak = 0; }
+        if (st.RecoverStreak >= RecoverToPrimaryAfter)
+        {
+            if (primaryRecoveryProbe != null && !await primaryRecoveryProbe())
+                return false; // 主源未确认恢复：留备援，确认期不清零，下轮达标再探
+            st.Index = 0;
+            st.RecoverStreak = 0;
+        }
+        return true;
     }
 
     /// <summary>该台当前使用的候选序号（0=主源，1+=备援）。</summary>

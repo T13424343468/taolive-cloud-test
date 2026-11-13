@@ -111,6 +111,26 @@ public class StreamResolver
         return (await ProbeHotStandbyAsync(url, referer, ua, segmentLevel: false)).Ok;
     }
 
+    /// <summary>
+    /// vc45 隐患④：备援成功回灌+回主稳定确认。备援连续成功达 RecoverToPrimaryAfter 轮时，
+    /// 回主前先探主源一次（重取主源票+清单级轻验）——探不活留备援，确认期继续累计，防回死源二次断流。
+    /// </summary>
+    private async Task FailoverOnSuccessWithRecoveryProbeAsync(Channel ch, string key)
+    {
+        await _failover.OnSuccessAsync(key, async () =>
+        {
+            var primary = await ResolvePlayUrlAsync(ch);
+            if (primary == null) return false;
+            string? pRef = null, pUa = null;
+            foreach (var (k, v) in primary.Options)
+            {
+                if (k == "http-referrer") pRef = v;
+                else if (k == "http-user-agent") pUa = v;
+            }
+            return await ProbeBackupAsync(primary.Url, pRef, pUa);
+        });
+    }
+
     /// <summary>时钟守卫（自愈4）：票据窗口用修正后的时间计算，容忍设备时间偏差。</summary>
     public ClockGuard Clock { get; } = new();
 
@@ -231,7 +251,7 @@ public class StreamResolver
                 if (idx == prev) break; // 已钳在末位不再前进：候选耗尽（末路探死即终局，防无限重探）
                 continue;
             }
-            _failover.OnSuccess(key);
+            await FailoverOnSuccessWithRecoveryProbeAsync(ch, key); // vc45 隐患④：达标回主前先探主源
             var fbOpts = new List<(string Key, string Value)>();
             if (!string.IsNullOrEmpty(fb.Referer)) fbOpts.Add(("http-referrer", fb.Referer));
             if (!string.IsNullOrEmpty(fbUa)) fbOpts.Add(("http-user-agent", fbUa));
@@ -252,7 +272,7 @@ public class StreamResolver
                 _failover.NextCandidateOnFailure(key, candidateCount); // 备援也失败（钳在末位候选）
                 return null;
             }
-            _failover.OnSuccess(key);
+            await FailoverOnSuccessWithRecoveryProbeAsync(ch, key); // vc45 隐患④：达标回主前先探主源
             var opts = new List<(string Key, string Value)>();
             if (!string.IsNullOrEmpty(ch.Referer)) opts.Add(("http-referrer", ch.Referer));
             if (!string.IsNullOrEmpty(ch.UserAgent)) opts.Add(("http-user-agent", ch.UserAgent));

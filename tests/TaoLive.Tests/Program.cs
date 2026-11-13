@@ -1646,6 +1646,22 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         Check(f.CurrentIndex("k1") == 0, "治①④备援连续成功 2 轮自动回主源");
     }
 
+    // ④b vc45 隐患④：回主源稳定确认期——达标回主前先探主源，探不活留备援（确认期继续累计），确认活才回主
+    {
+        var f = new SourceFailover();
+        f.NextCandidateOnFailure("k4", 2); // 主源失败 → 备援
+        bool primaryAlive = false;
+        await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
+        Check(f.CurrentIndex("k4") == 1, "vc45④备援成功未达阈值不回主（正常累计）");
+        await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
+        Check(f.CurrentIndex("k4") == 1, "vc45④达阈值但主源未确认恢复不回主（防二次断流）");
+        await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
+        Check(f.CurrentIndex("k4") == 1, "vc45④确认期继续累计不清零（下轮达标再探）");
+        primaryAlive = true;
+        await f.OnSuccessAsync("k4", () => Task.FromResult(primaryAlive));
+        Check(f.CurrentIndex("k4") == 0, "vc45④主源探活确认后回主");
+    }
+
     // ⑤ 未登记台不误切：无备援表匹配且无 UserFallback → 返回 null（UI 明确提示）
     {
         var resolver = new StreamResolver();

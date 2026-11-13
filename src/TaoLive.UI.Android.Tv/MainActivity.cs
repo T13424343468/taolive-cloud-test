@@ -1470,13 +1470,24 @@ public class MainActivity : Activity
         FlashInfo(_firstPacketEnabled ? "并行抢首包：开" : "并行抢首包：关");
     }
 
+    /// <summary>fix53（审计 A5）：按尾偏移读日志尾部，主线程 IO 有界，不再整读全文件。</summary>
+    private static string ReadLogTail(string filePath, int maxBytes)
+    {
+        using var fs = new System.IO.FileStream(filePath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+        var start = Math.Max(0, fs.Length - maxBytes);
+        fs.Seek(start, System.IO.SeekOrigin.Begin);
+        using var reader = new System.IO.StreamReader(fs);
+        return reader.ReadToEnd();
+    }
+
     private void ShowCrashLog()
     {
         try
         {
             var path = new Java.IO.File(FilesDir, "taolive_crash.log");
             if (!path.Exists()) { FlashInfo("暂无崩溃日志"); return; } // 空态提示（v1.0.9 第⑩项）
-            var text = System.IO.File.ReadAllText(path.AbsolutePath);
+            // fix53（审计 A5 低危收口）：不再整读文件——弹窗只展示尾部 4000 字符，按尾偏移最多读 64KB，主线程 IO 开销有界
+            var text = ReadLogTail(path.AbsolutePath, 64 * 1024);
             if (text.Length > 4000) text = "…\n" + text[^4000..];
             var builder = new AlertDialog.Builder(this); // 构建器逐条调用：绑定返回可空不续点
             builder.SetTitle("崩溃日志");

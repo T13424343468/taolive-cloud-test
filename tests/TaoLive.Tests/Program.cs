@@ -15,6 +15,12 @@ void Check(bool cond, string name)
     else { fail++; Console.WriteLine($"FAIL {name}"); }
 }
 
+// 全测适配·车道首帧门控（vc53）：刀1（2763ff3）后 ChannelPrecheck 探测过全局单车道，
+// 测试进程无 UI 置位首帧 → 车道 RunAsync 无限等待 → 全测在 79 项后挂死（实锤）。
+// 测试态置位：首帧已落地+空闲档——门控与限速逻辑仍被真实走查（IdleGap 600ms 放行）。
+BackgroundLane.SetFirstFrameLanded(true);
+BackgroundLane.SetPlaying(false);
+
 var fav = new FavoriteStore();
 var catalog = new ChannelCatalog(fav);
 catalog.RegisterSource(new StubSource("s1"));

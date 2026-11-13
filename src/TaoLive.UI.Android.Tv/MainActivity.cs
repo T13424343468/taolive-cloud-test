@@ -1987,10 +1987,17 @@ public class MainActivity : Activity
             }
             if (!dead && logoRes == null)
             {
+                // vc44①（老板 11-13 14:4x 令「尽善尽美+长期稳定免维护」）：无内置台标→水墨文字台标，
+                // 运行时动态生成，任意新台/未收录台零资源自动覆盖，无需随台标枚举更新——
+                // 瓷釉水墨圆角底+纸色首字+细边描（与 v22 水墨文字台标同风格、与空态行次色一致）。
                 var ph = new TextView(ctx) { Text = ch.Name.Substring(0, 1) };
-                Style(ph, InkTranslucency.TextSecondary, Shared.UiScale.T(0.875f));
+                Style(ph, "#E7E2D6", Shared.UiScale.T(0.875f));
                 ph.Gravity = GravityFlags.Center;
-                ph.SetBackgroundColor(Color.ParseColor("#3A4750"));
+                var inkBg = new GradientDrawable();
+                inkBg.SetColor(Color.ParseColor("#3A4750"));
+                inkBg.SetCornerRadius(Shared.UiScale.P(0.625f));
+                inkBg.SetStroke(1, Color.ParseColor("#4E5D68"));
+                ph.Background = inkBg;
                 var lpPh = new LinearLayout.LayoutParams(Shared.UiScale.P(2.5f), Shared.UiScale.P(1.75f))
                 { RightMargin = _owner.Dp(8), Gravity = GravityFlags.CenterVertical };
                 line.AddView(ph, lpPh);

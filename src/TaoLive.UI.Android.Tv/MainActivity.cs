@@ -2783,8 +2783,17 @@ public class MainActivity : Activity
         _statsTicker = null;
         // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘），再落盘
         _healthLoadTask?.Wait();
-        _healthStore?.FlushNow(); // v1.0.10：退出前把源健康账落盘
-        SourceProfileStore.Shared.FlushNow(); // 源档案接线：退出前档案落盘（同 source_health.json 家法）
+        // fix51（修复批B移植）：退出落盘移出主线程（对齐 OnPause 的 Task.Run 口径），但进程即将终止——
+        // 后台写盘必须有界等待完成再放行（2 秒上限），防「进程先死文件没写完」丢健康账，不得丢档
+        var exitStore = _healthStore;
+        if (exitStore != null)
+        {
+            try { Task.Run(exitStore.FlushNow).Wait(2000); }
+            catch (Exception ex) { CrashNet.Record("[Exit] 源健康账退出落盘等待异常：" + ex.Message); }
+        }
+        var exitProfiles = SourceProfileStore.Shared;
+        try { Task.Run(exitProfiles.FlushNow).Wait(2000); }
+        catch (Exception ex) { CrashNet.Record("[Exit] 源档案退出落盘等待异常：" + ex.Message); }
         _host.Dispose();
         base.OnDestroy();
     }

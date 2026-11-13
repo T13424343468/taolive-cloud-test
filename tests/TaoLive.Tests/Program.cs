@@ -1713,6 +1713,29 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
             "vc45①注册表无路退用户源（原口径保留）");
         resolver3.UserFallback = null;
     }
+
+    // ⑩ vc45 隐患③：登记序贯彻纯 IP 优先（方案定稿写活批补记 3）——纪律由代码执行：
+    // 全表每台候选内非观察档纯 IP 恒排非观察档域名前（观察档垫底），新登记进表自动归位
+    {
+        string bad = "无";
+        bool invariantHeld = true;
+        foreach (var names in FallbackSourceRegistry.Table.Select(e => e.Name.Replace(" ", "").Replace("　", "")).Distinct())
+        {
+            bool seenDomain = false;
+            foreach (var e in FallbackSourceRegistry.GetAll(names))
+            {
+                if (e.ObservationRank) continue;
+                bool isIp = Uri.TryCreate(e.Url, UriKind.Absolute, out var u)
+                    && (u.HostNameType == UriHostNameType.IPv4 || u.HostNameType == UriHostNameType.IPv6);
+                if (!isIp) seenDomain = true;
+                else if (seenDomain) { invariantHeld = false; bad = e.Name; break; }
+            }
+            if (!invariantHeld) break;
+        }
+        Check(invariantHeld, $"vc45③登记序纯 IP 优先不变量全表成立（违规：{bad}）");
+        Check(FallbackSourceRegistry.GetAll("CCTV13新闻")[0].Url.Contains("tsfile"), "vc45③CCTV13 tsfile 纯 IP 兜底归位域名备线前");
+        Check(FallbackSourceRegistry.GetAll("CCTV4中文国际")[0].Url.Contains("tsfile"), "vc45③CCTV4 tsfile 纯 IP 兜底归位域名备线前");
+    }
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");

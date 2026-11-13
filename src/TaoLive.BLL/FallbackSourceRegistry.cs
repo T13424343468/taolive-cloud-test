@@ -16,8 +16,9 @@ namespace TaoLive.BLL;
 /// </summary>
 public static class FallbackSourceRegistry
 {
-    /// <summary>一路备援源：台名（1.0.x 目录口径）+ 直连 URL + 可选 Referer/UA。</summary>
-    public record FallbackEntry(string Name, string Url, string Referer = "", string UserAgent = "");
+    /// <summary>一路备援源：台名（1.0.x 目录口径）+ 直连 URL + 可选 Referer/UA。
+    /// ObservationRank=观察档（B 组降序死路/共 token 家族），候选排序恒垫底，仅作同族备线。</summary>
+    public record FallbackEntry(string Name, string Url, string Referer = "", string UserAgent = "", bool ObservationRank = false);
 
     // ---- 15 路卫视摸排批（v4 树 BuiltinRegistry 2026-11-10 收录，11-12 复测全活） ----
 
@@ -75,9 +76,9 @@ public static class FallbackSourceRegistry
     {
         new("浙江卫视", "http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8"), // cztv-ali 浙江官方蓝天频道，同域双活
         new("东方卫视", "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8"),               // bestv 百视通
-        new("黑龙江卫视", "http://120.76.248.139/live/bfgd/4200000095.m3u8"),              // bfgd（观察档，共 token）
-        new("深圳卫视", "http://120.76.248.139/live/bfgd/4200000100.m3u8"),                // bfgd（观察档，共 token）
-        new("东南卫视", "http://120.76.248.139/live/bfgd/4200000483.m3u8"),                // bfgd（观察档，共 token）
+        new("黑龙江卫视", "http://120.76.248.139/live/bfgd/4200000095.m3u8", ObservationRank: true),              // bfgd（观察档，共 token）
+        new("深圳卫视", "http://120.76.248.139/live/bfgd/4200000100.m3u8", ObservationRank: true),                // bfgd（观察档，共 token）
+        new("东南卫视", "http://120.76.248.139/live/bfgd/4200000483.m3u8", ObservationRank: true),                // bfgd（观察档，共 token）
         new("广东卫视", "http://120.76.248.139/live/bfgd/4200000092.m3u8"),                // bfgd（单发重测过）
         new("北京卫视", "http://120.76.248.139/live/bfgd/4200000083.m3u8"),                // bfgd（单发重测过）
         new("湖北卫视", "http://120.76.248.139/live/bfgd/4200000102.m3u8"),                // bfgd（单发重测过）
@@ -137,9 +138,9 @@ public static class FallbackSourceRegistry
         // 安徽域名端（纯 IP 端在 Satellites 置顶）
         new("安徽卫视", "http://gmxw.7766.org:808/hls/40/index.m3u8"),
         // B 组降序观察档：74.91 CCTV1（404 三采样稳定死）/CCTV5（伪 200 错误文案型）与 CCTV12 旧直拼路
-        new("CCTV1综合", "http://74.91.26.218:82/cctv1/index.m3u8"),
-        new("CCTV5体育", "http://74.91.26.218:82/live/cctv5hd.m3u8"),
-        new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8"),
+        new("CCTV1综合", "http://74.91.26.218:82/cctv1/index.m3u8", ObservationRank: true),
+        new("CCTV5体育", "http://74.91.26.218:82/live/cctv5hd.m3u8", ObservationRank: true),
+        new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8", ObservationRank: true),
     };
 
     /// <summary>全量备援表（既有 42 路 + 第四批 16 路，共 58 路）。</summary>
@@ -152,9 +153,25 @@ public static class FallbackSourceRegistry
 
     // vc43⑥ 生效性修复：Index 由「每台取首条」改「每台全量按序」——同台多家族候选（如央视六台的 74.91/tsfile/applive、
     // 湖北/广东的 bfgd/gmxw 双端）逐台按登记序保留，运行时按序取用，收录即可达（老板 11-13 令「有问题就改」）。
+    // vc45 隐患③：登记序贯彻纯 IP 优先（方案定稿写活批补记 3「解析坏优先纯 IP 源因子」）——同台候选内
+    // 非观察档纯 IP 恒排非观察档域名前（稳定排序保家族内相对次序），观察档恒垫底；
+    // 纪律由代码执行而非靠登记时人工记，新登记进表自动归位，解析僵死场景天然免疫。
     private static readonly Dictionary<string, List<FallbackEntry>> Index =
         Table.GroupBy(e => Normalize(e.Name))
-             .ToDictionary(g => g.Key, g => g.ToList());
+             .ToDictionary(g => g.Key, g => OrderByDiscipline(g.ToList()));
+
+    /// <summary>纯 IP 字面量判别（直连免系统解析，解析僵死免疫）。</summary>
+    private static bool IsIpLiteral(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var u)
+        && (u.HostNameType == UriHostNameType.IPv4 || u.HostNameType == UriHostNameType.IPv6);
+
+    private static List<FallbackEntry> OrderByDiscipline(List<FallbackEntry> list) =>
+        list.Select((e, i) => (e, i))
+            .OrderBy(t => t.e.ObservationRank ? 1 : 0)      // 观察档垫底
+            .ThenBy(t => IsIpLiteral(t.e.Url) ? 0 : 1)      // 非观察档内纯 IP 优先
+            .ThenBy(t => t.i)                               // 其余保持登记序
+            .Select(t => t.e)
+            .ToList();
 
     /// <summary>该频道是否有登记的备援源。</summary>
     public static bool Has(string channelName) => Index.ContainsKey(Normalize(channelName));

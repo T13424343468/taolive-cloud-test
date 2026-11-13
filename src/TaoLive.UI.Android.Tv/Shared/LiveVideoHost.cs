@@ -502,6 +502,9 @@ public class LiveVideoHost : IDisposable
         lock (_startLock)   // PL5: 热备写 _currentUrl+StartInternal 串行，防与换台/重连并发落账
         {
             if (_userStopped || !_genCounter.IsCurrent(hotGen)) return false;   // PL1: 落账前再守一次
+            // vc52 黄六：Url=null 的元组不落账——直写 _currentUrl=null 会令 StartInternal 静默
+            // return（_frameShown=false、看门狗在 _currentUrl is null 早退），画面定格无自救
+            if (string.IsNullOrEmpty(standby.Value.Url)) return false;
             _currentUrl = standby.Value.Url;
             // 缺键才补：热备流只带 Referer/UA 两项，并入现有表保持既有选项（同 A 类 P1 口径）
             _currentOptions = MergeOptions(_currentOptions, standby.Value.Options);

@@ -297,8 +297,15 @@ public class SelfHealProxyKernel : IDisposable
     public SelfHealProxyKernel(StreamDnsPicker? dns = null)
     {
         _ = dns; // 回源解析已统一下沉到 Forward 的 ConnectCallback（构造注入仅为兼容签名保留）
-        _listener = new System.Net.HttpListener();
-        _listener.Prefixes.Add($"http://{HlsRewriter.ProxyHost}:{HlsRewriter.ProxyPort}/");
+        _listener = CreateListener();
+    }
+
+    /// <summary>vc52 红三：监听实例构造收口——构造与 Start 复活路径共用（前缀串两现提方法，防改一处漏一处）。</summary>
+    private static System.Net.HttpListener CreateListener()
+    {
+        var l = new System.Net.HttpListener();
+        l.Prefixes.Add($"http://{HlsRewriter.ProxyHost}:{HlsRewriter.ProxyPort}/");
+        return l;
     }
 
     public bool IsRunning { get; private set; }
@@ -341,7 +348,12 @@ public class SelfHealProxyKernel : IDisposable
 
     public void Start()
     {
-        if (IsRunning || _listener is null) return;
+        if (IsRunning) return;
+        // vc52 红三：复活链打通——Stop()/MarkDead()/Start 异常路径都把 _listener 置 null，
+        // 旧写法对 null 直接 return，代理停过一次即永死（门控启用时播放链切进死代理，
+        // 复活只能靠宿主 new 新内核，而内核是进程级单例永不再建）。null 时原地重建监听实例，
+        // Start 幂等口径不变：IsRunning 已 true 才拒
+        _listener ??= CreateListener();
         try
         {
             _listener.Start();

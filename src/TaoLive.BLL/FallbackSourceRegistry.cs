@@ -82,9 +82,36 @@ public static class FallbackSourceRegistry
         new("深圳卫视", "http://gmxw.7766.org:808/hls/45/index.m3u8"),                     // gmxw id45（清单标注口径，分片按目录拼）
     };
 
-    /// <summary>全量备援表（24 路既有 + 10 路卫视摸排第二批，共 34 路）。</summary>
+    // ---- 第三批·最新全部收录（老板 2026-11-13 09:2x 令「把最新的全部收录」）----
+    // 详《备援第二家族与jstv换源摸排.md》§二/§十，全部 11-13 晨 09:2x 单发探活 LIVE（probe_fallback.py 全链）：
+    // ① tsfile-124 国内 IP 六台：CCTV1/2/3/5/6/8 独立兜底（静态 key 非票据轮换，纯 IP 免解析，解析僵死免疫）——
+    //    央视六台原全押 74.91 零独立备路，本批解掉该单点；Index 首条生效，新六路留表作独立家族备线（②评分按家族降权）。
+    // ② gmxw id93=CCTV5 独立二路（域名直出无票无 302）。
+    // ③ applive 票据家族：CCTV1 入口恒定（gslb）302 取票，票随基址每次重取（N5 口径不缓存判死）。
+    // ④ gmxw 同族双端标定（§十）：id46=湖北、id80=广东，双端四路全链 LIVE——首条 183.11 纯 IP 免解析，
+    //    第二路 gmxw 域名同族备线（双端异构降解析单点；同族计 1 家族，②评分共族降权）；北京无映射，bfgd 观察档维持。
+    // ⑤ 江苏卫视 applive B 路（jstv 换源主推，票据随基址）——江苏首个备援。
+
+    private static readonly FallbackEntry[] Batch3 =
+    {
+        new("CCTV1综合", "http://124.165.251.82:85/tsfile/live/0001_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV2财经", "http://124.165.251.82:85/tsfile/live/0002_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV3综艺", "http://124.165.251.82:85/tsfile/live/0003_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV5体育", "http://124.165.251.82:85/tsfile/live/0005_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV6电影", "http://124.165.251.82:85/tsfile/live/0006_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV8电视剧", "http://124.165.251.82:85/tsfile/live/0008_1.m3u8?key=txiptv&playlive=1&authid=0"),
+        new("CCTV5体育", "http://gmxw.7766.org:808/hls/93/index.m3u8"),
+        new("CCTV1综合", "http://63.141.230.178:82/gslb/zbdq5.m3u8?id=cctv1hd"), // applive：入口恒定 302 取票
+        new("湖北卫视", "http://183.11.239.36:808/hls/46/index.m3u8"),           // gmxw 同族 id46，纯 IP 免解析
+        new("湖北卫视", "http://gmxw.7766.org:808/hls/46/index.m3u8"),           // 同族域名备线
+        new("广东卫视", "http://183.11.239.36:808/hls/80/index.m3u8"),           // gmxw 同族 id80，纯 IP 免解析
+        new("广东卫视", "http://gmxw.7766.org:808/hls/80/index.m3u8"),           // 同族域名备线
+        new("江苏卫视", "http://107.150.60.122/live/jswshd.m3u8"),               // applive 票据家族（jstv 换源 B 主推）
+    };
+
+    /// <summary>全量备援表（34 路既有 + 第三批 13 路，共 47 路）。</summary>
     public static readonly FallbackEntry[] Table =
-        Satellites.Concat(Cctv).Concat(SatellitesBatch2).ToArray();
+        Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).ToArray();
 
     /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
     private static string Normalize(string name) =>

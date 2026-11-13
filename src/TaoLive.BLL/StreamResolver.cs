@@ -173,15 +173,22 @@ public class StreamResolver
     public async Task<ResolvedStream?> ResolveWithFailoverAsync(Channel ch, bool force = false)
     {
         var key = ch.EpgKey;
+        // vc43⑥ 生效性修复：候选从「主源+1 备援」扩为「主源+注册表全量按序+用户源」——
+        // 同台多家族收录（央视六台 74.91/tsfile/applive、湖北/广东 bfgd/gmxw 双端）逐级切换，收录即可达；
+        // 注册表耗尽再退用户自有源，全候选失败返回 null（UI 明确提示）。
+        var fbs = FallbackSourceRegistry.GetAll(ch.Name);
+        var candidateCount = 1 + fbs.Count + (UserFallback != null ? 1 : 0);
         if (_failover.CurrentIndex(key) == 0)
         {
             var primary = await ResolvePlayUrlAsync(ch, force);
             if (primary != null) return primary;
-            _failover.NextCandidateOnFailure(key, 2); // 主源 + 备援源（用户源经 UserFallback 同链）
+            _failover.NextCandidateOnFailure(key, candidateCount); // 主源失败→按序进备援（候选数按实际）
         }
-        // 治顿批①：内置备援表优先（登记台免网络二次解析，直连即用）；未登记退 UserFallback
-        if (FallbackSourceRegistry.Get(ch.Name) is { } fb)
+        // 治顿批①：内置备援表优先（登记台免网络二次解析，直连即用）；耗尽退 UserFallback
+        var idx = _failover.CurrentIndex(key);
+        if (idx >= 1 && idx <= fbs.Count)
         {
+            var fb = fbs[idx - 1];
             _failover.OnSuccess(key);
             var fbOpts = new List<(string Key, string Value)>();
             if (!string.IsNullOrEmpty(fb.Referer)) fbOpts.Add(("http-referrer", fb.Referer));
@@ -200,7 +207,7 @@ public class StreamResolver
             var alt = await UserFallback(ch);
             if (string.IsNullOrEmpty(alt))
             {
-                _failover.NextCandidateOnFailure(key, 2); // 备援也失败
+                _failover.NextCandidateOnFailure(key, candidateCount); // 备援也失败（钳在末位候选）
                 return null;
             }
             _failover.OnSuccess(key);

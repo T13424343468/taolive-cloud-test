@@ -1639,6 +1639,23 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
 
     // ⑥ 台名归一匹配：去空格后一致即命中（「CCTV1 综合」变体也命中 CCTV1综合）
     Check(FallbackSourceRegistry.Has("CCTV1 综合"), "治①⑥台名归一匹配（空格容忍）");
+
+    // ⑦ 多家族候选按序可达（vc43⑥ 生效性修复）：同台收录多路时运行时逐级取用，不只首条
+    {
+        var c1 = FallbackSourceRegistry.GetAll("CCTV1综合");
+        Check(c1.Count == 3 && c1[0].Url.Contains("74.91.26.218") && c1[1].Url.Contains("tsfile/live/0001_1") && c1[2].Url.Contains("gslb"),
+            "治①⑦央视一台三家族候选按序（74.91→tsfile→applive）");
+        var hb = FallbackSourceRegistry.GetAll("湖北卫视");
+        Check(hb.Count == 3 && hb[0].Url.Contains("bfgd") && hb[1].Url.Contains("183.11.239.36") && hb[2].Url.Contains("gmxw.7766.org"),
+            "治①⑦湖北三候选按序（bfgd→纯IP端→域名端）");
+        var resolver2 = new StreamResolver();
+        var c1ch = new Channel { Name = "CCTV1综合", SourceId = "dead", StreamUrl = "", EpgKey = "c_cctv1_x7" };
+        var r1 = await resolver2.ResolveWithFailoverAsync(c1ch);
+        Check(r1 != null && r1.Url.Contains("74.91.26.218"), "治①⑦首级备援仍取稳定档（74.91）");
+        resolver2.Failover.NextCandidateOnFailure(c1ch.EpgKey, 4); // r1 后已在第 1 候选，再进一级到第 2 候选
+        var r2 = await resolver2.ResolveWithFailoverAsync(c1ch);
+        Check(r2 != null && r2.Url.Contains("tsfile/live/0001_1"), "治①⑦第 2 候选可达（tsfile 独立兜底）");
+    }
 }
 
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");

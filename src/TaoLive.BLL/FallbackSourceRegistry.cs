@@ -117,16 +117,25 @@ public static class FallbackSourceRegistry
     private static string Normalize(string name) =>
         (name ?? "").Replace(" ", "").Replace("　", "");
 
-    private static readonly Dictionary<string, FallbackEntry> Index =
+    // vc43⑥ 生效性修复：Index 由「每台取首条」改「每台全量按序」——同台多家族候选（如央视六台的 74.91/tsfile/applive、
+    // 湖北/广东的 bfgd/gmxw 双端）逐台按登记序保留，运行时按序取用，收录即可达（老板 11-13 令「有问题就改」）。
+    private static readonly Dictionary<string, List<FallbackEntry>> Index =
         Table.GroupBy(e => Normalize(e.Name))
-             .ToDictionary(g => g.Key, g => g.First());
+             .ToDictionary(g => g.Key, g => g.ToList());
 
     /// <summary>该频道是否有登记的备援源。</summary>
     public static bool Has(string channelName) => Index.ContainsKey(Normalize(channelName));
 
+    /// <summary>该频道的全部备援候选（按登记序：稳定档在前，后收的独立家族/同族备线依次跟上）。</summary>
+    public static IReadOnlyList<FallbackEntry> GetAll(string channelName) =>
+        Index.TryGetValue(Normalize(channelName), out var list) ? list : Array.Empty<FallbackEntry>();
+
     /// <summary>取备援 URL（无登记返回 null）。Referer/UA 逐条返回给注入点透传。</summary>
-    public static FallbackEntry? Get(string channelName) =>
-        Index.TryGetValue(Normalize(channelName), out var e) ? e : null;
+    public static FallbackEntry? Get(string channelName)
+    {
+        var all = GetAll(channelName);
+        return all.Count > 0 ? all[0] : null;
+    }
 
     /// <summary>UserFallback 注入适配：备援 URL 恒定（非票据型），按 N5 口径不做换票判定。</summary>
     public static (string? Url, string Referer, string UserAgent) Resolve(Channel ch)

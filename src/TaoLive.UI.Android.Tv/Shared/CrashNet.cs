@@ -37,7 +37,7 @@ public static class CrashNet
     private static long _lastAtMs = long.MinValue;
 
     /// <summary>S6: 供未捕获异常等同步现场使用——直接落盘, 不排队（进程可能即刻终止）。
-    /// [vc47测试通道] 增加同文 5 秒去重：托管/Java 双路钩子可能对同一次崩溃各报一次。</summary>
+    /// [vc48测试通道] 增加同文 5 秒去重：托管/Java 双路钩子可能对同一次崩溃各报一次。</summary>
     public static void RecordNow(string text)
     {
         var now = System.Environment.TickCount64;
@@ -50,7 +50,7 @@ public static class CrashNet
             File.AppendAllText(LogPath(), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {text}\n\n");
         }
         catch { }
-        // [vc47测试通道] 崩溃现场自动回传（同步尽力而为；稳定后整撤：连本段带 CrashCloudRelay.cs 一起删）
+        // [vc48测试通道] 崩溃现场自动回传（同步尽力而为；稳定后整撤：连本段带 CrashCloudRelay.cs 一起删）
         var relayUrl = CrashCloudRelay.UploadAndStash(text);
         if (relayUrl != null)
         {

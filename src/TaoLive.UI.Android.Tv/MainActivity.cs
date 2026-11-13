@@ -157,7 +157,7 @@ public class MainActivity : Activity
         // 全局兜底：未捕获异常先落日志再放行，崩溃原因可查可报，不再无声闪退（v1.0.7）
         Java.Lang.Thread.DefaultUncaughtExceptionHandler =
             new UncaughtCrashPeer(Java.Lang.Thread.DefaultUncaughtExceptionHandler);
-        // [vc47测试通道] 托管侧崩溃钩补盲（vc47 埋点审计补）：
+        // [vc48测试通道] 托管侧崩溃钩补盲（vc47 埋点审计补）：
         // Java 钩子只接 Java 线程抛物；async void 生命周期/后台线程的托管未捕获异常走 AppDomain 事件——打开即崩的最常见形态。
         // 双钩对同一次崩溃可能各报一次，RecordNow 已按同文 5 秒去重。稳定后随通道整撤。
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
@@ -1532,7 +1532,7 @@ public class MainActivity : Activity
         }
         catch (Exception ex) { healthLine = "健康账读取失败：" + ex.Message; }
 
-        // [vc47测试通道] 云端回传 URL 亮出（诊断摘要附一份，报我即可全量取证；稳定后整撤）
+        // [vc48测试通道] 云端回传 URL 亮出（诊断摘要附一份，报我即可全量取证；稳定后整撤）
         string relayLine;
         try
         {
@@ -2671,7 +2671,7 @@ public class MainActivity : Activity
         if (!_resumedOnce)
         {
             _resumedOnce = true;
-            // [vc47测试通道] 上次崩溃的云端回传 URL 亮出（报我即可全量取证；稳定后整撤）
+            // [vc48测试通道] 上次崩溃的云端回传 URL 亮出（报我即可全量取证；稳定后整撤）
             try
             {
                 if (_prefs!.GetBoolean("last_relay_new", false))

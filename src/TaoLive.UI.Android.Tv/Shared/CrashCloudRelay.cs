@@ -6,10 +6,10 @@ using Android.OS;
 namespace TaoLive.UI.Android.Tv.Shared;
 
 /// <summary>
-/// vc47 测试通道（老板 2026-11-13 16:58 令「装进测试包，稳定了再撤下来，代码也清理」）：
-/// 崩溃日志自动回传——匿名贴文服务中转，崩溃现场同步推送，拿回 URL 存偏好；
-/// 下次启动信息行亮出 URL，老板报 URL 回来即可全量取证（沙箱无对外入口，直写不可行）。
-/// 撤除口径：本文件整删 + CrashNet / MainActivity 两处 [vc47测试通道] 挂钩行删除即可，零残留。
+/// vc48 测试通道（老板 2026-11-13 17:3x 令「不要任何中间操作，直接从设备写到你能拿到的云端」）：
+/// 崩溃日志直写固定中转站（ntfy 主题，地址随包内置、零凭据、老板零操作），沙箱侧直接轮询取回；
+/// 超长或直写失败时退回匿名贴文（dpaste/paste.rs）取 URL，URL 也一并写进中转站，双侧不漏。
+/// 撤除口径：本文件整删 + CrashNet / MainActivity 两处 [vc48测试通道] 挂钩行删除即可，零残留。
 /// 内容仅含崩溃栈与机型概况（系统版本/架构/内存），无任何用户标识。
 /// </summary>
 public static class CrashCloudRelay
@@ -17,7 +17,12 @@ public static class CrashCloudRelay
     /// <summary>通道开关：稳定后改 false 即断流；整撤时连文件带挂钩一起删。</summary>
     public const bool Enabled = true;
 
+    /// <summary>中转站主题（含随机盐，仅随本测试包存在；整撤即失效）。沙箱侧 GET /{topic}/json?poll=1 直取。</summary>
+    private const string RelayTopic = "taolive-crash-k7q2m9x4vc48";
+
     private const int TimeoutSec = 4;
+    /// <summary>ntfy 免费档单条消息约 4KB，直写只走 3.6KB 以内的负载，超长走贴文 URL 兜底。</summary>
+    private const int NtfyLimitBytes = 3_600;
     private const int MinIntervalMs = 60_000; // 节流：崩溃风暴每分钟最多回传一条
     private const int PayloadLimitBytes = 48 * 1024;
 
@@ -28,8 +33,8 @@ public static class CrashCloudRelay
     };
 
     /// <summary>
-    /// 回传崩溃日志（同步、尽力而为、绝不抛）：成功返回贴文 URL（并落偏好供下次启动亮出），失败返回 null。
-    /// 双端点兜底：dpaste.com / paste.rs 任一成功即收口。
+    /// 回传崩溃日志（同步、尽力而为、绝不抛）：成功返回贴文 URL 或中转站标识（并落偏好供下次启动亮出），失败返回 null。
+    /// 三端点兜底：ntfy 直写（≤3.6KB 全文直落中转站）→ dpaste.com → paste.rs；贴文 URL 会同步写进中转站。
     /// </summary>
     public static string? UploadAndStash(string text)
     {
@@ -41,17 +46,30 @@ public static class CrashCloudRelay
             _lastTryMs = now;
 
             var payload = BuildPayload(text);
-            var url = PostDpaste(payload) ?? PostPasteRs(payload);
-            if (url is null) return null;
+            var bytes = Encoding.UTF8.GetByteCount(payload);
+            string? result;
+            if (bytes <= NtfyLimitBytes)
+            {
+                result = PostNtfy(payload, title: "crash-full");
+                if (result is not null) return result; // 全文已直落中转站，沙箱侧可取
+                result = PostDpaste(payload) ?? PostPasteRs(payload);
+            }
+            else
+            {
+                result = PostDpaste(payload) ?? PostPasteRs(payload);
+                if (result is not null)
+                    PostNtfy($"[超长崩溃] 贴文URL={result}", title: "crash-url"); // URL 同步进中转站
+            }
+            if (result is null) return null;
 
             try
             {
                 var ctx = Application.Context!;
                 ctx.GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!
-                   .Edit()!.PutString("last_relay_url", url)!.PutBoolean("last_relay_new", true)!.Apply();
+                   .Edit()!.PutString("last_relay_url", result)!.PutBoolean("last_relay_new", true)!.Apply();
             }
             catch { } // 偏好落盘失败不阻断：URL 已在返回值里，调用方自行处置
-            return url;
+            return result;
         }
         catch { return null; } // 回传失败绝不打断崩溃链路：本地日志兜底仍在
     }
@@ -80,6 +98,21 @@ public static class CrashCloudRelay
         var bytes = Encoding.UTF8.GetBytes(full);
         return Encoding.UTF8.GetString(bytes, 0, 8 * 1024) + "\n\n…(中段截断)…\n\n"
              + Encoding.UTF8.GetString(bytes, bytes.Length - 8 * 1024, 8 * 1024);
+    }
+
+    /// <summary>ntfy 中转站直写：原始体 POST 到固定主题，2xx 即成；沙箱侧 GET /{topic}/json?poll=1 直取，零中间操作。</summary>
+    private static string? PostNtfy(string content, string title)
+    {
+        try
+        {
+            using var body = new System.Net.Http.StringContent(content, Encoding.UTF8, "text/plain");
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, $"https://ntfy.sh/{RelayTopic}");
+            req.Content = body;
+            req.Headers.TryAddWithoutValidation("Title", title);
+            using var resp = Http.SendAsync(req).GetAwaiter().GetResult();
+            return resp.IsSuccessStatusCode ? $"ntfy:{title}" : null;
+        }
+        catch { return null; }
     }
 
     /// <summary>dpaste.com 匿名贴文：POST 表单，响应体即贴文 URL。</summary>

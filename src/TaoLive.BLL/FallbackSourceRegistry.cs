@@ -179,18 +179,4 @@ public static class FallbackSourceRegistry
     /// <summary>该频道的全部备援候选（按登记序：稳定档在前，后收的独立家族/同族备线依次跟上）。</summary>
     public static IReadOnlyList<FallbackEntry> GetAll(string channelName) =>
         Index.TryGetValue(Normalize(channelName), out var list) ? list : Array.Empty<FallbackEntry>();
-
-    /// <summary>取备援 URL（无登记返回 null）。Referer/UA 逐条返回给注入点透传。</summary>
-    public static FallbackEntry? Get(string channelName)
-    {
-        var all = GetAll(channelName);
-        return all.Count > 0 ? all[0] : null;
-    }
-
-    /// <summary>UserFallback 注入适配：备援 URL 恒定（非票据型），按 N5 口径不做换票判定。</summary>
-    public static (string? Url, string Referer, string UserAgent) Resolve(Channel ch)
-    {
-        var e = Get(ch.Name);
-        return e is null ? (null, "", "") : (e.Url, e.Referer, e.UserAgent);
-    }
 }

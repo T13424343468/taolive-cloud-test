@@ -45,6 +45,7 @@ public class LiveVideoHost : IDisposable
     private bool _exhaustedNotified;   // 重试耗尽只报一次
     private bool _mutedForBackground;
     private int _savedVolume = 100;    // 退后台前音量（恢复用户调节，不回默认满音量）
+    private int _volume = 100;         // fix34（移植）音量缓存：VLC 原生音量读写移出主线程（计算走缓存，赋值投线程池）
 
     private readonly GenerationCounter _genCounter = new();  // 代数守卫：旧定时器与回调作废依据
     private long _lastTickMs;                // 最近播放时钟（毫秒，Environment.TickCount64 基准）
@@ -187,6 +188,8 @@ public class LiveVideoHost : IDisposable
         // fix35（移植）：新内核播放态从假开始，等 Playing 事件回写
         _kernelPlaying = 0;
         _cachedDisplayed = 0;
+        // fix34（移植）：新播放器音量为默认满档，缓存对齐（新内核=new MediaPlayer，无旧音量残留）
+        _volume = 100;
         // PL4: RestartKernel 可能由看门狗/自救线程调用，载体 View 挂播放器必须回 UI 线程
         var carrier = _videoCarrier;
         if (carrier != null)
@@ -561,12 +564,15 @@ public class LiveVideoHost : IDisposable
         StartInternal();
     }
 
-    /// <summary>音量步进（保留接口）：遥控音量走独立硬件键由系统处理，此接口暂不接线。</summary>
+    /// <summary>音量步进（保留接口）：遥控音量走独立硬件键由系统处理，此接口暂不接线。
+    /// fix34（移植）：不再主线程直读直写 _player.Volume（VLC 原生锁）——缓存上计算、原生赋值投线程池，
+    /// 签名不变；极小概率与内核侧赋值交错时以后写结果为准，仅影响瞬时音量无碍业务。</summary>
     public int AdjustVolume(int delta)
     {
-        if (_player is null) return -1;
-        var vol = Math.Clamp(_player.Volume + delta, 0, 100);
-        _player.Volume = vol;
+        var vol = Math.Clamp(_volume + delta, 0, 100);
+        _volume = vol;
+        var target = _player;
+        if (target is { } p) Task.Run(() => { try { p.Volume = vol; } catch { } });
         return vol;
     }
 
@@ -851,13 +857,16 @@ public class LiveVideoHost : IDisposable
         _player?.Stop();
     }
 
-    /// <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。</summary>
+    /// <summary>退后台：画面照常走（纹理载体不回收），声音先闭掉（记住原音量）。
+    /// fix34（移植）：静音/恢复也走缓存+线程池原生赋值，与 AdjustVolume 同口径，缓存不跑偏。</summary>
     public void MuteForBackground()
     {
         if (_player is null || _mutedForBackground) return;
         _mutedForBackground = true;
-        _savedVolume = _player.Volume;
-        _player.Volume = 0;
+        _savedVolume = _volume;
+        _volume = 0;
+        var muted = _player;
+        Task.Run(() => { try { if (muted is { } p) p.Volume = 0; } catch { } });
     }
 
     /// <summary>回前台：声音原样恢复（退前用户调到多少回多少，不回默认满音量）。</summary>
@@ -865,7 +874,10 @@ public class LiveVideoHost : IDisposable
     {
         if (_player is null || !_mutedForBackground) return;
         _mutedForBackground = false;
-        _player.Volume = _savedVolume;
+        var restore = _savedVolume;
+        _volume = restore;
+        var unmuted = _player;
+        Task.Run(() => { try { if (unmuted is { } p) p.Volume = restore; } catch { } });
     }
 
     public void Dispose()

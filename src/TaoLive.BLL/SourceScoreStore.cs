@@ -68,20 +68,25 @@ public class SourceScoreStore
         MarkDirty();
     }
 
-    /// <summary>打分：0~100，账空返回 null（=无分退化）。时间权重 = 0.5^(age/7d)。</summary>
+    /// <summary>打分：0~100，账空返回 null（=无分退化）。时间权重 = 0.5^(age/7d)。
+    /// vc52 P6：读侧同走单条目锁——AvgMs 为 double，ARM32 上非原子，裸读可撕裂成高低位拼接脏值
+    /// （写侧 Report 持 rec 锁，读侧不锁则「并发回写不互踩」只兑现了一半）。</summary>
     public double? ScoreOf(string sourceId, string epgKey)
     {
         var key = $"{sourceId}:{epgKey}";
         if (!_entries.TryGetValue(key, out var rec)) return null;
-        double age = Math.Max(0, _nowMs() - rec.LastMs);
-        double w = Math.Pow(0.5, age / HalfLifeMs); // 七天半衰
-        int total = rec.OkCount + rec.FailCount;
-        if (total == 0) return null;
-        double reliable = (double)rec.OkCount / total;                       // 可靠 40%
-        double speed = rec.AvgMs <= 0 ? 0.5
-            : Math.Clamp(1.0 - (rec.AvgMs - FastMs) / (SlowMs - FastMs), 0, 1); // 速度 30%
-        double stable = 1.0 - (total == 0 ? 0 : (double)rec.TimeoutCount / Math.Max(1, rec.OkCount + rec.TimeoutCount)); // 稳定 30%
-        return (reliable * 0.4 + speed * 0.3 + stable * 0.3) * 100.0 * w;
+        lock (rec) // vc52 P6：与写侧同锁，double 读写互斥
+        {
+            double age = Math.Max(0, _nowMs() - rec.LastMs);
+            double w = Math.Pow(0.5, age / HalfLifeMs); // 七天半衰
+            int total = rec.OkCount + rec.FailCount;
+            if (total == 0) return null;
+            double reliable = (double)rec.OkCount / total;                       // 可靠 40%
+            double speed = rec.AvgMs <= 0 ? 0.5
+                : Math.Clamp(1.0 - (rec.AvgMs - FastMs) / (SlowMs - FastMs), 0, 1); // 速度 30%
+            double stable = 1.0 - (total == 0 ? 0 : (double)rec.TimeoutCount / Math.Max(1, rec.OkCount + rec.TimeoutCount)); // 稳定 30%
+            return (reliable * 0.4 + speed * 0.3 + stable * 0.3) * 100.0 * w;
+        }
     }
 
     /// <summary>该台是否有账（BestAliveSource 退化判据）。</summary>
@@ -122,7 +127,8 @@ public class SourceScoreStore
         }
     }
 
-    /// <summary>立即落盘：临时文件写入后原子替换（退出/暂停时调用）。</summary>
+    /// <summary>立即落盘：临时文件写入后原子替换（退出/暂停时调用）。
+    /// vc52 P6：快照改为锁内逐条克隆——序列化在锁外读共享记录同样可撕裂 double。</summary>
     public void FlushNow()
     {
         SourceScoreRecord[] snapshot;
@@ -130,6 +136,14 @@ public class SourceScoreStore
         {
             snapshot = _entries.Values.ToArray();
         }
+        // vc52 P6：序列化前逐条克隆（每条走 rec 锁），锁外序列化读的是私有副本
+        snapshot = snapshot.Select(r =>
+        {
+            lock (r)
+            {
+                return new SourceScoreRecord { K = r.K, SourceId = r.SourceId, EpgKey = r.EpgKey, OkCount = r.OkCount, FailCount = r.FailCount, AvgMs = r.AvgMs, TimeoutCount = r.TimeoutCount, LastMs = r.LastMs };
+            }
+        }).ToArray();
         try
         {
             var json = JsonSerializer.Serialize(snapshot);

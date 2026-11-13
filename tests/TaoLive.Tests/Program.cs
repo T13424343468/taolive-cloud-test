@@ -779,6 +779,23 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     govHigh.Observe(true);
     Check(govHigh.Index == 0 && govHigh.ConsumeLockNotice(), "第20项：锁定高档撑不住→降档自救+温和提示一次");
     Check(!govHigh.ConsumeLockNotice(), "第20项：提示只发一次不重复打扰");
+
+    // vc53 修复批任务 4·抖动换源：90 秒窗内反复攒水位 3 次=抖动实锤，换源后 5 分钟冷却
+    long jt = 1_000_000;
+    var jit = new JitterSwitchPolicy(() => jt);
+    jit.Record();
+    Check(!jit.ShouldSwitch(), "vc53任务4·单次低水位不换源（毛刺不算）");
+    jt += 30_000; jit.Record();
+    jt += 30_000; jit.Record();
+    Check(jit.ShouldSwitch(), "vc53任务4·90 秒窗内 3 次反复低水位=抖动实锤建议换源");
+    jit.MarkSwitched();
+    Check(!jit.ShouldSwitch(), "vc53任务4·换源后立即进冷却不再建议");
+    jt += 100_000; jit.Record(); jit.Record(); jit.Record();
+    Check(!jit.ShouldSwitch(), "vc53任务4·5 分钟冷却期内不换源（防乒乓；冷却期内不记新账）");
+    jt += CooldownProbe();
+    jit.Record(); jit.Record(); jit.Record();
+    Check(jit.ShouldSwitch(), "vc53任务4·冷却期满重攒 3 次再建议（旧账已随窗过期）");
+    static long CooldownProbe() => JitterSwitchPolicy.CooldownMs;
 }
 
 // ============ v1.0.8·机制互扰审查（设计自洽铁律：组合场景下画面能出来不卡顿） ============

@@ -74,6 +74,7 @@ public class LiveVideoHost : IDisposable
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
     private int _activeCachingMs = CacheLadder.At(0); // ⑩当前生效缓存窗口（起播队列回写；取满窗口后=FillWindowCachingMs）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
+    private readonly JitterSwitchPolicy _jitterSwitch = new(); // vc53 任务 4·抖动换源（90 秒窗 3 次反复低水位→先于卡死换源，5 分钟冷却）
     private long _bufferLowFirstMs;           // vc38: 低水位毛刺确认（0=无未决低读；92条 playback P2）
     private readonly object _startLock = new();   // PL5: 起播临界区——热备/换台/重连写 _currentUrl+StartInternal 串行
     private long _disposed;                       // UR2: 宿主已释放（Dispose 后 StartInternal/Play 一律拒绝）
@@ -567,6 +568,15 @@ public class LiveVideoHost : IDisposable
                     _cachingIndex = next;
                     CrashNet.Record($"[BufferPolicy] 水位低攒缓冲：重连缓存目标 → {CacheLadder.At(_cachingIndex)}ms");
                 }
+                // vc53 修复批任务 4·抖动换源：观测窗内反复攒水位=抖动实锤（根因常在源侧），
+                // 先于卡死静默换一次源（同台换票/备援）；换源后 5 分钟冷却，防乒乓
+                _jitterSwitch.Record();
+                if (_jitterSwitch.ShouldSwitch() && Volatile.Read(ref _kernelRebuilding) == 0)
+                {
+                    _jitterSwitch.MarkSwitched();
+                    CrashNet.Record("[JitterSwitch] 90 秒内水位反复低=抖动实锤，先于卡死静默换源");
+                    _ = SilentRefreshAsync(announce: false, via: "抖动换源");
+                }
                 break;
             case BufferAction.HoldEdge:
                 // 1.0.12 修正②：水位只涨不降——取消平稳贴边自动降档（固定 3 秒库存不被水位自适应自己降回去）；
@@ -580,13 +590,13 @@ public class LiveVideoHost : IDisposable
     /// 1.0.12 定格口径：同台自救不铺清场遮罩——载体视图不销毁，VLC 停后 surface 天然保帧
     /// （定格最后一帧，真机验证项）；announce=true 时亮「正在换信号」角标（信息条），补库存重接不声张。
     /// </summary>
-    private async Task SilentRefreshAsync(bool announce = false)
+    private async Task SilentRefreshAsync(bool announce = false, string via = "静默重取流")
     {
         long gen = _genCounter.NextGeneration(); // 新一代：旧重连/旧自救路径全部作废
         if (announce) StatusChanged?.Invoke("正在换信号，请稍候…"); // 1.0.12 定格+角标：不黑屏不亮全屏牌
         RefreshedStream? fresh = null;
         if (ReconnectRefresher != null)
-            fresh = await RefreshStreamAsync("静默重取流");
+            fresh = await RefreshStreamAsync(via);
         // vc52 黄二：写账与起播收 _startLock（与热备同口径）——无锁直写时热备路径可并发落账，
         // 产生「A 路径 URL + B 路径合并请求头」交叉错配（CDN 拒绝，白耗重连阶梯与切换预算）
         lock (_startLock)

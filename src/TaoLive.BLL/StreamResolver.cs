@@ -219,24 +219,26 @@ public class StreamResolver
 
     private static TimeSpan TableTtl => TimeSpan.FromSeconds(AdvancedTuning.ListCacheSec); // 调参档接线：清单缓存读 AdvancedTuning
 
-    /// <summary>整表源按源级聚合抓表：TTL 内同源只发 1 次请求，返回缓存的整表 JSON。</summary>
+    /// <summary>整表源按源级聚合抓表：TTL 内同源只发 1 次请求，返回缓存的整表 JSON。
+    /// vc53 刀2 同谱收口：抓表含网络请求，原 WaitAsync 无界——慢表在飞时播放解析被堵死；
+    /// 改为 5 秒有界等待，超限放行直取（极小概率并发重复抓表，账本幂等，换播放不挂）。</summary>
     private async Task<string?> FetchSourceTableAsync(string sourceId, Func<Task<string?>> fetchRaw)
     {
         var nowMs = System.Environment.TickCount64;
         if (_tableCache.TryGetValue(sourceId, out var snap) && nowMs - snap.FetchedAtMs < TableTtl.TotalMilliseconds)
             return snap.Body;
-        await _tableGate.WaitAsync();
+        bool got = await _tableGate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         try
         {
             nowMs = System.Environment.TickCount64;
             if (_tableCache.TryGetValue(sourceId, out snap) && nowMs - snap.FetchedAtMs < TableTtl.TotalMilliseconds)
                 return snap.Body; // 双检：并发到期同源只发一次（整表聚合断言）
-            var body = await fetchRaw();
+            var body = await fetchRaw().ConfigureAwait(false);
             if (!string.IsNullOrEmpty(body))
                 _tableCache[sourceId] = new TableSnapshot { Body = body, FetchedAtMs = nowMs };
             return body;
         }
-        finally { _tableGate.Release(); }
+        finally { if (got) _tableGate.Release(); }
     }
 
     private sealed class CachedUrl { public string Url = ""; public long FetchedAt; }
@@ -510,6 +512,10 @@ public class StreamResolver
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (!force && _ysp.TryGet(ch.EpgKey, now, out var cached)) return cached;
 
+        // vc53 刀2（画面平稳优先令同批）：闸锁只护账本，网络请求移锁外——
+        // 原写法 _gate 包住 HTTPGetStringClassifiedAsync，慢源/挂源锁内慢慢等响应时，
+        // 排在后面的播放取票全部被堵（真机「出画面特别慢」头号根，老板 2026-11-14 00:2x 实报）。
+        // 改法：锁内查账→放锁发请求→回锁入账（同键竞速者先入账则本轮白跑，结果被 TryGet 挡住）。
         await _gate.WaitAsync();
         try
         {
@@ -519,29 +525,42 @@ public class StreamResolver
 
             var (cnlid, livepid, defn) = ParseYspParams(ch.StreamUrl);
             if (cnlid is null || livepid is null || defn is null) return null;
+        }
+        finally { _gate.Release(); }
 
-            var ticketUrl = _ysp.BuildTicketUrl(cnlid, livepid, defn, now);
-            // network.md N2：改用分级取文本——只有服务器明确拒绝（403/429）才入指数退避账；
-            // 网络级失败（超时/断网/异常/5xx）按 Unreachable 只给 30 秒短冷却，
-            // 绝不回灌拉黑（v23 修法 B 公开口径；此前 body is null 一律 MarkCooldown，
-            // 断网几分钟即把央视频台白冻至 2 小时，全源 SourceBackoffLedger 同口径对照）。
-            var (body, rejected) = await HttpGetStringClassifiedAsync(ticketUrl, null, YspTicketService.ClientUserAgent);
-            if (body is null)
+        var (cnlid2, livepid2, defn2) = ParseYspParams(ch.StreamUrl);
+        if (cnlid2 is null || livepid2 is null || defn2 is null) return null;
+
+        var ticketUrl = _ysp.BuildTicketUrl(cnlid2, livepid2, defn2, now);
+        // network.md N2：改用分级取文本——只有服务器明确拒绝（403/429）才入指数退避账；
+        // 网络级失败（超时/断网/异常/5xx）按 Unreachable 只给 30 秒短冷却，
+        // 绝不回灌拉黑（v23 修法 B 公开口径；此前 body is null 一律 MarkCooldown，
+        // 断网几分钟即把央视频台白冻至 2 小时，全源 SourceBackoffLedger 同口径对照）。
+        var (body, rejected) = await HttpGetStringClassifiedAsync(ticketUrl, null, YspTicketService.ClientUserAgent);
+        if (body is null)
+        {
+            await _gate.WaitAsync();
+            try
             {
                 if (rejected) _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow); // 1.0.12 修法 B：明确拒绝才指数退避（2/4/8 分钟）
                 else _ysp.MarkUnreachable(ch.EpgKey, DateTime.UtcNow); // N2：网络级失败短冷却 30s，不进指数账
-                return null;
             }
-            var (iretcode, playurl) = ParseYspResponse(body);
+            finally { _gate.Release(); }
+            return null;
+        }
+        var (iretcode, playurl) = ParseYspResponse(body);
+        await _gate.WaitAsync();
+        try
+        {
             if (iretcode == 0 && !string.IsNullOrEmpty(playurl))
             {
                 _ysp.MarkFetched(ch.EpgKey, now, playurl);
                 return playurl;
             }
             _ysp.MarkCooldown(ch.EpgKey, DateTime.UtcNow); // 1.0.12 修法 B：连败退避加深（×2 步进封顶 2 小时）
-            return null;
         }
         finally { _gate.Release(); }
+        return null;
     }
 
     private static (string? Cnlid, string? Livepid, string? Defn) ParseYspParams(string entryUrl)

@@ -2143,6 +2143,32 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
     }
 }
 
+// ===== vc53 任务10·播放时长画像（纯本地零网络） =====
+{
+    var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "taolive_wt_" + Guid.NewGuid().ToString("N"));
+    var ledger = new WatchTimeLedger(dir);
+    ledger.Record("cctv1", 90_000, 1000);  // 首笔记账即落盘（无节流历史）
+    ledger.Record("cctv1", 10_000, 2000);  // 节流窗口内：暂不写盘
+    {
+        var mid = new WatchTimeLedger(dir);
+        mid.Load();
+        Check(mid.TotalMs("cctv1") == 90_000, "画像：3 秒节流窗口内记账不落盘（盘上仍为首笔 90_000）");
+    }
+    Check(ledger.TotalMs("cctv1") == 100_000, "画像：同台累计毫秒账");
+    Check(ledger.TotalMs("cctv5") == 0, "画像：未看台零账");
+    Check(ledger.TotalMs("") == 0 && ledger.TotalMs(null!) == 0, "画像：空键零账");
+    Check(ledger.Snapshot()[0].EpgKey == "cctv1", "画像：降序快照");
+    ledger.Record("", 100, 2500);          // 空键不入账
+    ledger.Record("cctv3", -1, 2500);      // 非正段不入账（禁段预囤口径在调用方）
+    ledger.Record("cctv2", 5_000, 3000);   // 节流窗口内：暂不落盘
+    ledger.FlushNow();                     // 立落：无视节流窗口，有脏必落盘
+    var ledger3 = new WatchTimeLedger(dir);
+    ledger3.Load();
+    Check(ledger3.TotalMs("cctv1") == 100_000, "画像：跨启动灌回");
+    Check(ledger3.TotalMs("cctv2") == 5_000, "画像：第二台灌回");
+    Check(ledger3.TotalMs("cctv3") == 0, "画像：非法段未入账");
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 

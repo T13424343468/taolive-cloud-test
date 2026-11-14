@@ -78,6 +78,10 @@ public class MainActivity : Activity
     private bool _frameForCurrentSwitch; // 本轮换台是否已出首帧
     private Action? _pendingLoading;   // 延迟亮牌任务（换台后仍无首帧才亮）
     private Action? _loadingAnimRun;   // 亮牌期间的「正在连接」点动画
+    // vc53 任务10·播放时长画像：纯本地毫秒账（首帧后起、切台封账；预取/预热禁段不入账）
+    private WatchTimeLedger? _watchLedger;
+    private string? _watchEpgKey;      // 当前在看的台（画像记账键）
+    private long _watchSinceMs;        // 本段观看起点（Unix 毫秒）
     private int _loadingSeq;
     private Handler _ui = new Handler(Looper.MainLooper!);
 
@@ -245,6 +249,9 @@ public class MainActivity : Activity
         _resolver.WarmupDisk = new WarmupStore(System.IO.Path.Combine(FilesDir!.AbsolutePath, "warmup"));
         _resolver.WarmupDisk.FreeBytesProvider = () =>
             new StatFs(FilesDir!.AbsolutePath).AvailableBytes; // vc45 老机型优化：缓存按剩余空间设顶（StatFs 口径）
+        // vc53 任务10·播放时长画像：纯本地账（watchtime/ 目录，与 warmup 并列）
+        _watchLedger = new WatchTimeLedger(System.IO.Path.Combine(FilesDir!.AbsolutePath, "watchtime"));
+        Task.Run(_watchLedger.Load);
         // v28 读盘优化：预热缓存灌回改后台预载（两本账内部均有锁/并发字典，与首播并发访问无竞态；损坏文件按无缓存处理口径不变）
         Task.Run(_resolver.WarmupDisk.Load);
         // A 类第6项：App 打开即拉起后台预热服务（同进程共享同一预热引擎，绝不起第二份）
@@ -562,6 +569,15 @@ public class MainActivity : Activity
         BackgroundLane.SetPlaying(false);          // 起播中不算在播（后台车道空闲节拍，反正门控拦着）
         int seq = ++_playSeq;
         _current = ch;
+        // vc53 任务10·播放时长画像：切台封上一步账——只有真出过画面（_frameForCurrentSwitch）才入账，
+        // 预取/预热/连接中的禁段预囤时段一律不记（纯本地零网络）
+        if (_watchLedger != null && _watchEpgKey != null && _frameForCurrentSwitch)
+        {
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _watchLedger.Record(_watchEpgKey, nowMs - _watchSinceMs, nowMs);
+        }
+        _watchEpgKey = ch.EpgKey;
+        _watchSinceMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _frameForCurrentSwitch = false;
         _tuneBeginMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // v28 主线③：换台起点（首帧耗时喂入评分账）
         CloseChannelList();
@@ -2833,6 +2849,15 @@ public class MainActivity : Activity
         var exitProfiles = SourceProfileStore.Shared;
         try { Task.Run(exitProfiles.FlushNow).Wait(2000); }
         catch (Exception ex) { CrashNet.Record("[Exit] 源档案退出落盘等待异常：" + ex.Message); }
+        // vc53 任务10·播放时长画像：退出封末段账并落盘（最后一瞥也不丢；FlushNow 立落不受节流）
+        if (_watchLedger != null)
+        {
+            var exitMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_watchEpgKey != null && _frameForCurrentSwitch)
+                _watchLedger.Record(_watchEpgKey, exitMs - _watchSinceMs, exitMs);
+            try { Task.Run(_watchLedger.FlushNow).Wait(1000); }
+            catch (Exception ex) { CrashNet.Record("[Exit] 观看时长账落盘异常：" + ex.Message); }
+        }
         _host.Dispose();
         base.OnDestroy();
     }

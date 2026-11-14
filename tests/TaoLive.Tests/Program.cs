@@ -1841,14 +1841,37 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         var engine = new SourceIntelligenceEngine();
         var s1 = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true });
         Check(Math.Abs(s1.Total - 100 * 0.8 * 0.9 * 1.0 * 1.0 * 1.0) < 0.01, $"②1基础分=100×Π因子（{s1.Total:F1}）");
-        Check(s1.Factors.Count == 5 && s1.Factors[0].Id == "稳定度" && Math.Abs(s1.Factors[0].Value - 0.8) < 1e-9,
-            "②1逐因子分值可查（S3 决策日志定位用）");
+        Check(s1.Factors.Count == 8 && s1.Factors[0].Id == "稳定度" && Math.Abs(s1.Factors[0].Value - 0.8) < 1e-9,
+            "②1逐因子分值可查（S3 决策日志定位用；vc53 任务11 挂钩后 5→8 因子）");
         var s2 = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true, CooldownRemainingMs = FailureCooldownLedger.DnsDeadMs });
         Check(s2.Total <= 0, "②1满冷却惩罚沉底（分≤0 不再选）");
         // 因子可插拔：换因子总分随行
         var engine2 = new SourceIntelligenceEngine(new ISourceFactor[] { new StabilityFactor() });
         var s3 = engine2.Score(new SourceScoreContext { Stability = 0.5 });
         Check(Math.Abs(s3.Total - 50) < 0.01, "②1因子可插拔（只留稳定度因子）");
+    }
+
+    // ②1b vc53 任务11 摸源引擎留钩子（方案定稿 §五）：三因子缺省中性不打分差，喂入即生效；ScoutBalance 探索/利用平衡
+    {
+        var engine = new SourceIntelligenceEngine();
+        var sBase = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true });
+        Check(Math.Abs(sBase.Total - 100 * 0.8 * 0.9) < 0.01, $"②1b钩子缺省中性（画像空/无首帧账/无带宽实测均不改排序，{sBase.Total:F1}）");
+        var affinity = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true, WatchAffinity = 0.6 });
+        Check(Math.Abs(affinity.Total - sBase.Total * 0.6) < 0.01, "②1b时段画像喂入生效（×0.6）");
+        Check(Math.Abs(affinity.Factors.First(f => f.Id == "时段画像").Value - 0.6) < 1e-9, "②1b时段画像因子分值可查");
+        var ff = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true, FirstFrameCost01 = 0.3 });
+        Check(Math.Abs(ff.Total - sBase.Total * 0.7) < 0.01, "②1b首帧耗时喂入生效（0.3→×0.7，快者先）");
+        var br = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true, BitrateFit01 = 0.5 });
+        Check(Math.Abs(br.Total - sBase.Total * 0.5) < 0.01, "②1b码率带宽匹配喂入生效（×0.5）");
+        var clamp = engine.Score(new SourceScoreContext { Stability = 0.8, Freshness = 0.9, ClarityFit = 1.0, IsIpLiteral = true, ConstantKind = true, WatchAffinity = -1, FirstFrameCost01 = 2, BitrateFit01 = 5 });
+        Check(clamp.Total >= 0 && clamp.Total <= 100.01, $"②1b钩子超界夹取不越界（{clamp.Total:F1}）");
+        Check(Math.Abs(ScoutBalance.Apply(80, explored: true) - 40) < 0.01, "②1b平衡默认0.5（探索候选折半）");
+        Check(Math.Abs(ScoutBalance.Apply(80, explored: false) - 80) < 0.01, "②1b平衡利用侧不打折");
+        ScoutBalance.ExploreBias = 0;
+        Check(Math.Abs(ScoutBalance.Apply(80, explored: true) - 80) < 0.01, "②1b平衡=0纯利用（探索不折）");
+        ScoutBalance.ExploreBias = 1;
+        Check(Math.Abs(ScoutBalance.Apply(80, explored: true)) < 0.01, "②1b平衡=1纯探索（探索归零）");
+        ScoutBalance.ExploreBias = 0.5; // 还原默认，不给后续用例留脏状态
     }
 
     // ②2 最少驻留+迟滞：新源明显更优且驻留已满才切

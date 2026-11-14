@@ -34,6 +34,10 @@ public class SourceScoreContext
     public bool IsIpLiteral;             // 纯 IP 直连（解析僵死免疫，写活批补记 3 因子）
     public bool ConstantKind;            // 恒定型 URL（票据型降权，热备座次同口径）
     public long CooldownRemainingMs;     // 分级冷却剩余（惩罚项）
+    // —— vc53 任务11 留钩子（方案定稿 §五，缺省全中性：1.0/0/1.0，不改现有排序）——
+    public double WatchAffinity = 1.0;   // 台-时段偏好 0..1（WatchTimeLedger 画像喂入，空画像=1 中性）
+    public double FirstFrameCost01 = 0;  // 首帧耗时归一 0=快 1=慢（喂入后参与排序）
+    public double BitrateFit01 = 1.0;    // 码率-带宽匹配 0..1（实测带宽喂入）
 }
 
 /// <summary>逐因子分值：S3 决策日志逐条可查，出问题能定位哪个因子拉的分。</summary>
@@ -85,6 +89,46 @@ public sealed class ConstantKindFactor : ISourceFactor
     public double Score(SourceScoreContext ctx) => ctx.ConstantKind ? 1.0 : 0.95;
 }
 
+// ============ vc53 任务11·摸源引擎留钩子（方案定稿 §五：只留口不展开，真机反馈回来再迭代）============
+// 四组因子钩子全部默认中性（缺省=不打分差），评分行为与 vc52 完全一致；数据源接上即自动生效。
+
+/// <summary>时段画像因子钩子：ctx.WatchAffinity 由调用方按 WatchTimeLedger 台-时段偏好填入（0..1）；
+/// 缺省 1.0 中性——画像为空（冷启动/新台）不参与排序，回退=上次看的台+内置清单不受拖累。</summary>
+public sealed class WatchAffinityFactor : ISourceFactor
+{
+    public string Id => "时段画像";
+    public double Score(SourceScoreContext ctx) => Math.Clamp(ctx.WatchAffinity, 0, 1);
+}
+
+/// <summary>首帧耗时因子钩子：ctx.FirstFrameCost01 为该源首帧耗时归一（0=快,1=慢）；
+/// 缺省 0 中性。探索/利用平衡见 ScoutBalance（节拍层旋钮，不进乘积）。</summary>
+public sealed class FirstFrameFactor : ISourceFactor
+{
+    public string Id => "首帧耗时";
+    public double Score(SourceScoreContext ctx) => Math.Clamp(1.0 - ctx.FirstFrameCost01, 0, 1);
+}
+
+/// <summary>码率-带宽匹配因子钩子：ctx.BitrateFit01 由实测带宽与源码率匹配度填入（0..1）；
+/// 缺省 1.0 中性，不改变现有选源顺序。</summary>
+public sealed class BitrateFitFactor : ISourceFactor
+{
+    public string Id => "码率带宽匹配";
+    public double Score(SourceScoreContext ctx) => Math.Clamp(ctx.BitrateFit01, 0, 1);
+}
+
+/// <summary>探索/利用平衡钩子（方案定稿 §五）：ExploreBias 0=纯利用（只信已验源）1=纯探索（愿给新源机会），
+/// 默认 0.5 中性；Apply 探索分打折——探索性候选（新源/未验源）按 (1-ExploreBias) 折算后参与比较。
+/// 常规探索空闲条件已落：播放中停摸+换台 5 分钟让路+30 分钟低频节拍（MainActivity.StartRoutineScout）。</summary>
+public static class ScoutBalance
+{
+    public static double ExploreBias = 0.5; // 默认中性：探索/利用五五开，真机反馈再调
+
+    /// <summary>探索候选计分折算：explored=true（新源/未验源）按 (1-ExploreBias) 打折，利用侧不打折。</summary>
+    public static double Apply(double score, bool explored) =>
+        explored ? score * (1.0 - Math.Clamp(ExploreBias, 0, 1)) : score;
+}
+
+
 public sealed class SourceIntelligenceEngine
 {
     public const double FullScore = 100.0;
@@ -102,6 +146,7 @@ public sealed class SourceIntelligenceEngine
     {
         new StabilityFactor(), new FreshnessFactor(), new ClarityFitFactor(),
         new DnsImmunityFactor(), new ConstantKindFactor(),
+        new WatchAffinityFactor(), new FirstFrameFactor(), new BitrateFitFactor(), // 任务11 钩子：缺省中性
     };
 
     /// <summary>总分 = FullScore × Π(因子分) − 冷却惩罚；逐因子分值随行返回（S3 可查）。</summary>

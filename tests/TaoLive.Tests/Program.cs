@@ -2169,6 +2169,43 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
     Check(ledger3.TotalMs("cctv3") == 0, "画像：非法段未入账");
 }
 
+// ===== vc53 任务8·换台预取票+DNS 预解析（全局单车道） =====
+{
+    int inflight = 0, maxInflight = 0, dnsCalls = 0, ticketCalls = 0;
+    var prefetcher = new ChannelPrefetcher(
+        ch =>
+        {
+            System.Threading.Interlocked.Increment(ref inflight);
+            maxInflight = Math.Max(maxInflight, System.Threading.Volatile.Read(ref inflight));
+            System.Threading.Thread.Sleep(30);
+            System.Threading.Interlocked.Decrement(ref inflight);
+            System.Threading.Interlocked.Increment(ref ticketCalls);
+            return Task.FromResult<ResolvedStream?>(new ResolvedStream());
+        },
+        host => { System.Threading.Interlocked.Increment(ref dnsCalls); return Task.CompletedTask; });
+    var a = new Channel { Name = "A", EpgKey = "a", SourceId = "s", StreamUrl = "http://host-a.example/x.m3u8" };
+    var b = new Channel { Name = "B", EpgKey = "b", SourceId = "s", StreamUrl = "http://host-b.example/x.m3u8" };
+    var c = new Channel { Name = "C", EpgKey = "c", SourceId = "s", StreamUrl = "http://host-c.example/x.m3u8" };
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    prefetcher.PrefetchNeighborsAsync(b, new[] { a, b, c }).GetAwaiter().GetResult();
+    sw.Stop();
+    Check(ticketCalls == 2, "预取：邻台±1 各取票一次");
+    Check(dnsCalls == 2, "预取：邻台 DNS 预解析先于取票");
+    Check(maxInflight == 1, "预取：全局单车道串行（无并发在飞）");
+    Check(sw.ElapsedMilliseconds >= 500, "预取：空闲档间隔 ≥600ms 让路节拍（同谱放行）");
+    // IP 字面量流：免 DNS 预解析（收录口径），取票照常
+    var ipch = new Channel { Name = "I", EpgKey = "i", SourceId = "s", StreamUrl = "http://1.2.3.4/live.m3u8" };
+    dnsCalls = 0; ticketCalls = 0;
+    prefetcher.PrefetchChannelAsync(ipch).GetAwaiter().GetResult();
+    Check(ticketCalls == 1 && dnsCalls == 0, "预取：IP 字面量免预解析");
+    // 当前台不在目录：不动作
+    dnsCalls = 0; ticketCalls = 0;
+    prefetcher.PrefetchNeighborsAsync(a, new[] { b, c }).GetAwaiter().GetResult();
+    Check(ticketCalls == 0 && dnsCalls == 0, "预取：当前台不在目录不动作");
+    Check(ChannelPrefetcher.TryHost("http://1.2.3.4/x", out _) == false, "预取：TryHost 拒 IP 字面量");
+    Check(ChannelPrefetcher.TryHost("http://cdn.example/x", out var h) && h == "cdn.example", "预取：TryHost 取域名主机");
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 

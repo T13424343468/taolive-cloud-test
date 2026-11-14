@@ -82,6 +82,8 @@ public class MainActivity : Activity
     private WatchTimeLedger? _watchLedger;
     private string? _watchEpgKey;      // 当前在看的台（画像记账键）
     private long _watchSinceMs;        // 本段观看起点（Unix 毫秒）
+    // vc53 任务8·换台预取：邻台 DNS 预解析+预取票，全走全局单车道 Standard 档
+    private ChannelPrefetcher? _prefetcher;
     private int _loadingSeq;
     private Handler _ui = new Handler(Looper.MainLooper!);
 
@@ -252,6 +254,10 @@ public class MainActivity : Activity
         // vc53 任务10·播放时长画像：纯本地账（watchtime/ 目录，与 warmup 并列）
         _watchLedger = new WatchTimeLedger(System.IO.Path.Combine(FilesDir!.AbsolutePath, "watchtime"));
         Task.Run(_watchLedger.Load);
+        // vc53 任务8·换台预取：DNS 预解析（StreamDnsPicker 自带 10 分钟缓存与择优）+ 预取票，全过单车道
+        _prefetcher = new ChannelPrefetcher(
+            ch => _resolver.ResolvePlayUrlAsync(ch),
+            host => StreamResolver.Dns.ResolveAsync(host));
         // v28 读盘优化：预热缓存灌回改后台预载（两本账内部均有锁/并发字典，与首播并发访问无竞态；损坏文件按无缓存处理口径不变）
         Task.Run(_resolver.WarmupDisk.Load);
         // A 类第6项：App 打开即拉起后台预热服务（同进程共享同一预热引擎，绝不起第二份）
@@ -757,7 +763,7 @@ public class MainActivity : Activity
         }
         Task.Run(async () =>
         {
-            try { await BackgroundLane.RunAsync(() => _resolver.ResolvePlayUrlAsync(nb)); } // vc53 任务12c：邻台预取并入全局单车道（画面平稳优先令——后台网络一律过道）
+            try { await _prefetcher!.PrefetchChannelAsync(nb); } // vc53 任务8：邻台预取=DNS 预解析+预取票，全过全局单车道（画面平稳优先令——后台网络一律过道）
             catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); }
         });
     }

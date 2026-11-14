@@ -174,22 +174,28 @@ public static class YspCkey
 }
 
 /// <summary>
-/// 取票服务：每频道缓存真实 playurl，正常 5 分钟换票；同一清单地址重取会 403，冷却 30 秒；
+/// 取票服务：每频道缓存真实 playurl，正常 5 分钟换票；
+/// 1.0.12 修法 B：403 冷却从固定 30 秒改指数退避账（2/4/8 分钟 ×2 步进，封顶 2 小时）——
+/// 30 秒一轮反复重试坏流是被自身重试频率喂出来的风控（真机 10:40 日志实锤）；取票成功全额恢复；
 /// 版权停播（iretcode 文案含「版权」）冷却到节目结束。取票请求带固定 UA（App 全局统一）。
 /// </summary>
 public class YspTicketService
 {
     private sealed class Ticket { public string PlayUrl = ""; public long FetchedAt; }
+    // v25 修法七 3a：热备校验流与稳态循环/播放并发出入账 → 并发安全（锁保护，读写都在锁内）
     private readonly object _lock = new();
     private readonly Dictionary<string, Ticket> _cache = new();
-    private readonly Dictionary<string, DateTime> _cooldownUntil = new();
+    private readonly Dictionary<string, (DateTime Until, int Streak)> _cooldownUntil = new();
     public static readonly TimeSpan RenewInterval = TimeSpan.FromMinutes(5);
-    public static readonly TimeSpan Cooldown = TimeSpan.FromSeconds(30);
+    /// <summary>1.0.12 修法 B：退避基值 2 分钟（连败 ×2 步进：2/4/8/16…）。</summary>
+    public static readonly TimeSpan CooldownBase = TimeSpan.FromMinutes(2);
+    /// <summary>1.0.12 修法 B：退避封顶 2 小时（与 SourceBackoffLedger 同一口径）。</summary>
+    public static readonly TimeSpan CooldownMax = TimeSpan.FromHours(2);
 
     private readonly string _guid;
     public const string ClientUserAgent = "Mozilla/5.0 (Linux; Android 12; TCL 50V8G) AppleWebKit/537.36 TaoLive/1.0";
 
-    public YspTicketService() => _guid = Guid.NewGuid().ToString("N");
+    public YspTicketService() => _guid = DeviceIdentity.GetGuid(); // A类第7项：身份持久化，重启不翻新
 
     public string BuildTicketUrl(string cnlid, string livepid, string defn, long tsUnix)
     {
@@ -214,9 +220,9 @@ public class YspTicketService
     /// <summary>缓存窗口内直接复用真实 playurl（预连接/快速切台零等待）。</summary>
     public bool TryGet(string channelId, long nowEpoch, out string? playUrl)
     {
-        playUrl = null;
         lock (_lock)
         {
+            playUrl = null;
             return _cache.TryGetValue(channelId, out var t)
                 && nowEpoch - t.FetchedAt < (long)RenewInterval.TotalSeconds
                 && !string.IsNullOrEmpty(t.PlayUrl)
@@ -229,19 +235,44 @@ public class YspTicketService
         lock (_lock)
         {
             _cache[channelId] = new Ticket { PlayUrl = playUrl, FetchedAt = nowEpoch };
+            _cooldownUntil.Remove(channelId); // 1.0.12 修法 B：取票成功=退避全额恢复（口子开自动切回）
         }
     }
 
-    public void MarkCooldown(string channelId, DateTime until)
+    /// <summary>
+    /// 1.0.12 修法 B·记录一次取票失败（403/风控/清单失效）：该频道退避一个周期，
+    /// 连败 ×2 步进（2/4/8 分钟起步拉长），封顶 CooldownMax。now=当前时刻（调用方注入）。
+    /// </summary>
+    public void MarkCooldown(string channelId, DateTime now)
     {
-        lock (_lock) { _cooldownUntil[channelId] = until; }
+        lock (_lock)
+        {
+            int streak = _cooldownUntil.TryGetValue(channelId, out var cur) ? cur.Streak + 1 : 1;
+            long ms = (long)CooldownBase.TotalMilliseconds;
+            for (int i = 1; i < streak; i++)
+            {
+                ms *= 2;
+                if (ms >= (long)CooldownMax.TotalMilliseconds) { ms = (long)CooldownMax.TotalMilliseconds; break; }
+            }
+            _cooldownUntil[channelId] = (now.AddMilliseconds(ms), streak);
+        }
     }
 
     public bool InCooldown(string channelId, DateTime now)
     {
         lock (_lock)
         {
-            return _cooldownUntil.TryGetValue(channelId, out var u) && now < u;
+            return _cooldownUntil.TryGetValue(channelId, out var u) && now < u.Until;
+        }
+    }
+
+    /// <summary>退避剩余毫秒（未冻结为 0）：限流提示按剩余时长动态给预期。</summary>
+    public long RemainingCooldownMs(string channelId, DateTime now)
+    {
+        lock (_lock)
+        {
+            return _cooldownUntil.TryGetValue(channelId, out var u) && now < u.Until
+                ? (long)(u.Until - now).TotalMilliseconds : 0;
         }
     }
 
@@ -259,5 +290,17 @@ public class YspTicketService
     public void InvalidateChannel(string channelId)
     {
         lock (_lock) { _cache.Remove(channelId); }
+    }
+
+    /// <summary>
+    /// v25 修法二 2c/2d：只清退避账、保留票据缓存（网络变更换 IP / 时钟跳变后，
+    /// 旧账是旧 IP/旧墙钟记的，新环境不可信；票据缓存可继续验证，失败自然重新入账）。
+    /// </summary>
+    public void ClearCooldowns()
+    {
+        lock (_lock)
+        {
+            _cooldownUntil.Clear();
+        }
     }
 }

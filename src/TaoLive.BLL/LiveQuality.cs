@@ -29,21 +29,20 @@ public static class LiveQuality
     {
         const long MB = 1024L * 1024;
         bool memAtLeast(long mb) => totalMemBytes >= mb * MB;
-        switch ((setting ?? "auto").Trim().ToLowerInvariant())
+        // A类第8项：32 位机软解负担封顶——高档一律压到低档（Off 尊重用户、auto 内存地板保留，
+        // 封顶=天花板下沉，不是地板抬高：auto <2GB 仍为关）
+        AiLiveTier tier = (setting ?? "auto").Trim().ToLowerInvariant() switch
         {
-            case "off":
-                return AiLiveTier.Off;
-            case "low":
-                return AiLiveTier.Low;
-            case "high":
-                return memAtLeast(2000) ? AiLiveTier.High : AiLiveTier.Low; // <2GB 带不动高档，降级不硬开
-            case "smart": // 旧版智能档值 → 自动档口径（v1.0.10 统一命名）
-            default: // auto 及未知值
-                if (totalMemBytes <= 0) return AiLiveTier.Off;
-                if (memAtLeast(3000)) return AiLiveTier.High;
-                if (memAtLeast(2000)) return AiLiveTier.Low;
-                return AiLiveTier.Off;
-        }
+            "off" => AiLiveTier.Off,
+            "low" => AiLiveTier.Low,
+            "high" => memAtLeast(2000) ? AiLiveTier.High : AiLiveTier.Low, // <2GB 带不动高档，降级不硬开
+            _ => // auto / 旧版 smart / 未知值（v1.0.10 统一命名）
+                totalMemBytes <= 0 ? AiLiveTier.Off
+                : memAtLeast(3000) ? AiLiveTier.High
+                : memAtLeast(2000) ? AiLiveTier.Low
+                : AiLiveTier.Off,
+        };
+        return abi32 && tier == AiLiveTier.High ? AiLiveTier.Low : tier;
     }
 
     /// <summary>档位 → 播放器画质滤镜参数（键值对；Off 返回空，纯原画直出）。</summary>
@@ -52,15 +51,15 @@ public static class LiveQuality
         AiLiveTier.Low => new List<(string Key, string Value)>
         {
             ("video-filter", "sharpen"),
-            ("sharpen-amplitude", "0.8"),
+            ("sharpen-sigma", "0.8"), // v22 定项：LibVLC 锐化参数名为 sharpen-sigma（合法域 0~2），原 sharpen-amplitude 从未生效
         },
         AiLiveTier.High => new List<(string Key, string Value)>
         {
             ("video-filter", "sharpen,adjust"),
-            ("sharpen-amplitude", "0.8"),
+            ("sharpen-sigma", "0.8"), // v22 定项：参数名修正
             ("contrast", "1.08"),
             ("saturation", "1.12"),
-            ("gamma", "1.02"),
+            ("brightness", "0.02"), // v22 定项：原 gamma=1.02 超 adjust gamma 值域(0~1)被钳制，改为 brightness 微调（合法域 -1~1）
         },
         _ => new List<(string Key, string Value)>(),
     };
@@ -78,13 +77,14 @@ public static class LiveQuality
         };
 
     /// <summary>
-    /// 实际生效档 → 显示名（v1.0.20 ⑪画质档如实）：关/低/高。
-    /// 与 DisplayName（设置值口径）区分：本方法吃的是生效档枚举（SmartGovernor 降级后的实际档）。
+    /// 实际生效档 → 界面显示名（v1.0.20 ⑪画质档如实 + A 类第5项信息行口径）：关/低/高。
+    /// 与 DisplayName（设置值口径）区分：本方法吃的是生效档枚举（SmartGovernor 降级后的实际档），
+    /// 显示在跑的，不是选的。
     /// </summary>
     public static string TierName(AiLiveTier tier) => tier switch
     {
-        AiLiveTier.High => "高",
+        AiLiveTier.Off => "关",
         AiLiveTier.Low => "低",
-        _ => "关",
+        _ => "高",
     };
 }

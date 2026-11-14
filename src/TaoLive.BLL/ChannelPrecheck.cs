@@ -61,6 +61,15 @@ public class ChannelPrecheck
     /// <summary>源健康账持久化（v1.0.10）：UI 注入后，每次健康表变化自动节流落盘；启动时经 Attach 灌回历史账。</summary>
     public SourceHealthStore? HealthStore { get; private set; }
 
+    /// <summary>v28 主线③·源健康度评分账（可空注入：账空退化既有顺序，行为绝不倒退）。</summary>
+    public SourceScoreStore? ScoreStore { get; private set; }
+
+    /// <summary>注入评分账本（与健康账同口径：先建后注均可）。</summary>
+    public void AttachScoreStore(SourceScoreStore store)
+    {
+        ScoreStore = store ?? throw new ArgumentNullException(nameof(store));
+    }
+
     /// <summary>
     /// 注入持久化存储：会话内已有结论与历史账合并（同键取核验时间新者）后，
     /// 改为与账本共享同一本健康表——此后预检/播放实测回写直接落在账本条目上，节流落盘即所见即所存。
@@ -103,30 +112,43 @@ public class ChannelPrecheck
         _sourceHealth.TryGetValue(SourceKey(ch), out var e) ? e : null;
 
     /// <summary>
-    /// 该台在健康表里评分最高的可用来源变体（v1.0.16 方案 A：从「最近验证」升级为「评分最高」）：
-    /// 评分 = 延迟、卡顿率、连续成功加权（指数衰减不清零）；并列取核验时间新者。
+    /// 该台在健康表里评分最高的可用来源变体（v1.0.16 方案 A：从「最近验证」升级为「评分最高」；
+    /// v28 主线③ SourceScoreStore 账本为叠加参考）：评分 = 延迟、卡顿率、连续成功加权（指数衰减不清零）；
+    /// 并列取核验时间新者。
     /// 播放选源与卡死自救换源优先取它；同频道没有已验证来源时返回当前台本身。
     /// </summary>
     public Channel? BestAliveSource(Channel ch, IEnumerable<Channel> catalog)
     {
         long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        Channel? best = null;
-        double bestScore = double.MinValue;
-        long bestAt = -1;
+        var alive = new List<(Channel Ch, SourceHealthEntry Entry)>();
         foreach (var cand in catalog)
         {
             if (GroupKey(cand) != GroupKey(ch) || cand.Unavailable) continue;
             var entry = SourceHealthOf(cand);
             if (entry is null || entry.State != ChannelHealth.Alive) continue;
-            double score = SourceScorer.Score(entry, nowMs) ?? 0.0;
-            if (score > bestScore || (score == bestScore && entry.CheckedAtMs > bestAt))
-            {
-                bestScore = score;
-                bestAt = entry.CheckedAtMs;
-                best = cand;
-            }
+            alive.Add((cand, entry));
         }
-        return best ?? (Of(ch) == ChannelHealth.Alive ? ch : null);
+        if (alive.Count == 0) return Of(ch) == ChannelHealth.Alive ? ch : null;
+
+        // v28 主线③：评分账非空时按分排序（分高者胜，同分取核验时间新者）；无分/账空不进此径。
+        var storeScored = new List<(Channel Ch, SourceHealthEntry Entry, double Score)>();
+        foreach (var (cand, entry) in alive)
+        {
+            var s = ScoreStore?.ScoreOf(cand.SourceId, cand.EpgKey);
+            if (s.HasValue) storeScored.Add((cand, entry, s.Value));
+        }
+        if (storeScored.Count > 0)
+            return storeScored
+                .OrderByDescending(t => t.Score)
+                .ThenByDescending(t => t.Entry.CheckedAtMs)
+                .First().Ch;
+
+        // 修复线 v1.0.16：无账本分时退健康表 EMA 评分最高者（并列取核验时间新者）。
+        return alive
+            .Select(t => (t.Ch, t.Entry, Hs: SourceScorer.Score(t.Entry, nowMs) ?? 0.0))
+            .OrderByDescending(t => t.Hs)
+            .ThenByDescending(t => t.Entry.CheckedAtMs)
+            .First().Ch;
     }
 
     /// <summary>直接标记状态（播放实测/预检覆盖写）。仅在状态真正变化时发事件，防重复刷列表。</summary>
@@ -144,9 +166,9 @@ public class ChannelPrecheck
     /// v1.0.10：连续失败达阈值自动淘汰（交回重探）；每次变化节流落盘。
     /// v1.0.16 方案 A/E：可选带实测延迟（毫秒），EMA 记入 FirstDelayMs；成功累加连续成功，失败清零。
     /// </summary>
-    public void ReportSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null)
+    public void ReportSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null, bool timeout = false)
     {
-        WriteSourceResult(ch, ok, nowMs, delayMs);
+        WriteSourceResult(ch, ok, nowMs, delayMs, timeout);
     }
 
     /// <summary>被选去播放时记账（v1.0.16 方案 A）：刷新最近使用时刻，作为评分衰减基准。</summary>
@@ -177,9 +199,12 @@ public class ChannelPrecheck
         HealthStore?.MarkDirty();
     }
 
-    /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。</summary>
-    private void WriteSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null)
+    /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。
+    /// v28 主线③：同一入口向评分账喂分（成功带延迟时记速度；预检轻探不计耗时）。</summary>
+    private void WriteSourceResult(Channel ch, bool ok, long nowMs, int? delayMs = null, bool timeout = false)
     {
+        if (ok && delayMs is { } d && d > 0) ScoreStore?.Report(ch.SourceId, ch.EpgKey, ok, d, timeout: timeout);
+        else ScoreStore?.Report(ch.SourceId, ch.EpgKey, ok, 0, timeout: timeout);
         var key = SourceKey(ch);
         var entry = _sourceHealth.GetOrAdd(key, _ => new SourceHealthEntry
         {
@@ -191,10 +216,10 @@ public class ChannelPrecheck
         entry.ConsecutiveFails = ok ? 0 : entry.ConsecutiveFails + 1;
         if (ok) entry.SuccessStreak++;
         else entry.SuccessStreak = 0;
-        if (delayMs is { } d && d > 0)
+        if (delayMs is { } delay && delay > 0)
         {
             // EMA 平滑（α=0.5）：单次毛刺不支配，趋势尽快跟上
-            entry.FirstDelayMs = entry.FirstDelayMs <= 0 ? d : (entry.FirstDelayMs + d) / 2;
+            entry.FirstDelayMs = entry.FirstDelayMs <= 0 ? delay : (entry.FirstDelayMs + delay) / 2;
         }
         if (!ok && entry.ConsecutiveFails >= RetireAfterConsecutiveFails)
         {

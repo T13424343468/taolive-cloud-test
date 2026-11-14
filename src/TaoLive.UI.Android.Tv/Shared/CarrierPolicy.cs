@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using Android.Content;
 
@@ -19,8 +19,9 @@ public static class CarrierPolicy
     static ISharedPreferences Prefs(Context c) =>
         c.GetSharedPreferences(PrefName, FileCreationMode.Private)!;
 
-    /// <summary>取偏好编辑器（可能未就绪返回 null，调用方自行降级）。</summary>
-    static ISharedPreferencesEditor? Edit(Context c) => Prefs(c).Edit();
+    // 绑定契约 Edit()/PutInt() 等为可空返回：编辑器统一走本辅助（不存在即抛，不静默），调用处语句式落账，不再链式取值
+    static ISharedPreferencesEditor Editor(Context c) =>
+        Prefs(c).Edit() ?? throw new InvalidOperationException("carrier prefs editor unavailable");
 
     /// <summary>启动时决定载体：纹理可用返回 true；上一次纹理启动没活到首帧则回退表面视图。</summary>
     public static bool ResolveStartupCarrier(Context c)
@@ -30,8 +31,10 @@ public static class CarrierPolicy
         if (p.GetInt("attempt", 0) == 1)
         {
             // 上一次纹理启动没活到首帧：判定不兼容，永久回退
-            var e = Edit(c);
-            if (e != null) { e.PutInt("mode", 0); e.PutInt("attempt", 0); e.Apply(); } // 逐条写：链式返回可空不续点，编辑器未就绪则保留判定下次重试
+            var e = Editor(c);
+            e.PutInt("mode", 0);
+            e.PutInt("attempt", 0);
+            e.Apply();
             try
             {
                 File.AppendAllText(NoticePath(c),
@@ -45,22 +48,27 @@ public static class CarrierPolicy
 
     public static void MarkAttempt(Context c)
     {
-        var e = Edit(c);
-        if (e != null) { e.PutInt("attempt", 1); e.Apply(); } // 逐条写，编辑器未就绪则跳过本次下次重试
+        var e = Editor(c);
+        e.PutInt("attempt", 1);
+        e.Apply();
     }
 
     /// <summary>首帧落地（或正常退后台）= 载体兼容，清标记。</summary>
     public static void MarkOk(Context c)
     {
-        var e = Edit(c);
-        if (e != null) { e.PutInt("attempt", 0); e.PutInt("ok", 1); e.Apply(); } // 逐条写，编辑器未就绪则跳过本次下次重试
+        var e = Editor(c);
+        e.PutInt("attempt", 0);
+        e.PutInt("ok", 1);
+        e.Apply();
     }
 
     /// <summary>纹理接线当场报错：永久回退，并把原因写进日志。</summary>
     public static void DisableTexture(Context c, string reason)
     {
-        var e = Edit(c);
-        if (e != null) { e.PutInt("mode", 0); e.PutInt("attempt", 0); e.Apply(); } // 逐条写：链式返回可空不续点，编辑器未就绪则保留判定下次重试
+        var e = Editor(c);
+        e.PutInt("mode", 0);
+        e.PutInt("attempt", 0);
+        e.Apply();
         try
         {
             File.AppendAllText(NoticePath(c),

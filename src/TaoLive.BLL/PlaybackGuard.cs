@@ -107,7 +107,7 @@ public class ConnectRetryLedger
     public bool ShouldReleaseGate => Count >= 3;
 }
 
-/// <summary>重连网络缓存阶梯（毫秒）：首连 1200，重连逐级 2500→4000→6000 自适应软解。</summary>
+/// <summary>重连网络缓存阶梯（毫秒）：首连 1200，升档 5→10→20 秒深水攒片（fix55 拿满口径）。</summary>
 public static class CacheLadder
 {
     /// <summary>fix55（2026-11-14 真机令拍板「起播后不停拿、拿满」）：起播保持 1200ms 秒连口径不变，

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+  <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+  <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+  <!-- v3.25.20: Android 14+ "仅部分照片视频" 授权态识别用; WAKE_LOCK 供下载保持锁 (WifiLock/WakeLock) -->
+  <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <application android:label="道映" android:icon="@mipmap/ic_launcher" android:hardwareAccelerated="true" android:usesCleartextTraffic="true" />
+</manifest>

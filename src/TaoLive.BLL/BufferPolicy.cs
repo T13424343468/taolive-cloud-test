@@ -38,3 +38,25 @@ public static class BufferPolicy
         return BufferAction.HoldEdge;
     }
 }
+
+/// <summary>
+/// 3 秒库存两档（1.0.12 发现 B·拍板稿，治「慢」不治「断」——网络抖动型卡顿近乎消除）：
+/// - StartFull 起播即 3 秒：起播缓存不低于 3 秒，稳（首帧约慢 1–2 秒）；默认档（真机验证静默重接保帧后可切）。
+/// - SilentRefetch 静默重接补库存：低缓存先开画（换台口径：先开画后补库存，首帧不慢），
+///   首帧后静默重接一次把库存补到 3 秒；真机若见黑帧（芯片不保帧）则退回 StartFull。
+/// 1.0.12 修正②④：重连缓存递增口径并入固定库存档（库存档兜底，不被水位自适应降回去）。
+/// </summary>
+public static class BufferInventory
+{
+    public enum Mode { SilentRefetch, StartFull }
+
+    /// <summary>固定库存目标（毫秒）：1080P 约 4–6Mbps 下 3 秒≈2MB，低端盒真机可再议 1.5 秒档。</summary>
+    public const int TargetMs = 3000;
+
+    /// <summary>默认档：起播即 3 秒（拍板口径），真机验证「静默重接保帧」后可切 SilentRefetch。</summary>
+    public static Mode Default => Mode.StartFull;
+
+    /// <summary>起播缓存口径：StartFull=库存档兜底（不低 3 秒）；SilentRefetch=按阶梯低缓存先开画。</summary>
+    public static int StartCachingMs(Mode mode, int ladderMs) =>
+        mode == Mode.StartFull ? Math.Max(TargetMs, ladderMs) : ladderMs;
+}

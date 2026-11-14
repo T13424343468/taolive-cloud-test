@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>TaoLive.Tests</RootNamespace>
@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\TaoLive.Model\TaoLive.Model.csproj" />
     <ProjectReference Include="..\..\src\TaoLive.BLL\TaoLive.BLL.csproj" />
+    <ProjectReference Include="..\..\src\AllPlayer.BLL\AllPlayer.BLL.csproj" />
   </ItemGroup>
 
 </Project>

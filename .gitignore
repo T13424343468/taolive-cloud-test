@@ -1,7 +1,8 @@
-dist/
-keystore/
+!TaoLive-tv-v1.0-vc33-32bit.apk
 *.apk
 __pycache__/
-node_modules/
 bin/
+dist/
+keystore/
+node_modules/
 obj/

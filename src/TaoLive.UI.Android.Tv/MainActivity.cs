@@ -5,6 +5,7 @@ using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.Graphics;
+using Android.Graphics.Drawables; // v22：弹窗自绘 GradientDrawable/ColorDrawable 需要（退出/崩溃日志弹窗）
 using Android.OS;
 using Android.Views;
 using Android.Widget;
@@ -22,7 +23,7 @@ namespace TaoLive.UI.Android.Tv;
 /// 设计基线：单实例 singleTask + onNewIntent（B 档秒开回上次频道）。
 /// </summary>
 [Activity(
-    Label = "道映",
+    Label = "TaoLive",
     MainLauncher = true,
     Exported = true,
     LaunchMode = LaunchMode.SingleTask,
@@ -50,10 +51,29 @@ public class MainActivity : Activity
     private LinearLayout _listPanel = null!;
     private ListView? _listView;
     private bool _listOpen;
+    // B 包第 12 项：列表页改五标签抽屉（1.0.12 UI② 改序：全部/收藏/央视/卫视/地方台），左右键切标签
+    private DrawerSupport.Tab _drawerTab = DrawerSupport.Tab.All;
+    private List<TextView>? _tabViews;
+    private const int DrawerPad = 48; // 1.0.12 UI③：频道列表页统一边距基准（页头/画面信息/标签行同口径对齐）
+    // B 包第 14 项：底部节目单（央视网官方接口，没数据不硬造）；v22 第 12 项：亮出 7 秒无操作自动收起
+    private LinearLayout? _epgPanel;
+    private TextView? _epgNow;
+    private TextView? _epgNext;
+    private CntvEpgClient? _epgClient;
+    private System.Threading.CancellationTokenSource? _epgCts;
+    private bool _epgHasData;                 // 当前台拉到过节目单（抽屉收起后据此重新亮出）
+    private Action? _epgHidePending;          // 7 秒自动收起任务
+    private const int EpgAutoHideMs = 7000;
+    // v22 第 1 项·确定性清场：换台/重接即铺不透明遮罩盖住旧表面，首帧前遮罩维持（ghost 旧合成帧绝不外露）
+    private View? _videoMask;
     private int _playSeq;
     private Channel? _current;
     private AiLiveTier _aiTier;         // AI 画质档位（启动时按设备解析）
+    private SmartGovernor? _governor;   // A⑩：自动档会话临时档调节器（手动档=天花板，降档不写盘）
+    private InfoLineHub _infoHub = new(); // A②：信息行单写入口（防重刷总闸+优先级让位）
+    private System.Threading.Timer? _governorTicker; // A⑩：5 秒巡检喂实测统计
     private bool _carrierTexture;      // 本次会话是否纹理载体（v1.0.7 启动自检决定）
+    private bool _frameEverShown;      // 本次启动是否出过画面：出过则换台先留旧画面，延迟亮牌
     private bool _frameForCurrentSwitch; // 本轮换台是否已出首帧
     private Action? _pendingLoading;   // 延迟亮牌任务（换台后仍无首帧才亮）
     private Action? _loadingAnimRun;   // 亮牌期间的「正在连接」点动画
@@ -70,18 +90,17 @@ public class MainActivity : Activity
     private IReadOnlyList<QualityVariant> _currentVariants = Array.Empty<QualityVariant>(); // 当前台多档变体（空=单档）
     private int _currentVariantHeight;                       // 当前在播变体的分辨率高
     private string? _lastResolvedUrl;                        // 最近一次成功取流的地址（档位切换沿用）
-    private SmartGovernor? _governor;                        // ⑨A自动档实时调节（本台会话）
     // fix25（老板拍板）：帧率稳档观察——升档后 60 秒观察窗，稳不住自动退回原档；升档门槛加严防拉锯
     private readonly FrameRateKeeper _keeper = new();
-    private System.Threading.Timer? _governorTicker;         // ⑨A巡检（5 秒节拍，口径同 SmartGovernor）
     private int _governorTickInFlight;                       // fix50：巡检节拍互斥——节拍改投线程池后不再经 UI 串行化，用在途标志防重入
 
     // 退出确认（v1.0.9 用户拍板）：播放态按返回弹窗二次确认；确认后真完全关闭，
     // 重开是全新冷启动。弹窗开着时返回键=第二次返回，直接退出（v1.0.12 老板拍板）。
     private AlertDialog? _exitDialog;
     // v1.0.12（老板反馈）：弹窗按钮显式持引用——焦点切换由按键接管，不靠系统焦点搜索碰运气
-    private Button? _exitNo;
-    private Button? _exitYes;
+    //（v22 第 11 项按钮改 TextView 自绘，去 ROM 系统着色，字段类型随之改）
+    private TextView? _exitNo;
+    private TextView? _exitYes;
     private bool _resumedOnce;  // 首启 OnResume 与回前台重接的分流（v1.0.9）
 
     // 收藏排序模式（v1.0.8 第14项，用户 23:23 拍板）：独立状态机，退出恢复默认键位
@@ -110,20 +129,19 @@ public class MainActivity : Activity
     // 老板 2026-11-08 拍板（连接优先）：开机即连/切台即连第一位——没连上之前冷启动（预检）暂停，连成之后才开始；
     // 切台必停、切完后启。true=允许预检循环跑，false=暂停等待
     private volatile bool _precheckGate;
+    private bool _warmupEnabled = true;     // A⑥：后台预热开关（细案 §二设置页，持久化）
+    private bool _autostartEnabled = true; // v22 第 15 项：开机自启安装默认开启（启动时按已存设置覆盖）
     private bool _abi32;                     // 启动时设备档位（画质档重算用）
     private long _totalMem;
     private global::Android.Content.ISharedPreferences? _prefs;
     private System.Threading.CancellationTokenSource? _precheckCts;
 
-    // 频道列表折叠状态（v1.0.8）：组标题 → 展开？；未初始化时收藏组+当前台所在组自动展开
-    private readonly Dictionary<string, bool> _expanded = new();
-    private bool _expandedInit;
+    // v23 第 1 条：折叠交互整行退场——foldToggle 总开关行与 _expanded/_expandedInit 折叠状态一并清，
+    // 列表默认铺开不留空行（BLL 的 ListFoldController 纯逻辑保留不动，测试断言不破）。
 
-    // v1.0.9 第④项：列表旁操作提示去掉，改为实时画面信息行
-    // v1.0.12（老板拍板）：动态信息拆三行独占（画质最上、依次分辨率、帧率），行高锁死提前占位
-    private TextView? _qualityLine;
-    private TextView? _resLine;
-    private TextView? _fpsLine;
+    // v1.0.9 第④项：列表旁操作提示去掉，改为实时画面信息（v22 第 9 项改短格式：帧率+分辨率一行、画质一行）
+    private TextView? _statsInfo;
+    private TextView? _statsTier;
     private System.Threading.Timer? _statsTicker;
     // fix24：热切冷却拒受日志限流（最多一次/分钟，退避期间不刷屏）
     private long _lastCooldownLogMs = long.MinValue / 2;
@@ -135,6 +153,24 @@ public class MainActivity : Activity
     private Channel? _lastRefreshSource;
     // v1.0.10 第①项：源健康账本地存储（应用私有目录，跨启动保留已验证源）
     private SourceHealthStore? _healthStore;
+    private SourceScoreStore? _scoreStore; // v28 主线③：源健康度评分账（与健康账同生命周期）
+    private long _tuneBeginMs; // v28 主线③：换台起点（首帧耗时 = 首帧时刻 − 起点）
+    private Task? _healthLoadTask; // v28 读盘优化：健康账后台灌回任务（落盘须等灌回，防空账覆盖旧账）
+    private readonly SourceBackoffLedger _backoff = new(); // A⑬/A⑥：同一本 403 退避账（竞速与预热共用）
+    private readonly Dictionary<string, long> _nextProbeAtMs = new(); // A⑥：每台下次到期时刻（TickCount64）
+    private volatile bool _foregroundBusy; // A⑥ PauseGate：前台换台/连接期间预热让路
+
+    // ---- v25 落码新增 ----
+    private readonly ChannelPaceLedger _pace = new(); // 修法六：台级表现账+时段系数+全局让路闸（稳态循环与屏内先探共享同一闸）
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Channel> _prefetchQueue = new(); // 修法一 5：邻台预取改入队（PauseGate 空闲才消费，不再前台抢流量）
+    private readonly HashSet<string> _probeInFlight = new(StringComparer.Ordinal); // 屏内先探去重：同台一次只跑一个探测任务
+    private readonly object _probeInFlightLock = new();
+    private readonly Dictionary<string, long> _deadUntilMs = new(StringComparer.Ordinal); // 修法六 4：失效台独立档（判死移出主循环，30 分钟低频复测）
+    private readonly Dictionary<string, int> _deadStreak = new(StringComparer.Ordinal);
+    private long _lastScreenPrecheckMs; // 屏内先探 ≥3 秒节流
+    private HotStandbyKeeper? _hotStandby; // 修法七：热备并行取流（新台连接完成 5 秒后起，换台即停）
+    private BroadcastReceiver? _envReceiver; // 修法二 2c/2d：网络变更/时钟跳变清账（账本不跨 IP/跨墙钟沿用）
+    private global::Android.Net.ConnectivityManager.NetworkCallback? _netCallback; // v1.0 清零：ConnectivityAction 自 API 28 过时，网络变更改 NetworkCallback 监听
     // v1.0.20 批1（方案 A/E）：播放实测首帧延迟记账——Play 起记起点，首个首帧顺路入健康账（EMA）
     private long _playStartTicks;
     private bool _awaitFirstFrame;
@@ -165,9 +201,12 @@ public class MainActivity : Activity
         _precheckEnabled = _prefs.GetBoolean("precheck_enabled", true);
         _rushEnabled = _prefs.GetBoolean("rush_enabled", true);              // v1.0.16 方案 B
         _firstPacketEnabled = _prefs.GetBoolean("firstpacket_enabled", false); // v1.0.16 方案 D
+        _warmupEnabled = _prefs.GetBoolean("warmup_enabled", true);       // A⑥：后台预热（默认开）
+        _autostartEnabled = _prefs.GetBoolean("autostart_enabled", true); // v22 第 15 项：新装默认开（读取的是已存设置，与 BootReceiver/SettingsStore 同口径）
 
         // AI 画质实时档（v1.0.8）：auto 按内存分档，绝不在带不动的设备硬开
         _aiTier = LiveQuality.Pick(DeviceProfile.AiEnhanceTierSetting, _abi32, _totalMem);
+        _governor = new SmartGovernor(_aiTier); // A⑩：基准档=静态分档，运行中按实测升降（会话临时档）
 
         _favorites = new FavoriteStore();
         _favorites.Restore(_prefs?.GetString("favorites", null)); // 收藏顺序跨启动记忆（v1.0.8 第14项）
@@ -183,6 +222,7 @@ public class MainActivity : Activity
         _catalog.RegisterSource(new XatvSource());
         _catalog.RegisterSource(new NmtvSource());
         _catalog.RegisterSource(new GxtvSource());
+        _catalog.RegisterSource(new CityCandidatesSource()); // v22 第 16 项：地方台 18 路候选源挂链（13 城市+2 省经济，台账 city_channel_candidates.json）
         _catalog.Rebuild();
         StreamResolver.MemAvailProvider = () => // H 内存档自适应：池并发按可用内存档（BLL 纯逻辑判定）
         {
@@ -199,7 +239,16 @@ public class MainActivity : Activity
         _resolver.ChainScore = c => SourceScorer.Score(_precheck.SourceHealthOf(c), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         CheckStartupSelfClean(); // v1.0.20 F：上次未正常退出（崩溃/被杀）→ 清取流缓存等可疑状态
         _host = new LiveVideoHost { TotalMemBytes = _totalMem }; // ⑩内存水位自适应口径注入
+        _hotStandby = new HotStandbyKeeper(_resolver, _backoff); // v25 修法七：热备与预热共用同一本退避账（不建第二本）
+        // v25 修法七 2b：热备帧级切换接线——LiveVideoHost 断流/自救前先问热备（独立预算 90 秒窗 4 次）
+        _host.HotStandbySwitch = async () =>
+        {
+            var keeper = _hotStandby;
+            if (keeper is null) return null;
+            return await keeper.TrySwitchAsync();
+        };
         WireHostEvents();
+        RegisterEnvReceiver(); // v25 修法二 2c/2d：网络变更/时钟跳变清账
 
         // 开机预检握手（v1.0.8）：全台按序轻探（取票/头分片，不建视频传输），限速防判异常。
         // 预检后台进行，不阻塞当前频道播放；状态实时刷新进呼出列表。
@@ -217,13 +266,31 @@ public class MainActivity : Activity
         // fix52（B 路）：健康账读盘+反序列化移出主线程（冷启动不等磁盘，条目增长不再拖慢开机）——
         // 挂账保持同步（只设引用，探活写入不落空）；就绪前健康表为空兜底：换台走预检重探，语义等价；
         // 健康账为并发字典，Load 的 TryAdd 不覆盖会话内新条目（既有口径），与探活并发安全
-        _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
-        _precheck.AttachHealthStore(_healthStore);
-        var bootStore = _healthStore;
-        Task.Run(() =>
+        // A 类第 7 项：央视频 guid 设备身份持久化，与源健康账同目录落盘
+        DeviceIdentity.Attach(FilesDir!.AbsolutePath);
+        // A 类第6项：预热落盘层（/files/warmup/，与 source_health.json 并列）——长效源起播零网络探测
+        _resolver.WarmupDisk = new WarmupStore(System.IO.Path.Combine(FilesDir!.AbsolutePath, "warmup"));
+        // v28 读盘优化：预热缓存灌回改后台预载（两本账内部均有锁/并发字典，与首播并发访问无竞争态；损坏文件按无缓存处理口径不变）
+        Task.Run(_resolver.WarmupDisk.Load);
+        // A 类第6项：App 打开即拉起后台预热服务（同进程共享同一预热引擎，绝不起第二份）
+        try
         {
-            try { bootStore.Load(); }
+            var svc = new Intent(this, typeof(WarmupService));
+            if (_warmupEnabled && OperatingSystem.IsAndroidVersionAtLeast(26)) StartForegroundService(svc);
+            else if (_warmupEnabled) StartService(svc);
+        }
+        catch (Exception svcEx) { CrashNet.Record($"[Warmup] 保活服务拉起失败（功能不残废）：{svcEx.Message}"); }
+        var healthStore = _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
+        _precheck.AttachHealthStore(_healthStore);
+        // v28 主线③：评分账与健康账同生命周期——启动灌回→挂预检（选源按分排序；账空退化既有顺序）
+        var scoreStore = _scoreStore = new SourceScoreStore(FilesDir.AbsolutePath);
+        // v28 读盘优化：健康账读盘改后台；账本灌回完成才挂预检（共账切换）、才进预检循环（顺序依赖）
+        _healthLoadTask = Task.Run(() =>
+        {
+            try { healthStore.Load(); }
             catch (Exception ex) { CrashNet.Record("[Boot] 源健康账后台加载异常（空表兜底，交回预检重探）：" + ex.Message); }
+            scoreStore.Load();
+            _precheck.AttachScoreStore(scoreStore);
         });
         // v1.0.13 缓存分层：档位目录落盘（24 小时）——重启后各台档位免重抓，换台零网络等待
         VariantTableStore.Shared = new VariantTableStore(FilesDir.AbsolutePath);
@@ -255,33 +322,15 @@ public class MainActivity : Activity
             // v1.0.13 节拍 1000ms 让路前台切台：83 路 ≈ 83 秒/轮 + 轮间歇 20 秒 ≈ 1.5~2 分钟一轮（限速防判异常流量）；
             // 票据静默续期：每 4 分钟为当前台换新票
             _precheckCts = new System.Threading.CancellationTokenSource();
-            _ = Task.Run(() => PrecheckLoopAsync(_precheckCts.Token));
-            // v1.0.9 第④项：画面信息行实时刷新（2 秒节拍，列表开着才写字）
-            _statsTicker = new System.Threading.Timer(_ => _ui.Post(() =>
+            var precheckCts = _precheckCts;
+            // v28 读盘优化：预检循环由健康账灌回任务串行启动——灌回完成 → 挂账（共账切换）→ 进循环
+            _ = Task.Run(async () =>
             {
-                if (_qualityLine is null) return;
-                var (ofps, cfps, ow, oh, cw, chh) = _host.SnapshotStats();
-                // v1.0.10 修复⑤口径沿用：到限显「--」；v1.0.12 拆三行只换字不动结构
-                bool exhausted = _host.StatsExhausted;
-                // v1.0.20 ⑪画质档如实：显示实际生效档（SmartGovernor 降级/<2GB 强降透出），如实不吃安慰剂；
-                // 同行右侧追加内存段（ActivityManager.MemoryInfo，缺失省略不挡播放）
-                string memText = "";
-                try
-                {
-                    if (GetSystemService(global::Android.Content.Context.ActivityService) is global::Android.App.ActivityManager am)
-                    {
-                        var mi = new global::Android.App.ActivityManager.MemoryInfo();
-                        am.GetMemoryInfo(mi);
-                        memText = FrameStatsLine.MemorySegment(mi.TotalMem, mi.AvailMem);
-                    }
-                }
-                catch { memText = ""; }
-                string settingName = LiveQuality.DisplayName(DeviceProfile.AiEnhanceTierSetting);
-                string effectiveName = LiveQuality.TierName(_governor?.Effective ?? _aiTier);
-                _qualityLine.Text = FrameStatsLine.QualityLineEx(settingName, effectiveName, memText);
-                _resLine!.Text = FrameStatsLine.ResLine(ow, oh, cw, chh, exhausted);
-                _fpsLine!.Text = FrameStatsLine.FpsLine(ofps, cfps, exhausted);
-            }), null, 2000, 2000);
+                await _healthLoadTask!;
+                await PrecheckLoopAsync(precheckCts.Token);
+            });
+            // v1.0.9 第④项：画面信息行实时刷新（2 秒节拍，列表开着才写字；v22 第 9 项改短格式两行）
+            _statsTicker = new System.Threading.Timer(_ => _ui.Post(RefreshStatsLine), null, 2000, 2000);
             _ticketKeeper = new System.Threading.Timer(async _ =>
             {
                 var cur = _current;
@@ -292,7 +341,6 @@ public class MainActivity : Activity
             // ⑨A自动档巡检（v1.0.10 双实例落地）：5 秒节拍喂实测，档位变化走双实例无感切换
             // fix50（老板 2026-11-13 拍板「同类问题不用问、加快速度」）：节拍改投线程池线程——
             // 判活/帧率快照/自动档判定的原生重活整体离开 UI 线程；要动界面的动作经 _ui.Post 回 UI
-            _governor = new SmartGovernor(_aiTier);
             _governorTicker = new System.Threading.Timer(_ => TickGovernor(), null, 5000, 5000);
             // fix31 ③：资源观测日志——每 5 分钟一条内存/缓冲水位（载体回退重建不重复挂表）
             if (_resourceTicker == null)
@@ -332,7 +380,10 @@ public class MainActivity : Activity
         // fix23（老板思路）：重连循环每次只走新鲜链路——上一条链路又断了就立即作废
         //（缓存清除 + 健康表判坏），换健康表里下一个候选来源重新取票；作废的来源由
         // 预检循环周期复测，探活通过自动恢复候选资格。绝不对同一条失败链路反复重试。
-        _host.ReconnectRefresher = async () =>
+        // 1.0.12 发现 A·备援接入重连链路：第 1 次重连同源换票（普通卡顿秒级恢复），
+        // 第 2 次起同源失败即走备援选择（健康表优先最近验证可用来源），备援成功记健康表，
+        // 恢复自动回主源（SourceFailover 现成机制复用）——与 fix23 新鲜链路口径并轨：链内即备援序。
+        _host.ReconnectRefresher = async (attempt) =>
         {
             var cur = _current;
             if (cur is null) return null;
@@ -352,7 +403,7 @@ public class MainActivity : Activity
             // 候选来源：健康表里最活的来源（刚判坏的自动落选）；无备选时回退本台原始来源
             var source = _precheck.BestAliveSource(cur, _catalog.All.ToList()) ?? cur;
             if (!ReferenceEquals(source, _playSource) && source.SourceId != _playSource?.SourceId)
-                CrashNet.Record($"[Reconnect] 换源重连：{_playSource?.SourceId ?? "无"} → {source.SourceId}（{cur.Name}）");
+                CrashNet.Record($"[Reconnect] 连续第 {attempt} 次换票，换源重连：{_playSource?.SourceId ?? "无"} → {source.SourceId}（{cur.Name}）");
             _playSource = source;
             var fresh = await _resolver.ResolveWithChainAsync(source, force: true); // G2：重连沿健康链换源
             if (fresh is null)
@@ -361,8 +412,10 @@ public class MainActivity : Activity
                 return null;
             }
             _lastRefreshSource = fresh.Channel;
+            if (attempt >= 2)
+                _precheck.ReportSourceResult(fresh.Channel, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // 备援成功记健康表
             var opts = new List<(string Key, string Value)>(fresh.Options);
-            foreach (var (k, v) in LiveQuality.OptionsFor(_aiTier)) opts.Add((k, v));
+            foreach (var (k, v) in LiveQuality.OptionsFor(EffectiveTier)) opts.Add((k, v)); // A⑩：带实际生效档
             return new RefreshedStream { Url = fresh.Url, Options = opts };
         };
         // ⑫联动：降清晰度=AI 增强降一档（软解负载减轻）；无档可降时自救并入静默重取流
@@ -374,10 +427,19 @@ public class MainActivity : Activity
         };
         _host.LowerQualityRequested += () =>
         {
+            var from = EffectiveTier;
             if (DeviceProfile.AiEnhanceTierSetting == "high") DeviceProfile.AiEnhanceTierSetting = "low";
             else if (DeviceProfile.AiEnhanceTierSetting == "low") DeviceProfile.AiEnhanceTierSetting = "off";
-            else if (_aiTier > AiLiveTier.Off) _aiTier--;
-            _prefs?.Edit()?.PutString("ai_tier", DeviceProfile.AiEnhanceTierSetting)?.Apply();
+            else if (_governor != null && _governor.Effective > AiLiveTier.Off)
+                _governor.Tick(SmartGovernor.DropRateThreshold + 1, true, System.Environment.TickCount64); // A⑩：会话内立即降一档，不写持久化
+            if (DeviceProfile.AiEnhanceTierSetting != "auto")
+            {
+                _aiTier = LiveQuality.Pick(DeviceProfile.AiEnhanceTierSetting, _abi32, _totalMem);
+                _prefs?.Edit()?.PutString("ai_tier", DeviceProfile.AiEnhanceTierSetting)?.Apply(); // 仅显式档自救才落盘
+            }
+            _governor = new SmartGovernor(_aiTier); // 基准档随新设置重开
+            // A 类第5项·降档打点：旧档→新档+触发原因，自救不再静默
+            CrashNet.Record($"[画质] 自救降档：{LiveQuality.TierName(from)}→{LiveQuality.TierName(EffectiveTier)}（卡顿自救，⑫②级）");
         };
         _host.StatusChanged += text => _ui.Post(() =>
         {
@@ -404,12 +466,15 @@ public class MainActivity : Activity
         });
         _host.FrameShown += () => _ui.Post(() =>
         {
+            _frameEverShown = true;            // 首帧落地：延迟亮牌基准开启，此后换台先留旧画面
             _frameForCurrentSwitch = true;
             _precheckGate = true;              // 老板 2026-11-08 拍板（连接优先）：连成之后冷启动才开始
+            _foregroundBusy = false;           // A⑥ PauseGate：连接完成，预热恢复
             _autoHop.OnSuccess();              // v1.0.20 B：首帧成功即清终局账，自动跳台恢复正常额度
             if (_carrierTexture) CarrierPolicy.MarkOk(this); // 纹理载体活到首帧：判兼容
             if (_current != null) _precheck.MarkState(_current, ChannelHealth.Alive); // 播放实测存活
             _videoContainer?.SetBackgroundColor(Color.Transparent); // ⑦新流首帧到齐：撤底色亮画面
+            if (_videoMask != null) _videoMask.Visibility = ViewStates.Gone; // v22 第 1 项：首帧落地撤清场遮罩，旧合成帧全程未外露
             // fix31：观察期/收口期间画面真的回来了——解除暂停并随台清账（成功即免）。
             // 不清会让健康流一直被锁在静默里（后续卡死无人自救）；清账后再次风暴重新计数，口径不失真
             if (_host.RescuePaused)
@@ -423,13 +488,15 @@ public class MainActivity : Activity
             // ⑬健康表回写：播放实测成功覆盖预检结论（取播来源变体优先；Unix 毫秒，落盘可比）
             // 批1 A/E：首帧顺路记延迟（Play→首帧全程，EMA 入账）；仅起播窗口记，
             // 稳播期换档/热切帧不污染延迟账（_awaitFirstFrame 记一次即收）
+            // v28 主线③：同一处喂评分账——首帧成功+换台起点到首帧耗时（速度分），timeout=false
             if (_playSource != null)
             {
+                var firstFrameMs = Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _tuneBeginMs);
                 int? delay = _awaitFirstFrame
                     ? (int)Math.Clamp(System.Environment.TickCount64 - _playStartTicks, 0L, int.MaxValue)
                     : null;
                 _awaitFirstFrame = false;
-                _precheck.ReportSourceResult(_playSource, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), delay);
+                _precheck.ReportSourceResult(_playSource, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), delay ?? (int)firstFrameMs);
             }
             HideLoading();
             _ = UpgradeAfterFirstFrameAsync(); // 【六】先亮后升：最快档已亮，后台无感升最高档（双实例）
@@ -485,6 +552,11 @@ public class MainActivity : Activity
         }
         _root.AddView(_videoContainer);
 
+        // 1.2 v22 第 1 项·确定性清场遮罩：夹在视频与亮牌之间，换台立即铺上，首帧才撤
+        _videoMask = new View(this) { Visibility = ViewStates.Gone };
+        _videoMask.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
+        _videoContainer.AddView(_videoMask, new FrameLayout.LayoutParams(-1, -1));
+
         // 1.5 起播亮牌（雷二·延迟亮）：换台后 0.8 秒内没出首帧才亮，亮了带台名和呼吸点，
         // 明确反馈「没死机」，首帧落地才撤
         _loadingPanel = new FrameLayout(this);
@@ -519,7 +591,26 @@ public class MainActivity : Activity
             TopMargin = 48,
         });
 
-        // 3. 频道列表（菜单键呼出，焦点式；分类树形可折叠+收藏置顶+宽度随内容）
+        // 3. 底部节目单（B 包第 14 项）：官方接口有数据才显示（没数据不硬造）
+        // v22 第 13 项·z 序修正：节目单条先入根布局，抽屉盖板永远压在其上，绝不叠字
+        _epgPanel = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        _epgPanel.SetBackgroundColor(InkTranslucency.PanelColor(this));
+        _epgPanel.SetPadding(36, 18, 36, 22);
+        _epgPanel.Visibility = ViewStates.Gone;
+        _epgNow = new TextView(this) { TextSize = 18 };
+        _epgNow.SetTextColor(InkTranslucency.TextPrimary(this));
+        InkTranslucency.ApplyReadabilityShadow(_epgNow);
+        _epgNext = new TextView(this) { TextSize = 15 };
+        _epgNext.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(_epgNext);
+        _epgPanel.AddView(_epgNow);
+        _epgPanel.AddView(_epgNext);
+        _root.AddView(_epgPanel, new FrameLayout.LayoutParams(-2, -2)
+        {
+            Gravity = GravityFlags.Bottom | GravityFlags.Left,
+        });
+
+        // 4. 频道列表（菜单键呼出，焦点式；B 包第 12 项改五标签抽屉：全部/央视/卫视/地方台/收藏）
         _listPanel = new LinearLayout(this) { Orientation = Orientation.Vertical };
         _listPanel.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v1.0.9 第③项：底色加深并随亮度自适应
         _listPanel.Visibility = ViewStates.Gone;
@@ -579,16 +670,8 @@ public class MainActivity : Activity
         if (!autoHop) _autoHop.OnSuccess(); // v1.0.20 B：用户手动选台即清终局账
         // v1.0.13 去抖联动：非连切路径起播（列表/数字键/无信号自动跳台）时作废待发的连切任务
         if (_pendingSwitch is { } ps) { _ui.RemoveCallbacks(ps); _pendingSwitch = null; _debouncer.Clear(); }
-        // 修正①（推演）：重连轮数不再在这里清零——它跟着播放任务记账，真正换台才重起（见 ScheduleConnectRetry）；
-        // 否则重连自己也走 Play，3 轮永远数不满，真死台逃逸失效
-        // ⑬播放选源（v1.0.9）：同频道多来源优先取最近验证可用的来源变体（来源级健康表），
-        // 无已验证来源回到本台本身；任一来源通=频道可用，全挂才进无信号组。
-        var source = _precheck.BestAliveSource(ch, _catalog.All.ToList()) ?? ch;
-        _playSource = source;
-        // 批1 A/E（冻结稿）：播放实测天然经过一次 HTTP 往返，顺路记时长——起点在起播请求前，首个首帧落地即入账
-        _playStartTicks = System.Environment.TickCount64;
-        _awaitFirstFrame = true;
-        _precheck.MarkUsed(source, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // v1.0.16 方案 A：最近使用入账（评分衰减基准）
+        _hotStandby?.Stop(); // v25 修法七 1c：换台即停热备（会话代数作废，校验流不再漏跑）
+        _foregroundBusy = true; // A⑥ PauseGate：换台/连接期间预热让路
         // fix31：真正换台时长窗断路随台清账（计数清零、退出观察期/收口态、恢复自动链路）；
         // 重连同台不清——失败循环总量照旧累计，断路口径不被重连重置绕过
         if (_current is { } prevCh && prevCh.EpgKey != ch.EpgKey)
@@ -602,6 +685,7 @@ public class MainActivity : Activity
         _current = ch;
         _lastRefreshSource = null; // fix23：换台清重连链路状态，不带旧台的作废记录
         _frameForCurrentSwitch = false;
+        _tuneBeginMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // v28 主线③：换台起点（首帧耗时喂入评分账）
         // 老板 15:38 拍板（v1.0.13）：切换立刻停止上一个流——连接只管当前台，不保留旧流，
         // 绝不让旧台连接与当前台抢资源；同时静默换台期内的重连提示（只报最终状态）
         try { _host.Stop(); } catch (Exception ex) { CrashNet.Record($"[Switch] 停旧流异常照常起播：{ex.Message}"); }
@@ -620,15 +704,39 @@ public class MainActivity : Activity
         // v1.0.10 修复⑦：撤旧画面的同时铺干净底色，GPU 残留旧缓冲绝不外露（花屏竖条）；
         // 新流首帧到齐才撤底色亮画面（FrameShown 处清回透明）
         _videoContainer?.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
-        // 老板 15:38 拍板：旧流已立即停，无旧画面可留——换台即亮「正在连接」，统一台号口径
+        // v22 第 1 项·确定性清场：不透明遮罩立即盖住旧表面（换台/重取流/内核重建全走这里），
+        // ghost 旧合成帧从根上清掉；首帧前遮罩维持，新画面从纯底上亮出
+        if (_videoMask != null) _videoMask.Visibility = ViewStates.Visible;
+        // 雷二·延迟亮牌：清场遮罩已在（纯底无字），0.8 秒内新画面出来直接静音换流无感；
+        // 没出来才在遮罩上亮「正在连接」品牌牌，且亮着就不撤直到首帧
         CancelPendingLoading();
-        ShowLoading(ch);
+        if (!_frameEverShown)
+        {
+            ShowLoading(ch); // 冷启动无旧画面可留，直接亮牌
+        }
+        else
+        {
+            _pendingLoading = () =>
+            {
+                if (seq == _playSeq && !_frameForCurrentSwitch) ShowLoading(ch);
+            };
+            _ui.PostDelayed(_pendingLoading, 800);
+        }
         ShowInfoBar($"{ch.Number}  {ch.Name}  连接中…");
 
         var resolver = _resolver;
         Task.Run(async () =>
         {
+            // ⑬/A⑬播放选源：健康账已验证优先（零新增请求）；无验证时同频道多来源竞速（4 秒预算）
+            var source = await PickSourceAsync(ch);
+            if (seq != _playSeq) return;
+            _playSource = source;
+            // 批1 A/E（冻结稿）：播放实测天然经过一次 HTTP 往返，顺路记时长——起点在起播请求前，首个首帧落地即入账
+            _playStartTicks = System.Environment.TickCount64;
+            _awaitFirstFrame = true;
+            _precheck.MarkUsed(source, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // v1.0.16 方案 A：最近使用入账（评分衰减基准）
             ResolvedStream? resolved = null;
+            string kind = nameof(ConnectFailureKind.None); // v28③修复：提升作用域，非异常路径（空清单判死）也能带稳定度口径回写
             // v1.0.16 方案 B（换台探测竞速，默认开）：同频道候选按评分前 2~3 路并行轻探（控制层短连接，
             // 不算播放连接），1.5s 总窗口择先胜出者直取；全败/作废/被拒一律退回下面现行取流链路，绝不把台连死
             if (_rushEnabled)
@@ -662,21 +770,31 @@ public class MainActivity : Activity
             }
             catch (Exception ex)
             {
-                // ⑫失败矩阵实接：逐类归因落日志 + 对应提示（不笼统「连接失败」）
-                var kind = LiveVideoHost.FailureKind(ex);
+                // ⑫失败矩阵实接：逐类归因落日志 + 对应提示（不笼统「连接失败」）；v22 第 2 项：限流提示接退避账
+                kind = LiveVideoHost.FailureKind(ex);
                 CrashNet.Record($"[ConnectFailure][{kind}] 取流异常 {ch.Name}（源={ch.SourceId}）：{ex.Message}");
                 resolved = null;
-                _ui.Post(() => { if (seq == _playSeq) FlashInfo(ConnectHint(kind)); });
+                if (kind == nameof(ConnectFailureKind.RateLimited))
+                {
+                    var rem = _backoff.RemainingMs(ch.SourceId, System.Environment.TickCount64); // 退避账剩余时长，写死一分钟作废
+                    _ui.Post(() => { if (seq == _playSeq) FlashInfo(DrawerSupport.RateLimitHint(ch.Name, rem)); });
+                }
+                else
+                {
+                    _ui.Post(() => { if (seq == _playSeq) FlashInfo(ConnectHint(kind)); });
+                }
             }
             if (seq != _playSeq) return;
             if (resolved is null)
             {
-                _precheck.ReportSourceResult(source, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // ⑬：取流失败回写健康表
+                _precheck.ReportSourceResult(source, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    timeout: kind == nameof(ConnectFailureKind.ConnectTimeout)); // ⑬：取流失败回写健康表；v28③超时喂稳定度负项
                 // fix28（老板拍板「连接优先」）：冷却到期主动重连——不再干等下一轮冷启动轮询，冷却一过自动重连当前台
                 ScheduleConnectRetry(seq, ch);
                 _ui.Post(() =>
                 {
                     if (seq != _playSeq) return;
+                    _foregroundBusy = false; // A⑥ PauseGate：取流失败也让路（重试由分级自救承担）
                     HideLoading();
                     FlashInfo($"{ch.Name}  暂时没接上，稍后自动重连");
                 });
@@ -684,7 +802,7 @@ public class MainActivity : Activity
             }
             // 透传头 + AI 画质滤镜合并为选项列表（v1.0.8）
             var opts = new List<(string Key, string Value)>(resolved.Options);
-            foreach (var (k, v) in LiveQuality.OptionsFor(_aiTier)) opts.Add((k, v));
+            foreach (var (k, v) in LiveQuality.OptionsFor(EffectiveTier)) opts.Add((k, v)); // A⑩：带实际生效档
             // 【六】换台提速·先亮后升：多档变体发现（机制照建——单档/无数据/拉取失败一律空表按单档播），
             // 多档可用则先连最快出画面的档位（带宽最低先亮），亮后 UpgradeAfterFirstFrameAsync 无感升最高档
             // fix21（真机日志）：发现请求与主播放同一套头（频道 Referer/UA），否则央视频系 CDN 对无头清单 403
@@ -712,6 +830,9 @@ public class MainActivity : Activity
             if (seq != _playSeq) return;
             _currentVariants = variants;
             _lastResolvedUrl = resolved.Url;
+            // A 类第5项·起播打点：档位/设置值/滤镜参数可对账（AI 生效性核查 §4 判据）；v22 第 18 项：参数整串原样入日志
+            var filters = string.Join(";", opts.Where(o => QualityFilterKeysForLog.Contains(o.Key)).Select(o => $"{o.Key}={o.Value}"));
+            CrashNet.Record($"[画质] 起播（{ch.Name}）：档位 {LiveQuality.TierName(EffectiveTier)}（设置值 {LiveQuality.DisplayName(DeviceProfile.AiEnhanceTierSetting)}，内存 {_totalMem / (1024L * 1024 * 1024)}GB·{(_abi32 ? "32位" : "64位")}），滤镜 {(string.IsNullOrEmpty(filters) ? "无" : filters)}");
             _ui.Post(() =>
             {
                 if (seq != _playSeq) return;
@@ -731,16 +852,11 @@ public class MainActivity : Activity
                     return;
                 }
                 _host.Play(resolved.Url, opts);
-                // v1.0.20 ⑪②起播日志增记实际档位与全部画质滤镜参数：真机日志可定死「没开还是空转」
-                try
-                {
-                    var qOpts = LiveQuality.OptionsFor(_aiTier);
-                    CrashNet.Record(qOpts.Count == 0
-                        ? $"[画质] 起播（{ch.Name}）：档位 关（无滤镜参数，原画直出）"
-                        : $"[画质] 起播（{ch.Name}）：档位 {LiveQuality.TierName(_aiTier)}，滤镜参数 {string.Join("; ", qOpts.Select(o => $"{o.Key}={o.Value}"))}");
-                }
-                catch { }
                 ShowInfoBar($"{ch.Number}  {ch.Name}");
+                RefreshEpg(ch); // B 包第 14 项：进台成功即拉官方节目单（换台即刷新，无数据不显示）
+                // v25 修法七 1c：连接完成 5 秒后（Keeper 内延迟）起热备校验流——备援候选悄悄拉一路轻校验
+                var uaOpt = resolved.Options.FirstOrDefault(o => o.Key == "http-user-agent").Value;
+                _hotStandby?.Start(seq, ch, resolved.Url, ch.Referer, string.IsNullOrEmpty(uaOpt) ? ch.UserAgent : uaOpt);
                 // v1.0.16 方案 D（并行抢首包，默认关）：主实例刚起播，陪跑第二实例后台连同频道次优源，
                 // 3 秒窗口内谁先亮谁顶上（复用 HotSwap 第二实例 Prepare/Commit/Abort）；被拒退避回竞速
                 if (_firstPacketEnabled && !_frameForCurrentSwitch && seq == _playSeq)
@@ -1249,7 +1365,7 @@ public class MainActivity : Activity
                     return;
                 }
             }
-            if (g.Tick(droppedRate: 0, stalled)) // 丢弃帧计数快照未含：升档路径按无掉帧推进，降档由停滞触发
+            if (g.Tick(droppedRate: 0, stalled, System.Environment.TickCount64)) // 丢弃帧计数快照未含：升档路径按无掉帧推进，降档由停滞触发
             {
                 // fix25：升档门槛加严——实测帧率撑不住原始帧率（或停滞）本轮不升，平稳周期重新计，防来回拉锯
                 if (g.Effective > _aiTier)
@@ -1276,12 +1392,13 @@ public class MainActivity : Activity
         }
     }
 
-    /// <summary>⑫逐类提示（ConnectFailure 口径）：不笼统「连接失败」，每类给对应说法。</summary>
+    /// <summary>⑫逐类提示（ConnectFailure 口径）：不笼统「连接失败」，每类给对应说法。
+    /// B 包第 3 项：限流/风控类给原因+预期时长，用户心里有底。</summary>
     private static string ConnectHint(string kind) => kind switch
     {
         nameof(ConnectFailureKind.DnsFailure) => "网络解析不了该台，正在自动换备用来源",
         nameof(ConnectFailureKind.ConnectTimeout) => "电视没联网或网络不稳，请检查网络",
-        nameof(ConnectFailureKind.RateLimited) => "取流被限流，稍后自动重试",
+        nameof(ConnectFailureKind.RateLimited) => "取流被限流，正在按退避计划自动重试，先看别的台也行", // v22 第 2 项：写死的一分钟作废，实际时长走退避账
         nameof(ConnectFailureKind.TimeSkew) => "电视时间不对，请校准时间后重试",
         nameof(ConnectFailureKind.Rejected) => "该台暂时被拒绝访问，正在自动换来源",
         nameof(ConnectFailureKind.DecoderSurface) => "播放器内部错误，正在自动重试",
@@ -1313,7 +1430,21 @@ public class MainActivity : Activity
         return await _resolver.ProbeReachableAsync(r.Url, ch.Referer, ch.UserAgent);
     }
 
-    /// <summary>预连接：把相邻两路的可播地址提前换好放进缓存，换台零等待。</summary>
+    /// <summary>v23 修法 B：探测结论分级——Reachable=通；Rejected=服务器明确拒绝（唯一入拉黑账）；
+    /// Unreachable=网络级失败（换票失败/超时/断网/非 403/429），不回灌整源冻结。</summary>
+    private async Task<StreamResolver.ProbeVerdict> ProbeChannelVerdictAsync(Channel ch)
+    {
+        var r = await _resolver.ResolvePlayUrlAsync(ch);
+        if (r is null) return StreamResolver.ProbeVerdict.Unreachable; // 换票失败无法区分 403 与网络失败：按不回灌处理（票据源另有 30 秒冷却兜底）
+        if (!string.Equals(r.Url, ch.StreamUrl, StringComparison.Ordinal))
+            return StreamResolver.ProbeVerdict.Reachable; // 换票成功=取票服务器可达且票有效
+        return await _resolver.ProbeUrlVerdictAsync(r.Url, ch.Referer, ch.UserAgent);
+    }
+
+    /// <summary>
+    /// v25 修法一 5：邻台预取改入队——换台瞬间只登记不启动任务；
+    /// 消费在 PrecheckLoop 每轮收尾（PauseGate 空闲 + 让路闸占到才发），不再前台抢流量（死参数口子收掉）。
+    /// </summary>
     private void PrefetchNeighbors(Channel ch)
     {
         var all = _catalog.All;
@@ -1331,31 +1462,154 @@ public class MainActivity : Activity
         foreach (var nb in new[] { up, down })
         {
             if (nb.Number == ch.Number) continue;
-            Task.Run(async () => { try { await _resolver.ResolvePlayUrlAsync(nb); } catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); } });
+            _prefetchQueue.Enqueue(nb); // 只入队：消费在预热循环收尾（PauseGate 空闲才执行）
         }
     }
 
+    /// <summary>修法一 5：每轮收尾消费一个预取任务——PauseGate 挂起时不动，让路闸未占到时排回队尾（节律不破坏）。</summary>
+    private void DrainPrefetchQueue()
+    {
+        if (_foregroundBusy) return; // PauseGate 挂起：预取就地等待，下轮再消费
+        if (!_prefetchQueue.TryDequeue(out var nb)) return;
+        var pace = WarmupPolicy.PaceOf(nb.SourceId);
+        if (!_pace.TryAcquireGate(nb.SourceId, System.Environment.TickCount64, pace.MinGapMs))
+        {
+            _prefetchQueue.Enqueue(nb); // 未占到闸：排回队尾
+            return;
+        }
+        Task.Run(async () => { try { await _resolver.ResolvePlayUrlAsync(nb); } catch (Exception ex) { CrashNet.Record($"[Prefetch] 邻台预取失败：{ex.Message}"); } });
+    }
     // ---- 循环预检（v1.0.8 用户拍板：频率越高越好，以不被判异常流量为前提）----
 
     /// <summary>
     /// 常驻循环预检：每轮保态复测（可用台常绿、无信号台留组，探测完才翻转），轮间歇 20 秒；
-    /// 单台间隔 1000ms（v1.0.13 让路前台切台）+ 央视频取票 403 冷却兜底，全程不被判异常流量。关掉开关时空转低耗等待。
+    /// 单台间隔按 WarmupPolicy 节拍调度（A 类第6项降频）+ 央视频取票 403 冷却兜底，全程不被判异常流量。关掉开关时空转低耗等待。
+    /// </summary>
+    /// <summary>
+    /// A 类第6项·预热降频调度（细案 §五）：从「20 秒一轮全表」改「按源保鲜期调度」——
+    /// 每台按 WarmupPolicy 节拍到期才探（央视频 10 分钟/台，nmtv/gxtv 整表 30 分钟/6 小时一次），
+    /// 403 退避期源挂起不发起，前台换台/连接期间预热让路，关掉开关时空转低耗等待。
+    /// 稳态央视频 63 台 × 10 分钟 ≈ 6 次/分钟（现行约 63 次/20 秒，降两个数量级）。
     /// </summary>
     private async Task PrecheckLoopAsync(System.Threading.CancellationToken ct)
     {
         // v1.0.13（老板 15:42 拍板）：预热后台跑，让路前台切台——整循环最低线程优先
         System.Threading.Thread.CurrentThread.Priority = System.Threading.ThreadPriority.Lowest;
+        try
+        {
+            // 冷启动让路（细案 §五.4）：全表首轮刷新推迟 3 分钟，起播零探测由播放链路与落盘承担
+            await Task.Delay(180_000, ct);
+        }
+        catch (global::System.OperationCanceledException) { return; }
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                // 老板 2026-11-08 拍板：连接优先 + 续接循环——暂停/恢复由每台节点前的闸（PauseGate）接管，
-                // 此处只管整轮节奏；连接优先时段循环就地挂起，冷了从断点续探
-                if (_precheckEnabled) await _precheck.RunAsync(_catalog.All, ct, keepKnownState: true);
-                await Task.Delay(_precheckEnabled ? 20_000 : 5_000, ct);
+                if (_precheckEnabled) await RunDueProbesAsync(ct);
+                DrainPrefetchQueue(); // v25 修法一 5：预取只在此消费（PauseGate 空闲 + 让路闸占到才发）
+                await Task.Delay(5_000, ct);
             }
             catch (global::System.OperationCanceledException) { return; }
             catch (Exception ex) { CrashNet.Record($"[Precheck] 预检单轮失败下一轮再来：{ex.Message}"); }
+        }
+    }
+
+    /// <summary>
+    /// A⑥单轮：只探「已到期且未退避且前台空闲」的台；首见台登记节拍不立即探（读盘起播口径）。
+    /// v25 落码（修法一/二/六）：
+    /// - 首见登记与到期登记一律 = now + RegisterIntervalMs（档位→时段→jitter 完整口径，1c：jitter 同表分布一致不漂移）；
+    /// - 全局让路闸（1a）：稳态循环与屏内先探共享，发起前原子占位（MinGap 原值不翻倍），两方同刻先到先探；
+    /// - 票账联动（2）：探测前查票据退避剩余>0 顺延不发起——退避期弹回不入源账不记失败（失败口径=明确拒绝才计负）；
+    /// - 失效台独立档（4）：连续 3 轮服务器明确拒绝（403/429）判死移出主循环，独立 30 分钟低频复测，
+    ///   连续 3 轮仍死拉长 2 小时，任一轮恢复（200）立即回归正常档；
+    /// - 台级账记账（1b/1c）：Reachable 计正；Rejected 计负；Unreachable（网络级）不计负；
+    ///   整表源不做台级三档（节拍按源），时段系数照走（低敏感深夜降功耗）；
+    /// - 整表源真聚合（nmtv/gxtv）：UI 层仍逐台登记探测，整表抓取在 resolver 源级聚合（60 秒 TTL 内同源只发 1 次）。
+    /// </summary>
+    private async Task RunDueProbesAsync(System.Threading.CancellationToken ct)
+    {
+        long now = System.Environment.TickCount64;
+        if (_foregroundBusy) return; // PauseGate：前台连接优先，预热就地挂起，下轮再看（不消耗到期时间）
+        int localHour = DateTime.Now.Hour; // 设备本地小时（时钟不对系数错位可接受，TimeSkew 已有兜底）
+        foreach (var ch in _catalog.All)
+        {
+            if (ct.IsCancellationRequested) return;
+            if (_foregroundBusy) return;
+            var key = $"{ch.SourceId}:{ch.EpgKey}";
+            bool batch = WarmupPolicy.IsBatchSource(ch.SourceId);
+            long baseMs = WarmupPolicy.PaceOf(ch.SourceId).RefreshIntervalMs;
+
+            // 修法六 4：失效台独立档——未到复测时刻的判死台不进主循环（到期的台走下方同一探测路径）
+            if (_deadUntilMs.TryGetValue(key, out var deadDue))
+            {
+                if (now < deadDue) continue;
+            }
+            else if (!_nextProbeAtMs.TryGetValue(key, out var due))
+            {
+                // 修法一 1：首见登记 = now + 保鲜期 × 档位 × 时段 × jitter（EpgKey 稳定哈希，同表分布一致）
+                _nextProbeAtMs[key] = now + _pace.RegisterIntervalMs(ch.EpgKey, ch.SourceId, baseMs, localHour, batch);
+                continue; // 首见只登记，不立即探
+            }
+            else if (now < due) continue;
+
+            // 修法二 2：票账联动——票据源退避剩余>0 顺延不发起（退避期弹回不入源账不记失败）
+            if (_resolver.TicketRemainingCooldownMs(ch) > 0)
+            {
+                _nextProbeAtMs[key] = now + 60_000;
+                continue;
+            }
+            // 修法一 1a：全局让路闸原子占位（稳态循环与屏内先探共享同一闸；MinGap 原值不翻倍）
+            if (!_pace.TryAcquireGate(ch.SourceId, now, WarmupPolicy.PaceOf(ch.SourceId).MinGapMs))
+                continue; // 未占到闸：登记不推进，下轮再看（不消耗到期时间）
+            _nextProbeAtMs[key] = now + _pace.RegisterIntervalMs(ch.EpgKey, ch.SourceId, baseMs, localHour, batch);
+            try
+            {
+                // v23 修法 B：探测结论分级——拉黑账只认服务器明确拒绝（403/429），
+                // 网络级失败不再回灌整源冻结（切后台网络冷启动不再把好源拉黑十分钟）
+                var verdict = await ProbeChannelVerdictAsync(ch).ConfigureAwait(false);
+                bool ok = verdict == StreamResolver.ProbeVerdict.Reachable;
+                _precheck.ReportSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                // v22 第 4 项：退避打点——入账/恢复真机可验收（退避期内不发起）
+                if (verdict == StreamResolver.ProbeVerdict.Rejected)
+                {
+                    _backoff.RecordLimited(ch.SourceId, System.Environment.TickCount64); // 403/429 明确拒绝：照旧入退避账
+                    _pace.Record(ch.EpgKey, ch.SourceId, false); // 修法六 1b：明确拒绝计负
+                    CrashNet.Record($"[退避] {ch.SourceId} 入账：冻结 {TimeSpan.FromMilliseconds(_backoff.RemainingMs(ch.SourceId, System.Environment.TickCount64)).TotalMinutes:F0} 分钟（服务器明确拒绝 403/429）");
+                    // 修法六 4：连续 3 轮明确拒绝 → 判死进独立档（复测 30 分钟；再连 3 轮仍死拉长 2 小时）
+                    int streak = _deadStreak.TryGetValue(key, out var s) ? s + 1 : 1;
+                    _deadStreak[key] = streak;
+                    if (streak >= 6)
+                    {
+                        _deadUntilMs[key] = System.Environment.TickCount64 + 7_200_000L; // 连续 6 轮仍死：拉长 2 小时（幂等覆盖）
+                    }
+                    else if (streak >= 3 && !_deadUntilMs.ContainsKey(key))
+                    {
+                        _deadUntilMs[key] = System.Environment.TickCount64 + 1_800_000L;
+                        CrashNet.Record($"[预热] {ch.Name} 连续 {streak} 轮明确拒绝：移出主循环，独立档 30 分钟后复测");
+                    }
+                }
+                else if (!ok)
+                {
+                    _pace.Record(ch.EpgKey, ch.SourceId, true); // 修法六 1b：网络级失败不计负（账本中性）
+                    CrashNet.Record($"[退避] {ch.SourceId} 网络级失败：不入拉黑账（v23 修法 B），下轮再探");
+                }
+                else
+                {
+                    _pace.Record(ch.EpgKey, ch.SourceId, true); // 修法六 1b：探通计正
+                    if (_backoff.IsFrozen(ch.SourceId, System.Environment.TickCount64))
+                    {
+                        _backoff.Recover(ch.SourceId);
+                        CrashNet.Record($"[退避] {ch.SourceId} 探测 200：全额恢复，解除冻结");
+                    }
+                    // 修法六 4：任一轮恢复立即回归正常档
+                    if (_deadUntilMs.Remove(key))
+                    {
+                        _deadStreak.Remove(key);
+                        CrashNet.Record($"[预热] {ch.Name} 失效台复测恢复（200）：立即回归正常档");
+                    }
+                }
+            }
+            catch { _precheck.ReportSourceResult(ch, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); }
         }
     }
 
@@ -1424,6 +1678,12 @@ public class MainActivity : Activity
     private void RefreshSettingsRows()
     {
         if (_settingsPanel is null) return;
+        // v23 第 2 条：重建前记录焦点行索引（行数固定、索引稳定），重建后焦点回原行；
+        // 崩溃日志行例外=ShowCrashLog 全屏弹窗接管焦点（落「关闭」），弹窗不经此重建，自然不算跑偏。
+        int focusedIdx = -1;
+        var focused = CurrentFocus;
+        for (int i = 0; i < _settingsPanel.ChildCount; i++)
+            if (_settingsPanel.GetChildAt(i) == focused) { focusedIdx = i; break; }
         _settingsPanel.RemoveAllViews();
 
         void AddLabel(string text)
@@ -1434,7 +1694,7 @@ public class MainActivity : Activity
             tv.SetPadding(24, 18, 24, 6);
             _settingsPanel!.AddView(tv);
         }
-        void AddRow(string text, Action onClick, string color)
+        void AddRow(string text, Action onClick, string color, Action? onLongClick = null)
         {
             var tv = new TextView(this) { Text = text, TextSize = 19 };
             tv.SetTextColor(Color.ParseColor(color));
@@ -1448,11 +1708,13 @@ public class MainActivity : Activity
                 else if (tv.Background == focusDrawable) tv.Background = null;
             };
             tv.Click += (_, _) => onClick();
+            if (onLongClick != null) tv.LongClick += (_, _) => onLongClick();
             _settingsPanel!.AddView(tv);
         }
 
         AddLabel("── 软件设置 ──");
-        AddRow($"画质 · {LiveQuality.DisplayName(DeviceProfile.AiEnhanceTierSetting)}（确认键切换）",
+        // B 包第 4 项：画质行一行紧凑式（档位与操作提示合一，不再双行展开）
+        AddRow($"画质增强 · {LiveQuality.DisplayName(DeviceProfile.AiEnhanceTierSetting)} · 确认切换",
             CycleAiTier, "#F7F5EE");
         AddRow($"预检握手：{(_precheckEnabled ? "开" : "关")}（确认键切换）",
             TogglePrecheck, "#F7F5EE");
@@ -1460,10 +1722,20 @@ public class MainActivity : Activity
             ToggleRush, "#F7F5EE");
         AddRow($"并行抢首包：{(_firstPacketEnabled ? "开" : "关")}（确认键切换）", // v1.0.16 方案 D
             ToggleFirstPacket, "#F7F5EE");
+        AddRow($"后台预热：{(_warmupEnabled ? "开" : "关")}（确认键切换）",
+            ToggleWarmup, "#F7F5EE");
+        AddRow($"开机自启：{(_autostartEnabled ? "开" : "关")}（确认切换 · 长按跳系统自启管理）",
+            ToggleAutostart, "#F7F5EE", OpenAutostartSystemPage);
         AddRow("崩溃日志（点按查看）", ShowCrashLog, "#C9D6E2");
-        AddLabel("── 电视系统 ──");
-        AddRow("打开电视系统设置", OpenSystemSettings, "#8FB4D4");
+        // B 包第 2 项：砍掉「电视系统」整段入口——系统设置由遥控器设置键长按直达，软件内不再列
         AddLabel("返回键收起 · 长按设置键直达系统设置");
+
+        // v23 第 2 条：重建完成，焦点回原行（确认操作后光标停在当前行，不再让给别的行）
+        if (focusedIdx >= 0 && focusedIdx < _settingsPanel.ChildCount)
+        {
+            var row = _settingsPanel.GetChildAt(focusedIdx);
+            if (row is not null && row.Focusable) row.RequestFocus();
+        }
     }
 
     /// <summary>画质档循环（自动→低→高→自动，v1.0.10 全中文）：档位持久化，生效走双实例无感切换（绝不重起当前台）。</summary>
@@ -1515,33 +1787,148 @@ public class MainActivity : Activity
         return reader.ReadToEnd();
     }
 
+    /// <summary>A⑥：后台预热开关（关=保活服务退出+调度空转，功能不残废）。</summary>
+    private void ToggleWarmup()
+    {
+        _warmupEnabled = !_warmupEnabled;
+        _prefs?.Edit()?.PutBoolean("warmup_enabled", _warmupEnabled)?.Apply();
+        try
+        {
+            // O+ 前台服务，26 以下走 StartService 兼容分支（服务自身按 API 分档静默保活）
+            if (_warmupEnabled)
+            {
+                var svc = new Intent(this, typeof(WarmupService));
+                if (OperatingSystem.IsAndroidVersionAtLeast(26)) StartForegroundService(svc);
+                else StartService(svc);
+            }
+        }
+        catch (Exception ex) { CrashNet.Record($"[Warmup] 开关切失败（不影响预热调度）：{ex.Message}"); }
+        RefreshSettingsRows();
+        FlashInfo(_warmupEnabled ? "后台预热：开" : "后台预热：关");
+    }
+
+    /// <summary>v22 第 7 项：跳系统自启管理——三级降级：应用详情页 → 应用列表 → 文字指引，绝不硬撑。</summary>
+    private void OpenAutostartSystemPage()
+    {
+        try
+        {
+            var intent = new Intent(global::Android.Provider.Settings.ActionApplicationDetailsSettings);
+            intent.SetData(global::Android.Net.Uri.Parse("package:" + PackageName));
+            StartActivity(intent);
+            FlashInfo("正在打开系统应用页：请允许「自启动/后台运行」权限");
+            CrashNet.Record("[自启] 跳系统应用详情页成功");
+            return;
+        }
+        catch (Exception ex1) { CrashNet.Record($"[自启] 应用详情页跳转失败：{ex1.Message}"); }
+        try
+        {
+            StartActivity(new Intent(global::Android.Provider.Settings.ActionApplicationSettings));
+            FlashInfo("正在打开系统应用列表：找到 TaoLive，允许「自启动/后台运行」");
+            CrashNet.Record("[自启] 跳系统应用列表成功（详情页不可用降级）");
+            return;
+        }
+        catch (Exception ex2) { CrashNet.Record($"[自启] 应用列表跳转失败：{ex2.Message}"); }
+        FlashInfo("系统未开放跳转：请到 电视设置 → 应用管理 → TaoLive，允许自启动");
+        CrashNet.Record("[自启] 系统页均不可达，退文字指引");
+    }
+
+    /// <summary>A⑥：开机自启开关（Android 3.1+ 首次自启须先开过一次 App；TCL ROM 以实测为准）。</summary>
+    private void ToggleAutostart()
+    {
+        _autostartEnabled = !_autostartEnabled;
+        _prefs?.Edit()?.PutBoolean("autostart_enabled", _autostartEnabled)?.Apply();
+        RefreshSettingsRows();
+        FlashInfo(_autostartEnabled ? "开机自启：开（首次生效需先开过一次 App）" : "开机自启：关");
+    }
+
     private void ShowCrashLog()
     {
         try
         {
             var path = new Java.IO.File(FilesDir, "taolive_crash.log");
             if (!path.Exists()) { FlashInfo("暂无崩溃日志"); return; } // 空态提示（v1.0.9 第⑩项）
-            // fix53（审计 A5 低危收口）：不再整读文件——弹窗只展示尾部 4000 字符，按尾偏移最多读 64KB，主线程 IO 开销有界
+            // fix53（审计 A5 低危收口）：不再整读文件——全屏面板同样按尾偏移最多读 64KB，主线程 IO 开销有界
             var text = ReadLogTail(path.AbsolutePath, 64 * 1024);
-            if (text.Length > 4000) text = "…\n" + text[^4000..];
-            var builder = new AlertDialog.Builder(this); // 构建器逐条调用：绑定返回可空不续点
-            builder.SetTitle("崩溃日志");
-            builder.SetMessage(text);
-            builder.SetPositiveButton("关闭", (s, a) => { });
-            // ⑩一键清理（v1.0.9 用户拍板）：确认键清空，清完空态提示
-            builder.SetNeutralButton("一键清理", (s, a) =>
+            if (text.Length > 16000) text = "…\n" + text[^16000..];
+            // B 包第 9 项：崩溃日志窗改全屏水墨面板——深底大字可滚动，确认键一键清理、返回键关闭
+            // v22 第 10 项改版（老板 20:37 拍板，整段参照第 11 项退出弹窗做法）：全屏自管——窗底透明+半透明水墨面板，
+            // 不再露 ROM 钢蓝灰；「一键清理」=朱砂（危险项，同退出钮口径）、「关闭」=纸白；常驻=水墨深底+次色字；
+            // 字体统一 TextPrimary/TextSecondary+可读性阴影；默认焦点落「关闭」（防误清日志）；返回键=关闭。
+            var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            int pad = (int)(24 * Resources!.DisplayMetrics!.Density);
+            box.SetPadding(pad, pad, pad, pad);
+            box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // 与列表页面板同源同号
+            var title = new TextView(this) { Text = "崩溃日志（全屏）", TextSize = 22 };
+            title.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(title);
+            box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = pad });
+            var scroll = new ScrollView(this) { };
+            var body = new TextView(this) { Text = text, TextSize = 15 };
+            body.SetTextIsSelectable(false);
+            body.Focusable = false; // 日志正文不抢焦点，焦点只在两键间转
+            body.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(body);
+            scroll.AddView(body);
+            box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f)); // 权重铺满
+            var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            var clean = new TextView(this) { Text = "一键清理", Gravity = GravityFlags.Center }; // TextView 自绘，去 ROM 系统着色
+            clean.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
+            clean.Click += (_, _) =>
             {
-                try
-                {
-                    System.IO.File.Delete(path.AbsolutePath);
-                    FlashInfo("崩溃日志已清空");
-                }
+                try { System.IO.File.Delete(path.AbsolutePath); FlashInfo("崩溃日志已清空"); }
                 catch { FlashInfo("清理失败，请重试"); }
-            });
-            builder.Show();
+                _crashDialog?.Dismiss();
+            };
+            var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
+            close.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
+            close.Click += (_, _) => _crashDialog?.Dismiss();
+            clean.Id = View.GenerateViewId();
+            close.Id = View.GenerateViewId();
+            clean.NextFocusRightId = close.Id; // 左右键显式互指，不靠焦点搜索
+            close.NextFocusLeftId = clean.Id;
+            var idleBg = new ColorDrawable(Color.Argb(96, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB)); // 常驻=水墨深底
+            void StyleDialogButton(TextView b, GradientDrawable focusDrawable)
+            {
+                b.Focusable = true;
+                b.Clickable = true;
+                b.Background = idleBg;
+                b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+                InkTranslucency.ApplyReadabilityShadow(b);
+                b.FocusChange += (_, ev) =>
+                {
+                    if (ev.HasFocus) { b.Background = focusDrawable; b.SetTextColor(InkTranslucency.TextPrimary(this)); }
+                    else if (b.Background == focusDrawable) { b.Background = idleBg; b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
+                };
+            }
+            StyleDialogButton(clean, InkTranslucency.AccentFocusDrawable()); // 一键清理=朱砂（危险项）
+            StyleDialogButton(close, InkTranslucency.FocusDrawable()); // 关闭=纸白
+            // 1.0.12 UI①：按钮行固定底栏——固定行高常驻占位，不论日志多少行按钮始终在屏幕底部固定位置
+            int btnH = (int)(52 * Resources.DisplayMetrics.Density);
+            btns.AddView(clean, new LinearLayout.LayoutParams(0, btnH, 1f));
+            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
+            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
+            // 绑定契约 SetView/SetCancelable/Create 为可空返回：改语句式构造，窗口可空即放弃弹窗（实际不发生）
+            var builder = new AlertDialog.Builder(this);
+            builder.SetView(box);
+            builder.SetCancelable(true); // 返回键=关闭
+            var dlg = builder.Create();
+            if (dlg is null) return;
+            _crashDialog = dlg;
+            // 1.0.12 UI①·窗口次序修正：全屏自管配置移到 Show 之前——先 Show 后 SetLayout 时内容按
+            // wrap_content 计量，scroll 权重在 wrap 父布局里失效（面板缩半屏、按钮随日志内容浮动的老病灶）
+            var win = dlg.Window!;
+            win.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+            win.SetLayout(-1, -1);
+            win.SetFlags(WindowManagerFlags.LayoutInScreen, WindowManagerFlags.LayoutInScreen);
+            box.LayoutParameters = new FrameLayout.LayoutParams(-1, -1); // box 显式铺满，不留 ROM 内边距
+            dlg.Show();
+            close.RequestFocus(); // 默认焦点落「关闭」——防误清日志，与退出弹窗默认落「取消」同理
+            dlg.SetOnDismissListener(new DismissActionPeer(() => _crashDialog = null));
         }
         catch { FlashInfo("日志读取失败"); }
     }
+
+    private AlertDialog? _crashDialog; // B 包第 9 项：全屏崩溃日志窗
 
     private void ShowInfoBar(string text)
     {
@@ -1551,7 +1938,78 @@ public class MainActivity : Activity
         _ui.PostDelayed(_hideInfo, 3000);
     }
 
-    private void FlashInfo(string text) => ShowInfoBar($"{(_current?.Number.ToString() ?? "")}  {text}".Trim());
+    private void FlashInfo(string raw)
+    {
+        // A 类第2项·信息行单写入口：所有信息行走同一道闸——同文重刷吞、低优先级让位高优先级
+        var text = $"{(_current?.Number.ToString() ?? "")}  {raw}".Trim();
+        if (_infoHub.Submit(text, InfoLineHub.PriorityOf(text), System.Environment.TickCount64) is null) return;
+        ShowInfoBar(text);
+    }
+
+    /// <summary>A⑩：实际生效档（自动档临时调节含在内；手动档=天花板）。</summary>
+    private AiLiveTier EffectiveTier => _governor?.Effective ?? _aiTier;
+
+    /// <summary>
+    /// v22 第 9 项：画面信息短格式两行——「帧率:x fps&gt;y fps  分辨率:1080P&gt;2K」+「画质:高:生效」。
+    /// 一律真实画面真实数据：测量缺失显「检测中」、到限显「--」；行高由装配时固定，跳变只换文字不换高度。
+    /// </summary>
+    private void RefreshStatsLine()
+    {
+        if (_statsInfo is null || _statsTier is null) return;
+        var (ofps, cfps, ow, oh, cw, chh) = _host.SnapshotStats();
+        bool exhausted = _host.StatsExhausted;
+        _statsInfo.Text = $"{FrameStatsLine.FpsSegment(ofps, cfps, exhausted)}  {FrameStatsLine.ResSegment(ow, oh, cw, chh, exhausted)}";
+        string tier = LiveQuality.TierName(EffectiveTier);
+        bool effective = EffectiveTier == _aiTier; // 实际档=基准档即设置档生效；A⑩临时降档如实显「未生效」
+        _statsTier.Text = FrameStatsLine.TierSegment(tier, effective);
+    }
+
+    /// <summary>A⑩/A⑤：自动档变化后统一动作——重挂滤镜、调档打点、信息行（档位变化优先级，走单写入口）。</summary>
+    private void OnAutoTierChanged(AiLiveTier before, bool stalled)
+    {
+        var now = EffectiveTier;
+        CrashNet.Record($"[画质] 自动调档：{LiveQuality.TierName(before)}→{LiveQuality.TierName(now)}（{(stalled ? "播放停滞" : "掉帧超阈")}，会话临时档，平稳 10 分钟回位）");
+        _host.ApplyQualityTier(LiveQuality.OptionsFor(now));
+        FlashInfo(now < before
+            ? $"画质已自动调为「{LiveQuality.TierName(now)}」（流畅优先，平稳后自动回位）"
+            : $"画质已自动回位「{LiveQuality.TierName(now)}」");
+    }
+
+    /// <summary>A 类第13项·播放选源：健康账已验证优先（零新增请求）；无验证时多来源竞速（4 秒预算，退避期跳过，胜者回写）。</summary>
+    private async Task<Channel> PickSourceAsync(Channel ch)
+    {
+        var alive = _precheck.BestAliveSource(ch, _catalog.All.ToList());
+        if (alive != null) return alive;
+        var variants = _catalog.All.Where(c => !string.IsNullOrEmpty(c.SourceId))
+            .GroupBy(c => c.SourceId).Select(g => g.First())
+            .Where(c => c.EpgKey == ch.EpgKey || ReferenceEquals(c, ch)).ToList();
+        if (variants.Count <= 1) return ch;
+        var candidates = variants.Select(c => (EndpointRacer.Candidate)new EndpointRacer.Candidate(
+            c.SourceId!, async () => await ProbeChannelAsync(c) ? EndpointRacer.Outcome.Alive : EndpointRacer.Outcome.Dead)).ToList();
+        var winner = await EndpointRacer.RaceAsync(candidates, _backoff, System.Environment.TickCount64,
+            onLimited: id =>
+            {
+                _backoff.RecordLimited(id, System.Environment.TickCount64);
+                CrashNet.Record($"[退避] {id} 入账：竞速 403，冻结 {TimeSpan.FromMilliseconds(_backoff.RemainingMs(id, System.Environment.TickCount64)).TotalMinutes:F0} 分钟"); // v22 第 4 项
+                return Task.CompletedTask;
+            });
+        var picked = variants.FirstOrDefault(v => v.SourceId == winner);
+        var source = picked ?? ch;
+        CrashNet.Record($"[竞速] {ch.Name} 无已验证来源，多端点竞速{(winner is null ? "全挂回本台" : $"胜出：{source.SourceId}")}（A⑬）");
+        if (winner != null)
+        {
+            _precheck.ReportSourceResult(source, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // 竞速结果回写健康账
+            if (_backoff.IsFrozen(source.SourceId!, System.Environment.TickCount64))
+            {
+                _backoff.Recover(source.SourceId!);
+                CrashNet.Record($"[退避] {source.SourceId} 竞速胜出 200：全额恢复，解除冻结"); // v22 第 4 项
+            }
+        }
+        return source;
+    }
+
+    /// <summary>画质滤镜键集合（A⑤起播打点摘选用；v22 定项：参数名修正后同步 sharpen-sigma/brightness）。</summary>
+    private static readonly string[] QualityFilterKeysForLog = { "video-filter", "sharpen-sigma", "contrast", "saturation", "brightness" };
 
     private Action _hideInfo => () => _infoBar.Visibility = ViewStates.Invisible;
 
@@ -1642,64 +2100,79 @@ public class MainActivity : Activity
         if (_listOpen) CloseChannelList(); else OpenChannelList();
     }
 
-    private static string HeaderText(string title, bool expanded) =>
-        $"{(expanded ? "▾" : "▸")} {title}";
-
-    /// <summary>⑪全部可收放分组键：收藏组（有收藏时）+ 非空分类 + 无信号组（有判死台时）。</summary>
-    private List<string> ListGroupKeys()
-    {
-        var keys = new List<string>();
-        if (_favorites.TopGroup(_catalog.All.ToList()).Count > 0) keys.Add("★ 收藏");
-        keys.AddRange(_catalog.Groups.Where(g => g.Channels.Count > 0).Select(g => g.Title));
-        if (_catalog.All.Any(c => _precheck.Of(c) == ChannelHealth.Dead)) keys.Add("✕ 无信号");
-        return keys;
-    }
-
-    /// <summary>⑪一键切换：全开→全部收起；有任何折叠→全部展开（含无信号组），重建列表。</summary>
-    private void ToggleAllGroups()
-    {
-        var keys = ListGroupKeys();
-        int collapsed = keys.Count(k => !_expanded.GetValueOrDefault(k, true));
-        bool expandAll = collapsed > 0; // 全收/部分折叠都一键展开
-        foreach (var k in keys) _expanded[k] = expandAll;
-        _pendingFocusAnchor = null;
-        OpenChannelList();
-    }
+    // v23 第 1 条：折叠总开关退场——ListGroupKeys/ToggleAllGroups 一并清（列表默认铺开，分组行本就纯展示）。
 
     private void OpenChannelList()
     {
+        bool freshOpen = !_listOpen; // 1.0.12 UI②：仅「关→开」的呼出才重定默认标签（抽屉内切标签/点标签不覆盖用户选择）
         _listOpen = true;
         _listPanel.RemoveAllViews();
         _listPanel.Visibility = ViewStates.Visible; // 呼出列表：盖板必须显式转可见（v1.0.3 漏了这步，真机按菜单无反应）
+        SuppressEpgForDrawer(); // v22 第 13 项：抽屉打开先收节目单条（隐藏+停计时），叠字从根上清掉
+        // 1.0.12 UI②·默认定位当前台：已收藏→收藏；未收藏→按分类（央视/卫视/地方）；无归属→全部
+        if (freshOpen)
+            _drawerTab = DrawerSupport.DefaultTab(_current, n => _favorites.IsFavorite(n));
 
-        // v1.0.12（老板拍板）：动态信息与标题各不干扰——固定三行独占、行高锁死、提前占位
-        //（画质最上、依次分辨率、帧率），「检测中」/「--」占位，只换字不动结构
-        TextView MakeStatLine(string placeholder)
+        // B 包第 12 项：抽屉头部——标题 + 台数 + 五标签行（当前标签朱砂底高亮，确认/左右键切换）
+        var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        header.SetPadding(DrawerPad, 40, DrawerPad, 8);
+        var title = new TextView(this) { Text = "TaoLive 频道", TextSize = 24 };
+        title.SetTextColor(InkTranslucency.TextPrimary(this));
+        InkTranslucency.ApplyReadabilityShadow(title);
+        header.AddView(title);
+        var count = new TextView(this) { Text = $"  共 {_catalog.All.Count()} 路", TextSize = 15 };
+        count.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(count);
+        header.AddView(count);
+        _listPanel.AddView(header);
+
+        // v22 第 9 项（老板 20:36 加严拍板）：画面信息块提前占位第一块——帧率+分辨率一行、画质一行，
+        // 两行固定行高一次量足：「检测中」→实测值、数值跳变只换文字不换高度，不因数据变化挤高度
+        int lineH = (int)(30 * Resources!.DisplayMetrics!.Density);
+        var statsBlock = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        _statsInfo = new TextView(this) { Text = "画面信息检测中", TextSize = 17, Gravity = GravityFlags.CenterVertical };
+        _statsInfo.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(_statsInfo);
+        _statsInfo.SetPadding(DrawerPad, 4, DrawerPad, 4);
+        _statsTier = new TextView(this) { Text = "画质:检测中", TextSize = 17, Gravity = GravityFlags.CenterVertical };
+        _statsTier.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(_statsTier);
+        _statsTier.SetPadding(DrawerPad, 4, DrawerPad, 4);
+        statsBlock.AddView(_statsInfo, new LinearLayout.LayoutParams(-1, lineH));
+        statsBlock.AddView(_statsTier, new LinearLayout.LayoutParams(-1, lineH));
+        _listPanel.AddView(statsBlock);
+        RefreshStatsLine(); // 立即按实测值填充（2 秒节拍在跑，不等下一拍）
+
+        // 五分类标签行（第二块，v22 第 9 项换位后随画面信息块之后）；
+        // 1.0.12 UI③：行边距统一走 DrawerPad 基准，与页头/列表项同一水平对齐线；
+        // 首标签 LeftMargin=0（其余 8），标签行最左与页头文字严格对齐
+        var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        tabRow.SetPadding(DrawerPad, 24, DrawerPad, 12);
+        _tabViews = new List<TextView>();
+        int tabIndex = 0;
+        foreach (DrawerSupport.Tab t in Enum.GetValues(typeof(DrawerSupport.Tab)))
         {
-            var tv = new TextView(this)
-            {
-                Text = placeholder,
-                TextSize = 16,
-            };
-            tv.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            var tv = new TextView(this) { Text = DrawerSupport.Label(t), TextSize = 16 };
+            tv.SetPadding(12, 10, 12, 10);
             InkTranslucency.ApplyReadabilityShadow(tv);
-            tv.SetSingleLine(true);
-            tv.SetPadding(48, 8, 48, 8);
-            int locked = (int)(36 * Resources!.DisplayMetrics!.Density); // 行高锁死：占位与实测同高，刷新不跳
-            tv.SetMinimumHeight(locked);
-            tv.SetHeight(locked);
-            return tv;
+            var lpTab = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = tabIndex == 0 ? 0 : 8 };
+            tabRow.AddView(tv, lpTab);
+            _tabViews.Add(tv);
+            tv.Click += (_, _) => { _drawerTab = t; OpenChannelList(); };
+            tabIndex++;
         }
-        _qualityLine = MakeStatLine("画质 检测中");
-        _resLine = MakeStatLine("分辨率 检测中");
-        _fpsLine = MakeStatLine("帧率 检测中");
-        _listPanel.AddView(_qualityLine);
-        _listPanel.AddView(_resLine);
-        _listPanel.AddView(_fpsLine);
+        StyleTabs();
+        _listPanel.AddView(tabRow);
+
+        // v23 第 1 条：折叠总开关行整行退场——标签行下不再有「全部收起/全部展开」行，列表直接铺频道。
 
         _listView = new ListView(this) { Divider = null };
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _listView.Selector = InkTranslucency.FocusDrawable();
+        _listView.ScrollStateChanged += (_, e) =>
+        {
+            if (e.ScrollState == ScrollState.Idle) TriggerScreenPrecheck(); // v25 修法三：滚动停稳先探屏内
+        };
         var rows = BuildRows();
 
         _adapter = new ChannelAdapter(this, rows, _current, n => _favorites.IsFavorite(n), c => _precheck.Of(c));
@@ -1707,11 +2180,6 @@ public class MainActivity : Activity
         _listView.ItemClick += (_, e) =>
         {
             var r = rows[e.Position];
-            if (r.FoldToggle)
-            {
-                ToggleAllGroups();
-                return;
-            }
             if (r.Channel != null)
             {
                 // 连不上的台只能看不能切（v1.0.8，用户拍板）：确认键不发起播放
@@ -1723,13 +2191,7 @@ public class MainActivity : Activity
                 Play(r.Channel);
                 return;
             }
-            if (r.HeaderKey != null)
-            {
-                _expanded[r.HeaderKey] = !_expanded.GetValueOrDefault(r.HeaderKey, r.HeaderDefault);
-                // v1.0.9 第⑦项：展开/收起后光标锚定当前分类位置，不跳列表头
-                _pendingFocusAnchor = r.HeaderKey;
-                OpenChannelList(); // 展开收起：重建列表（焦点按锚点归位）
-            }
+            // 分组行（收藏/无信号标题）：v4 抽屉口径纯展示，不再折叠；空态行无点击（不可聚焦）
         };
         _listPanel.AddView(_listView, new LinearLayout.LayoutParams(-1, -1));
 
@@ -1750,6 +2212,65 @@ public class MainActivity : Activity
         if (curIdx < 0) curIdx = rows.FindIndex(r => r.Channel?.Number == focusNumber);
         if (curIdx >= 0) _listView.SetSelection(curIdx);
         _listView.RequestFocus();
+        TriggerScreenPrecheck(); // v25 修法三：列表呼出即先探屏内（所见先探，未知台不再干等）
+    }
+
+    /// <summary>
+    /// v25 修法三·屏内先探（UI 摸到哪先探到哪，列表呼出/滚动停稳即触发）：
+    /// - 从第一个可见行向下取「预检状态 Unknown」的前 8 台作为立刻批；同台一次只跑一个探测任务（3b 去重）；
+    /// - ≥3 秒节流（3b）；跟随预检开关（3a：关=循环与先探同停）；换台/连接中跳过本轮（2a 让路前台）；
+    /// - 与稳态循环共享同一让路闸（1a），票账联动同口径（退避期弹回不发起、不入账不记失败）；
+    /// - 记账口径与稳态循环一致：200 计正、明确拒绝计负、网络级失败不计负不入账。
+    /// </summary>
+    private void TriggerScreenPrecheck()
+    {
+        if (!_precheckEnabled) return; // 3a：跟随预检开关
+        if (_foregroundBusy) return;   // 2a：换台/连接中跳过本轮（PauseGate 口径一致）
+        if (_adapter is null || _listView is null) return;
+        long now = System.Environment.TickCount64;
+        if (now - _lastScreenPrecheckMs < 3_000) return; // 3b：≥3 秒节流
+        _lastScreenPrecheckMs = now;
+        int slots = 8;
+        for (int pos = Math.Max(0, _listView.FirstVisiblePosition - 1); pos < _adapter.Count && slots > 0; pos++)
+        {
+            var ch = _adapter[pos].Channel;
+            if (ch is null) continue;
+            if (_precheck.Of(ch) != ChannelHealth.Unknown) continue;
+            var key = $"{ch.SourceId}:{ch.EpgKey}";
+            lock (_probeInFlightLock)
+            {
+                if (!_probeInFlight.Add(key)) continue; // 同台一次只跑一个探测任务
+            }
+            slots--;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var pace = WarmupPolicy.PaceOf(ch.SourceId);
+                    if (!_pace.TryAcquireGate(ch.SourceId, System.Environment.TickCount64, pace.MinGapMs)) return; // 1a：共享让路闸
+                    if (_resolver.TicketRemainingCooldownMs(ch) > 0) return; // 2：退避期弹回不发起不入账
+                    var verdict = await ProbeChannelVerdictAsync(ch);
+                    if (verdict == StreamResolver.ProbeVerdict.Reachable)
+                    {
+                        _pace.Record(ch.EpgKey, ch.SourceId, true); // 修法六 1b：计正
+                        _precheck.ReportSourceResult(ch, true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                        _backoff.Recover(ch.SourceId); // 探通 200：若源被冻结全额恢复（同一本账）
+                    }
+                    else if (verdict == StreamResolver.ProbeVerdict.Rejected)
+                    {
+                        _pace.Record(ch.EpgKey, ch.SourceId, false); // 明确拒绝计负
+                        _backoff.RecordLimited(ch.SourceId, System.Environment.TickCount64);
+                        _precheck.ReportSourceResult(ch, false, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    }
+                    // Unreachable（网络级失败）：不计负不入账不记状态（统一口径，下轮再探）
+                }
+                catch { /* 探测失败静默：下轮再探 */ }
+                finally
+                {
+                    lock (_probeInFlightLock) { _probeInFlight.Remove(key); }
+                }
+            });
+        }
     }
 
     /// <summary>当前焦点行锚点键（⑪全局焦点锚定）：分类行取分类键，频道行取 C:频道号。</summary>
@@ -1763,73 +2284,59 @@ public class MainActivity : Activity
         return r.Channel is null ? null : "C:" + r.Channel.Number;
     }
 
-    /// <summary>⑥左右键分类间跳转（v1.0.9 用户 10:04 拍板）：从当前行沿方向找最近分类头，焦点落到分类头上。</summary>
-    private void JumpCategory(int dir)
-    {
-        if (_listView is null || _adapter is null) return;
-        int pos = _listView.SelectedItemPosition;
-        if (pos < 0) pos = 0;
-        for (int p = pos + dir; p >= 0 && p < _adapter.Count; p += dir)
-        {
-            if (_adapter[p].HeaderKey == null) continue;
-            _listView.SetSelection(p);
-            _listView.RequestFocus();
-            return;
-        }
-    }
-
     private List<Row> BuildRows()
     {
         var rows = new List<Row>();
-        var favs = _favorites.TopGroup(_catalog.All.ToList());
+        // v22 第 8 项：画质增强档位行撤出列表页（设置页保留唯一入口），抽屉只放频道；
+        // v22 第 7/15 项：标签口径修正（CGTN/专项并央视、地方台只留真城市台）+ 空态行装配
+        var favOrder = _favorites.Numbers.ToList();
+        var drawerRows = DrawerSupport.BuildRows(_drawerTab, _catalog.All.ToList(), favOrder,
+            c => _precheck.Of(c));
 
-        // v1.0.9 用户拍板：打开列表所有分类默认全展开，一屏可见；
-        // 手动折叠仍支持（确认键切换），折叠状态由 _expanded 记录。
-        if (!_expandedInit)
+        foreach (var r in drawerRows)
         {
-            if (favs.Count > 0) _expanded["★ 收藏"] = true;
-            foreach (var g in _catalog.Groups)
-                _expanded[g.Title] = true;
-            _expandedInit = true;
-        }
-
-        // v1.0.12（老板拍板）：总开关行挪进列表第一项（所有分类之前）——全开显「全部收起」、
-        // 有任何折叠显「全部展开」；无信号组同样参与收放
-        int collapsedNow = ListGroupKeys().Count(k => !_expanded.GetValueOrDefault(k, true));
-        rows.Add(new Row { FoldToggle = true, Header = ListFoldController.ToggleLabel(collapsedNow) });
-
-        if (favs.Count > 0)
-        {
-            bool favOpen = _expanded.GetValueOrDefault("★ 收藏", true);
-            rows.Add(new Row { Header = HeaderText(ListHeaderStats.Format("★ 收藏", favs.Count, favs.Count, true), favOpen), HeaderKey = "★ 收藏", HeaderDefault = true });
-            if (favOpen) rows.AddRange(favs.Select(c => new Row { Channel = c }));
-        }
-        foreach (var g in _catalog.Groups.Where(g => g.Channels.Count > 0))
-        {
-            bool open = _expanded.GetValueOrDefault(g.Title, false);
-            // ⑧分类统计加可连数（v1.0.9）：口径与⑬统一——可连=至少一个来源可达的频道数；
-            // 预检未出结果先显总数，后台静默刷新不断焦点（沿用 StateChanged 实时重建）。
-            int total = g.Channels.Count;
-            int connectable = g.Channels.Count(c => _precheck.Of(c) != ChannelHealth.Dead);
-            bool known = g.Channels.Any(c => _precheck.Of(c) != ChannelHealth.Unknown);
-            rows.Add(new Row
+            switch (r)
             {
-                Header = HeaderText(ListHeaderStats.Format(g.Title, total, connectable, known), open),
-                HeaderKey = g.Title,
-                HeaderDefault = false,
-            });
-            if (open) rows.AddRange(g.Channels.Select(c => new Row { Channel = c }));
-        }
-
-        // 「无信号」分组（v1.0.8 第11项定名）：置底、默认展开（v1.0.9 用户拍板全展开）、只能看不能切；恢复可用自动移回原分类
-        var dead = _catalog.All.Where(c => _precheck.Of(c) == ChannelHealth.Dead).ToList();
-        if (dead.Count > 0)
-        {
-            bool dOpen = _expanded.GetValueOrDefault("✕ 无信号", true);
-            rows.Add(new Row { Header = HeaderText(ListHeaderStats.Format("无信号", dead.Count, 0, true), dOpen), HeaderKey = "✕ 无信号", HeaderDefault = true });
-            if (dOpen) rows.AddRange(dead.Select(c => new Row { Channel = c, DeadOnly = true }));
+                case DrawerSupport.DrawerRow.Note n:
+                    rows.Add(new Row { Header = n.Text, HeaderKey = "__note__", HeaderDefault = true });
+                    break;
+                case DrawerSupport.DrawerRow.Group g:
+                    rows.Add(new Row { Header = g.Label, HeaderKey = "__group__:" + g.Label, HeaderDefault = true });
+                    break;
+                case DrawerSupport.DrawerRow.Channel chRow:
+                    var ch = chRow.Data;
+                    rows.Add(new Row
+                    {
+                        Channel = ch,
+                        DeadOnly = _precheck.Of(ch) == ChannelHealth.Dead,
+                    });
+                    break;
+            }
         }
         return rows;
+    }
+
+    /// <summary>五标签行着色：当前标签朱砂底浅字，其余极淡底。</summary>
+    private void StyleTabs()
+    {
+        if (_tabViews is null) return;
+        var tabs = (DrawerSupport.Tab[])Enum.GetValues(typeof(DrawerSupport.Tab));
+        for (int i = 0; i < _tabViews.Count && i < tabs.Length; i++)
+        {
+            bool on = tabs[i] == _drawerTab;
+            _tabViews[i].SetBackgroundColor(on == true
+                ? Color.ParseColor("#8A3B34")
+                : Color.Transparent);
+            _tabViews[i].SetTextColor(Color.ParseColor(on ? "#F7F5EE" : InkTranslucency.TextSecondary));
+        }
+    }
+
+    /// <summary>左右键切标签（列表开着时）：左=上一标签，右=下一标签，切换后焦点归位列表。</summary>
+    private void SwitchDrawerTab(bool rightward)
+    {
+        _drawerTab = DrawerSupport.NextTab(_drawerTab, rightward);
+        _pendingFocusAnchor = null;
+        OpenChannelList();
     }
 
     /// <summary>预检状态实时刷新（列表开着时重建行；焦点与滚动位置由 ListView 保留）。</summary>
@@ -1872,9 +2379,13 @@ public class MainActivity : Activity
 
     private void CloseChannelList()
     {
+        // v23 第 3 条：收抽屉即把焦点从列表行上摘下来，落回播放画面（确认切台后光标不再留在已收起的抽屉里）
+        _listPanel.FindFocus()?.ClearFocus();
         _listOpen = false;
         _listPanel.Visibility = ViewStates.Gone;
         _listView = null;
+        // v22 第 13 项：关抽屉后重新亮出节目单条（本台拉到过数据才亮），按 7 秒计时收起
+        if (_epgHasData) ShowEpgBar();
     }
 
     private class Row
@@ -1884,7 +2395,6 @@ public class MainActivity : Activity
         public bool HeaderDefault;     // 未初始化时的默认展开态
         public Channel? Channel;
         public bool DeadOnly;          // 连不上置底组内台（只能看不能切）
-        public bool FoldToggle;        // v1.0.12：总开关行（列表第一项，一键全部收起/展开）
     }
 
     private class ChannelAdapter : BaseAdapter<Row>
@@ -1922,27 +2432,57 @@ public class MainActivity : Activity
                 tv.TextSize = size;
             }
 
-            if (row.FoldToggle)
-            {
-                // v1.0.12：总开关行（列表第一项），样式同原顶部独立行
-                var toggle = new TextView(ctx) { Text = row.Header };
-                toggle.SetTextColor(InkTranslucency.TextPrimary(ctx));
-                toggle.TextSize = 20;
-                InkTranslucency.ApplyReadabilityShadow(toggle);
-                line.AddView(toggle);
-                return line;
-            }
-
             if (row.Header != null)
             {
                 var h = new TextView(ctx) { Text = row.Header };
-                Style(h, "#A9CFEC", 18);
+                bool isNote = row.HeaderKey == "__note__"; // v22 第 15 项：空态行次色平铺，不作分组标题渲染
+                Style(h, isNote ? InkTranslucency.TextSecondary : "#A9CFEC", isNote ? 15 : 18);
                 InkTranslucency.ApplyReadabilityShadow(h);
                 line.AddView(h);
                 return line;
             }
 
             var ch = row.Channel!;
+            var res = ctx.Resources!; // Resources 属性可空且跨行推断丢失：整段落局部变量统一非空使用
+            var density = res.DisplayMetrics!.Density; // DisplayMetrics 绑定可空、系统契约非空（1022/1802 行同口径）
+            // B 包第 12 项：行首真实台标（v4 同源内置资源）；无内置台标→首字占位；无信号行不放台标
+            bool dead = _health(ch) == ChannelHealth.Dead;
+            var logoRes = ChannelLogoMap.ResourceName(ch.Name);
+            if (!dead && logoRes != null)
+            {
+                try
+                {
+                    var resId = res.GetIdentifier(logoRes, "drawable", ctx.PackageName);
+                    if (resId != 0)
+                    {
+                        var img = new ImageView(ctx);
+                        img.SetAdjustViewBounds(true);
+                        img.SetMaxHeight((int)(28 * density));
+                        img.SetImageResource(resId);
+                        var lpLogo = new LinearLayout.LayoutParams(-2, (int)(28 * density))
+                        { RightMargin = 16, Gravity = GravityFlags.CenterVertical };
+                        line.AddView(img, lpLogo);
+                    }
+                }
+                catch { /* 台标渲染失败不碍选台 */ }
+            }
+            if (!dead && logoRes == null)
+            {
+                var ph = new TextView(ctx) { Text = ch.Name.Substring(0, 1) };
+                Style(ph, InkTranslucency.TextSecondary, 14);
+                ph.Gravity = GravityFlags.Center;
+                ph.SetBackgroundColor(Color.ParseColor("#3A4750"));
+                var lpPh = new LinearLayout.LayoutParams((int)(40 * density), (int)(28 * density))
+                { RightMargin = 16, Gravity = GravityFlags.CenterVertical };
+                line.AddView(ph, lpPh);
+            }
+            if (dead)
+            {
+                var spacer = new View(ctx) { };
+                var lpSp = new LinearLayout.LayoutParams(0, 1) { RightMargin = 16 };
+                line.AddView(spacer, lpSp); // 无信号行行首不放台标（v4 定稿状态2）
+            }
+
             var num = new TextView(ctx) { Text = $"{ch.Number,3}", Gravity = GravityFlags.Right };
             Style(num, InkTranslucency.TextSecondary, 20);
             InkTranslucency.ApplyReadabilityShadow(num);
@@ -1997,11 +2537,93 @@ public class MainActivity : Activity
         if (_listOpen) { _pendingFocusAnchor = CurrentFocusKey(); OpenChannelList(); } // 列表开着则刷新（⑪焦点锚原位）
     }
 
+    // ---- 节目单（B 包第 14 项：央视网官方接口，没数据不硬造）----
+
+    /// <summary>换台即刷新：先清空+隐藏旧节目单条（v22 第 1 项：换台先清场，旧条绝不残留），
+    /// 后台拉官方节目单，有数据才亮底部节目区并按 7 秒计时收起（v22 第 12 项）；失败/映射外/无数据静默隐藏。</summary>
+    private void RefreshEpg(Channel ch)
+    {
+        _epgClient ??= new CntvEpgClient();
+        var seq = _playSeq;
+        // v22 第 1 项：换台先清空+隐藏再拉数——旧台节目条在拉取期间绝不亮着
+        _epgHasData = false;
+        CancelEpgAutoHide();
+        if (_epgPanel != null)
+        {
+            _epgNow!.Text = "";
+            _epgNext!.Text = "";
+            _epgPanel.Visibility = ViewStates.Gone;
+        }
+        _epgCts?.Cancel();
+        _epgCts?.Dispose();
+        _epgCts = new System.Threading.CancellationTokenSource();
+        var ui = _ui;
+        _ = Task.Run(() =>
+        {
+            var result = _epgClient.Fetch(ch.EpgKey);
+            ui.Post(() =>
+            {
+                if (seq != _playSeq || _epgPanel is null) return; // 换台后旧节目单作废
+                if (result is null)
+                {
+                    _epgPanel.Visibility = ViewStates.Gone; // 官方无数据不出卡（不硬造）
+                    _epgHasData = false;
+                    return;
+                }
+                var (now, next) = result.Value;
+                _epgNow!.Text = $"{ch.Name} · {DrawerSupport.Clock(now.Start)} – {DrawerSupport.Clock(now.End)}  {now.Title}"
+                    + $"  ·  还剩 {Math.Max(0, (int)Math.Round((now.End - DateTime.Now).TotalMinutes))} 分钟";
+                var upcoming = next.Take(2).ToList();
+                _epgNext!.Text = upcoming.Count > 0
+                    ? string.Join("   ", upcoming.Select(p => $"{DrawerSupport.Clock(p.Start)} {p.Title}"))
+                    : "";
+                _epgNext.Visibility = upcoming.Count > 0 ? ViewStates.Visible : ViewStates.Gone;
+                ShowEpgBar();
+            });
+        });
+    }
+
+    /// <summary>v22 第 12 项：节目单条亮出并按 7 秒无操作计时自动收起（换台刷新即重计）。</summary>
+    private void ShowEpgBar()
+    {
+        if (_epgPanel is null) return;
+        _epgHasData = true;
+        _epgPanel.Visibility = ViewStates.Visible;
+        CancelEpgAutoHide();
+        _epgHidePending = () =>
+        {
+            if (_epgPanel != null && !_listOpen) _epgPanel.Visibility = ViewStates.Gone;
+        };
+        _ui.PostDelayed(_epgHidePending, EpgAutoHideMs);
+    }
+
+    private void CancelEpgAutoHide()
+    {
+        if (_epgHidePending != null)
+        {
+            _ui.RemoveCallbacks(_epgHidePending);
+            _epgHidePending = null;
+        }
+    }
+
+    /// <summary>v22 第 13 项：抽屉打开先收节目单条（隐藏+停计时），节目单条压在抽屉下且不叠字。</summary>
+    private void SuppressEpgForDrawer()
+    {
+        CancelEpgAutoHide();
+        if (_epgPanel != null) _epgPanel.Visibility = ViewStates.Gone;
+    }
+
     // ---- 返回键（v1.0.8 防错）----
 
     private void ExitOrCollapseList()
     {
-        // v1.0.12：弹窗开着的返回键已在 OnKeyDown 弹窗分支接管（=直接退出），到不了这里
+        // 退出确认弹窗开着：返回键=取消，继续播放（v1.0.9）
+        if (_exitDialog != null)
+        {
+            _exitDialog.Dismiss();
+            _exitDialog = null;
+            return;
+        }
         if (_listOpen)
         {
             CloseChannelList();
@@ -2009,6 +2631,7 @@ public class MainActivity : Activity
             // 播放已死则立刻重播，绝不让用户关掉列表后面对黑屏（v1.0.8）
             if (_current != null && !_host.IsAlive)
             {
+                _frameEverShown = false;
                 Play(_current);
             }
             return;
@@ -2022,6 +2645,10 @@ public class MainActivity : Activity
     /// 退出确认弹窗（v1.0.9 用户拍板）：水墨深色面板，确认键=退出、返回键=取消继续播放。
     /// 确认后：先停播放（音频、取流、看门狗全停）→ FinishAndRemoveTask → 结束进程，
     /// 不留后台声音、不留半死播放内核；重新打开即冷启动（开机默认台/收藏首位照旧）。
+    /// v22 第 11 项改版（老板 20:28/20:32 拍板）：全屏自管浮层——窗底透明+半透明水墨面板（与列表页同源，
+    /// 不再露 ROM 钢蓝灰）；「退出」=朱砂细边框+朱砂极淡底（强调色 #8A5C3D，与列表页 Accent 同源），
+    /// 「取消」=纸白细边框+极淡底；常驻=水墨深底+次色字；字体统一 TextPrimary/TextSecondary+可读性阴影；
+    /// 焦点导航、默认焦点落「取消」、返回键=继续看，全不动。
     /// </summary>
     private void ShowExitConfirmDialog()
     {
@@ -2029,49 +2656,73 @@ public class MainActivity : Activity
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
         int pad = (int)(20 * Resources!.DisplayMetrics!.Density);
         box.SetPadding(pad * 2, pad * 2, pad * 2, pad);
-        box.SetBackgroundColor(Color.ParseColor("#2B333B")); // 水墨深底
+        box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // v22 第 11 项：半透明水墨底，与列表页面板同源同号
+        box.SetMinimumWidth((int)(480 * Resources!.DisplayMetrics!.Density)); // 居中浮层不因文案缩成窄条
 
-        var msg = new TextView(this) { Text = "确认退出道映？\n再按返回=直接退出 · 确认键=选中的按钮", TextSize = 20 };
-        msg.SetTextColor(Color.ParseColor("#E8E2D6"));
+        var msg = new TextView(this) { Text = "确认退出 TaoLive？", TextSize = 20 };
+        msg.SetTextColor(InkTranslucency.TextPrimary(this)); // v22 第 11 项：统一 Token，暗屏自动提白
+        InkTranslucency.ApplyReadabilityShadow(msg);
         box.AddView(msg);
 
+        // 15:01 老板拍板：退出后后台保活继续跑——弹窗讲清楚，免得用户以为关干净了
+        var note = new TextView(this) { Text = "退出后后台保活继续运行，随时回来看", TextSize = 13 };
+        note.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(note);
+        var noteLp = new LinearLayout.LayoutParams(-2, -2) { TopMargin = (int)(8 * Resources!.DisplayMetrics!.Density) };
+        box.AddView(note, noteLp);
+
         var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var lp = new LinearLayout.LayoutParams(0, -2, 1f) { TopMargin = pad };
-        var no = new Button(this) { Text = "取消（继续看）" };
-        no.SetBackgroundColor(Color.ParseColor("#3A4750"));
-        no.SetTextColor(Color.ParseColor("#E8E2D6"));
+        var lp = new LinearLayout.LayoutParams(0, -2, 1f) { TopMargin = pad, LeftMargin = pad / 2, RightMargin = pad / 2 };
+        // v22 第 11 项：按钮改 TextView 自绘——ROM Material 按钮的焦点高亮/系统着色从根上去掉
+        var no = new TextView(this) { Text = "取消（继续看）", Gravity = GravityFlags.Center };
+        no.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
         no.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; };
-        var yes = new Button(this) { Text = "退出" };
-        yes.SetBackgroundColor(Color.ParseColor("#8A3B34"));
-        yes.SetTextColor(Color.ParseColor("#F2EDE4"));
+        var yes = new TextView(this) { Text = "退出", Gravity = GravityFlags.Center };
+        yes.SetPadding(pad / 2, (int)(14 * Resources.DisplayMetrics.Density), pad / 2, (int)(14 * Resources.DisplayMetrics.Density));
         yes.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; ExitAppCompletely(); };
-        // v1.0.12（老板反馈）：焦点态可见化——默认底色无焦点反馈，遥控上分不清焦点在哪
-        void StyleFocus(Button b, string normal, string focused)
-        {
-            b.SetBackgroundColor(Color.ParseColor(normal));
-            b.FocusChange += (_, e) =>
-                b.SetBackgroundColor(Color.ParseColor(e.HasFocus ? focused : normal));
-        }
-        StyleFocus(no, "#3A4750", "#5E7482");
-        StyleFocus(yes, "#8A3B34", "#C25A50");
-        // v1.0.10 修复④：左右键在「退出」与「取消（继续看）」间切换——显式指路（双保险，OnKeyDown 已接管）
+        // v1.0.10 修复④：左右键在「退出」与「取消（继续看）」间切换——显式指路，不靠焦点搜索碰运气
         no.Id = View.GenerateViewId();
         yes.Id = View.GenerateViewId();
         no.NextFocusRightId = yes.Id;
         yes.NextFocusLeftId = no.Id;
         _exitNo = no;
         _exitYes = yes;
+
+        // v22 第 11 项统一按钮样式：聚焦=效果层（退出朱砂/取消纸白）+主色字；常驻=水墨深底+次色字
+        var idleBg = new ColorDrawable(Color.Argb(96, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+        void StyleDialogButton(TextView b, GradientDrawable focusDrawable)
+        {
+            b.Focusable = true;
+            b.Clickable = true;
+            b.Background = idleBg;
+            b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(b);
+            b.FocusChange += (_, ev) =>
+            {
+                if (ev.HasFocus) { b.Background = focusDrawable; b.SetTextColor(InkTranslucency.TextPrimary(this)); }
+                else if (b.Background == focusDrawable) { b.Background = idleBg; b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
+            };
+        }
+        StyleDialogButton(no, InkTranslucency.FocusDrawable());
+        StyleDialogButton(yes, InkTranslucency.AccentFocusDrawable());
         buttons.AddView(no, lp);
         buttons.AddView(yes, lp);
         box.AddView(buttons);
 
-        var dialogBuilder = new AlertDialog.Builder(this); // 构建器逐条调用：绑定返回可空不续点
-        dialogBuilder.SetView(box);
-        dialogBuilder.SetCancelable(true);
-        var dialog = dialogBuilder.Create()!;
+        // 绑定契约 SetView/SetCancelable/Create 为可空返回：改语句式构造，窗口可空即放弃弹窗（实际不发生）
+        var builder = new AlertDialog.Builder(this);
+        builder.SetView(box);
+        builder.SetCancelable(true);
+        var dialog = builder.Create();
+        if (dialog is null) return;
         _exitDialog = dialog;
         dialog.Show();
-        no.RequestFocus(); // v1.0.10 修复④：默认焦点落「取消（继续看）」——防误退更稳；返回键=直接退出（v1.0.12 老板拍板）
+        // v22 第 11 项：全屏自管——窗底透明+内容铺满，露出的是播放画面，与列表页浮在画面上观感一致
+        var win = dialog.Window!;
+        win.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+        win.SetLayout(-1, -1);
+        win.SetFlags(WindowManagerFlags.LayoutInScreen, WindowManagerFlags.LayoutInScreen);
+        no.RequestFocus(); // v1.0.10 修复④：默认焦点落「取消（继续看）」——防误退更稳；返回键=直接退出（v1.0.12 OnKeyDown 接管）
         dialog.SetOnCancelListener(new DialogActionPeer(() => { _exitDialog = null; _exitNo = null; _exitYes = null; }));
         dialog.SetOnDismissListener(new DismissActionPeer(() => { _exitDialog = null; _exitNo = null; _exitYes = null; }));
     }
@@ -2161,13 +2812,14 @@ public class MainActivity : Activity
                     _exitYes?.RequestFocus();
                     return true;
                 case Keycode.DpadCenter or Keycode.Enter:
-                    if (_exitDialog.Window?.CurrentFocus is Button focused) focused.PerformClick();
+                    if (_exitDialog.Window?.CurrentFocus is TextView focused) focused.PerformClick();
                     else _exitNo?.PerformClick(); // 焦点异常兜底：落「取消」绝不误退
                     return true;
                 default:
                     return true; // 其余按键弹窗期间不穿透，防止误触列表/换台
             }
         }
+
 
         // 收藏排序模式（v1.0.8 第14项）：独立状态机接管键位，退出恢复默认键位
         if (_sortMode)
@@ -2186,14 +2838,11 @@ public class MainActivity : Activity
 
         if (_listOpen && _listView != null)
         {
-            // 列表开：⑥左右键=分类间跳转（用户 10:04 拍板，去掉与上下键重合的翻页/拖动逻辑）；
+            // B 包第 12 项：左右键=切标签（全部→央视→卫视→地方台→收藏循环）；
             // 上下/确认交给 ListView 焦点导航（上下=选台、确认=播放）；菜单或返回收起
             if (keyCode is Keycode.Menu or Keycode.Back) { ExitOrCollapseList(); return true; }
-            if (keyCode is Keycode.DpadLeft or Keycode.DpadRight)
-            {
-                JumpCategory(keyCode == Keycode.DpadLeft ? -1 : +1);
-                return true;
-            }
+            if (keyCode is Keycode.DpadLeft) { SwitchDrawerTab(false); return true; }
+            if (keyCode is Keycode.DpadRight) { SwitchDrawerTab(true); return true; }
             if (keyCode is Keycode.DpadUp or Keycode.DpadDown or Keycode.DpadCenter or Keycode.Enter)
                 return base.OnKeyDown(keyCode, e);
         }
@@ -2209,8 +2858,8 @@ public class MainActivity : Activity
             case Keycode.DpadCenter or Keycode.Enter: ToggleFavoriteOnCurrent(); return true;
             case Keycode.Back: ExitOrCollapseList(); return true;
             default:
-                // 诊断：未接管的按键屏显键码，用于摸清各家遥控器的真实键值
-                FlashInfo($"按键 {((int)keyCode)}");
+                // B 包第 8 项：键码屏显静默化——未接管的按键不再屏显键码，只落日志排查
+                CrashNet.Record($"[Key] 未接管键值 {((int)keyCode)}");
                 return true;
         }
     }
@@ -2391,8 +3040,14 @@ public class MainActivity : Activity
         if (_carrierTexture && !_frameForCurrentSwitch) CarrierPolicy.MarkOk(this);
         _host.Stop();
         // v1.0.10 第①项：退后台即把源健康账落盘（后台线程，不阻塞界面）
+        // v28 读盘优化：先等灌回再落盘——灌回未完成时落盘会把没读完的旧账覆盖成空账
         var store = _healthStore;
-        if (store != null) Task.Run(store.FlushNow);
+        var scores = _scoreStore;
+        if (store != null || scores != null)
+        {
+            var load = _healthLoadTask;
+            Task.Run(async () => { if (load != null) await load; store?.FlushNow(); scores?.FlushNow(); });
+        }
         // v1.0.13 缓存分层：档位目录随退后台落盘，重启免重抓
         var vt = VariantTableStore.Shared;
         if (vt != null) Task.Run(vt.FlushNow);
@@ -2404,7 +3059,106 @@ public class MainActivity : Activity
         if (!_resumedOnce) { _resumedOnce = true; return; } // 首启：OnCreate 已起播，不重复
         if (_current != null && !_listOpen)
         {
-            Play(_current);          // 统一重接当前台（走取流缓存秒回），画面必重建
+            _frameEverShown = false; // 复位：重播按冷启动路径立即亮牌
+            _ = ResumeReconnectAsync(_current); // v23 修法 A：先探网络就绪再统一重接当前台（走取流缓存秒回），画面必重建
+        }
+    }
+
+    /// <summary>
+    /// v23 修法 A：回前台重接前先探网络就绪——未就绪 500ms×6≈3 秒步进等待（ResumeNetWaitPolicy），
+    /// 超时照常 Play 绝不无限等；等待期间用户切台即让位。打点 [ConnectRetry] 真机可验收。
+    /// </summary>
+    private async Task ResumeReconnectAsync(Channel ch)
+    {
+        int step = 0;
+        while (!NetworkReady() && ResumeNetWaitPolicy.ShouldWait(step))
+        {
+            if (step == 0) CrashNet.Record("[ConnectRetry] 回前台网络未就绪，步进等待后重接（v23 A）");
+            await Task.Delay(ResumeNetWaitPolicy.StepMs);
+            if (!ReferenceEquals(_current, ch)) return; // 等待期间用户已切台：让位
+            step++;
+        }
+        if (!ReferenceEquals(_current, ch) || _current is null) return;
+        if (!NetworkReady()) CrashNet.Record("[ConnectRetry] 回前台等待约 3 秒网络仍未就绪，照常发起重接（不无限等）");
+        Play(ch);
+    }
+
+    /// <summary>v23 修法 A：当前默认网络是否就绪（有活动网络且具备 Internet 能力）；探测能力不可用时不挡重接。</summary>
+    private bool NetworkReady()
+    {
+        try
+        {
+            if (GetSystemService(ConnectivityService) is not global::Android.Net.ConnectivityManager cm) return true;
+            var net = cm.ActiveNetwork;
+            if (net is null) return false;
+            var caps = cm.GetNetworkCapabilities(net);
+            return caps?.HasCapability(global::Android.Net.NetCapability.Internet) == true;
+        }
+        catch { return true; } // 探测本身失败：宁可放行也不卡重接
+    }
+
+    /// <summary>
+    /// v25 修法二 2c/2d：网络变更/时钟跳变监听——换 IP 或墙钟跳变后，退避账与票据冷却都是
+    /// 旧环境记的（旧 IP 画像/旧墙钟冻结时刻），新环境不可信：退避账与票账冷却清零，
+    /// 票据缓存保留验证（失败自然重新入账，退避期不把好环境白冻 2 小时）。
+    /// </summary>
+    private void RegisterEnvReceiver()
+    {
+        Action onEnvChange = () =>
+        {
+            try
+            {
+                _resolver.ClearCooldowns(); // 票账冷却清零（票据缓存保留验证）
+                _backoff.Clear();           // 源退避账清零（streak 一并归零，新环境从 2 分钟基值重算）
+                CrashNet.Record("[账本] 网络变更/时钟跳变：退避账与票据冷却清零（票据缓存保留验证）");
+            }
+            catch (Exception ex) { CrashNet.Record($"[账本] 环境清账失败：{ex.Message}"); }
+        };
+        _envReceiver = new EnvLedgerReceiver(onEnvChange);
+        // 时钟跳变仍走广播；网络变更自 API 28 起 ConnectivityAction 过时（CA1422），改 NetworkCallback：
+        // onAvailable/onLost 与原「有网→断网/换网」语义对齐，onCapabilitiesChanged 不挂（信号波动不误清账）
+        var filter = new IntentFilter();
+        filter.AddAction(Intent.ActionTimeChanged);
+        RegisterReceiver(_envReceiver, filter);
+        try
+        {
+            if (GetSystemService(ConnectivityService) is global::Android.Net.ConnectivityManager cm)
+            {
+                var cb = new EnvNetworkCallback(onEnvChange);
+                _netCallback = cb;
+                if (OperatingSystem.IsAndroidVersionAtLeast(24))
+                    cm.RegisterDefaultNetworkCallback(cb); // 默认网络级监听（切网必触发 onAvailable/onLost）
+                else
+                {
+                    // 绑定契约 Builder.Build() 可空返回：语句式构造并验空再注册（实际不发生）
+                    var rb = new global::Android.Net.NetworkRequest.Builder();
+                    rb.AddCapability(global::Android.Net.NetCapability.Internet);
+                    var req = rb.Build();
+                    if (req is not null)
+                        cm.RegisterNetworkCallback(req, cb); // API 23 兜底
+                }
+            }
+        }
+        catch { /* 监听注册失败不碍播放：退避账按原节拍走 */ }
+    }
+
+    /// <summary>网络变更清账回调（与原 ConnectivityAction 广播同语义：有网→断/换即清）。</summary>
+    private sealed class EnvNetworkCallback : global::Android.Net.ConnectivityManager.NetworkCallback
+    {
+        private readonly Action _onEnvChange;
+        public EnvNetworkCallback(Action onEnvChange) { _onEnvChange = onEnvChange; }
+        public override void OnAvailable(global::Android.Net.Network network) => _onEnvChange();
+        public override void OnLost(global::Android.Net.Network network) => _onEnvChange();
+    }
+
+    private sealed class EnvLedgerReceiver : BroadcastReceiver
+    {
+        private readonly Action _onEnvChange;
+        public EnvLedgerReceiver(Action onEnvChange) { _onEnvChange = onEnvChange; }
+        public override void OnReceive(Context? context, Intent? intent)
+        {
+            if (intent?.Action == Intent.ActionTimeChanged)
+                _onEnvChange();
         }
     }
 
@@ -2413,6 +3167,25 @@ public class MainActivity : Activity
         _precheckCts?.Cancel();
         _precheckCts?.Dispose();
         _precheckCts = null;
+        _hotStandby?.Stop(); // v25 修法七 1c：退出即停热备校验流（会话代数作废，不再漏跑）
+        if (_envReceiver != null)
+        {
+            try { UnregisterReceiver(_envReceiver); } catch { /* 已注销不碍 */ }
+            _envReceiver = null;
+        }
+        if (_netCallback != null)
+        {
+            try
+            {
+                if (GetSystemService(ConnectivityService) is global::Android.Net.ConnectivityManager cm)
+                    cm.UnregisterNetworkCallback(_netCallback);
+            }
+            catch { /* 已注销不碍 */ }
+            _netCallback = null;
+        }
+        _epgCts?.Cancel(); // B 包第 14 项：退出停节目单拉取
+        _epgCts?.Dispose();
+        _epgCts = null;
         _ticketKeeper?.Dispose();
         _ticketKeeper = null;
         _governorTicker?.Dispose(); // ⑨A自动档巡检随宿主释放
@@ -2421,13 +3194,20 @@ public class MainActivity : Activity
         _resourceTicker = null;
         _statsTicker?.Dispose(); // ④画面信息行节拍
         _statsTicker = null;
-        // fix51（B 路）：退出落盘移出主线程（对齐 OnPause 的 Task.Run 口径），但进程即将终止——
-        // 后台写盘必须有界等待完成再放行（2 秒上限），防「进程先死文件没写完」丢健康账，不得丢档
+        // fix51（B 路）：退出落盘移出主线程，但进程即将终止——后台写盘必须有界等待完成再放行（2 秒上限），
+        // 防「进程先死文件没写完」丢健康账，不得丢档；落盘前先等灌回（v28：启动初期即退出的窗口）
+        try { _healthLoadTask?.Wait(2000); } catch { }
         var exitStore = _healthStore;
         if (exitStore != null)
         {
             try { Task.Run(exitStore.FlushNow).Wait(2000); }
             catch (Exception ex) { CrashNet.Record("[Exit] 源健康账退出落盘等待异常：" + ex.Message); }
+        }
+        var exitScores = _scoreStore;
+        if (exitScores != null)
+        {
+            try { Task.Run(exitScores.FlushNow).Wait(2000); }
+            catch (Exception ex) { CrashNet.Record("[Exit] 评分账退出落盘等待异常：" + ex.Message); }
         }
         _host.Dispose();
         base.OnDestroy();

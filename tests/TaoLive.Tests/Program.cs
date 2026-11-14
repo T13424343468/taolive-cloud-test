@@ -1,4 +1,7 @@
-﻿using System.Linq;
+using System.Linq;
+using System.Net;
+using System.Text.Json;
+using AllPlayer.BLL;
 using TaoLive.BLL;
 using TaoLive.Model;
 
@@ -81,9 +84,17 @@ Check(entries[0].GroupHint == "央视" && entries[0].Name == "CCTV-1", "m3u 分�
     Check(svc.TryGet("c1", t0 + 240, out var hit) && hit == "http://x/c1.m3u8", "票据缓存窗口内命中");
     Check(!svc.TryGet("c1", t0 + 301, out _), "票据缓存窗口过期");
     var now = DateTimeOffset.FromUnixTimeSeconds(t0).DateTime;
-    svc.MarkCooldown("c2", now.AddSeconds(30));
-    Check(svc.InCooldown("c2", now.AddSeconds(29)), "403 冷却中");
-    Check(!svc.InCooldown("c2", now.AddSeconds(31)), "冷却 30 秒到期放行");
+    // 1.0.12 修法 B：403 冷却改指数退避账（2/4/8 分钟 ×2 步进，封顶 2 小时），替换固定 30 秒
+    svc.MarkCooldown("c2", now); // 首败：退避 2 分钟
+    Check(svc.InCooldown("c2", now.AddMinutes(1)), "1.0.12修法B·403退避期内拒绝取票");
+    Check(!svc.InCooldown("c2", now.AddMinutes(2).AddSeconds(1)), "1.0.12修法B·首败退避约2分钟到期放行（30秒固定冷却作废）");
+    svc.MarkCooldown("c2", now); // 连败第 2 次：退避 4 分钟
+    Check(svc.InCooldown("c2", now.AddMinutes(3)) && !svc.InCooldown("c2", now.AddMinutes(4).AddSeconds(1)), "1.0.12修法B·连败退避加深至4分钟");
+    svc.MarkCooldown("c2", now); // 连败第 3 次：退避 8 分钟
+    Check(svc.InCooldown("c2", now.AddMinutes(5)) && !svc.InCooldown("c2", now.AddMinutes(8).AddSeconds(1)), "1.0.12修法B·三连败退避8分钟（2/4/8 口径）");
+    svc.MarkFetched("c2", t0, "http://x/c2.m3u8"); // 取票成功=全额恢复
+    Check(!svc.InCooldown("c2", now.AddSeconds(1)), "1.0.12修法B·取票成功退避全额恢复（口子开自动切回）");
+    Check(YspTicketService.CooldownBase == TimeSpan.FromMinutes(2) && YspTicketService.CooldownMax == TimeSpan.FromHours(2), "1.0.12修法B·退避基值2分钟封顶2小时（口径固化）");
 }
 // 6.2 浙江新蓝网 auth_key：与摸底实测向量对拍（2026-11-07 实测 200）
 {
@@ -190,6 +201,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     cat.RegisterSource(new XatvSource());
     cat.RegisterSource(new NmtvSource());
     cat.RegisterSource(new GxtvSource());
+    cat.RegisterSource(new CityCandidatesSource()); // v22 第 16 项：地方台 18 路候选源挂链
     cat.Rebuild();
     var cctv = cat.Groups.First(g => g.Category == ChannelCategory.Cctv).Channels.Count;
     var cgtn = cat.Groups.First(g => g.Category == ChannelCategory.Cgtn).Channels.Count;
@@ -197,8 +209,16 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     var city = cat.Groups.First(g => g.Category == ChannelCategory.City).Channels.Count;
     Check(cctv == 21, $"央视 21 路（实际 {cctv}）");
     Check(cgtn == 6, $"CGTN 6 路（实际 {cgtn}）");
-    Check(prov == 31 + 4 + 7 + 8, $"省台=央视频31+浙江4+贵州7+内蒙古8（实际 {prov}）");
-    Check(city == 4 + 2 + 7, $"城市台 西安4+内蒙古2（呼和浩特/包头）+广西7（实际 {city}）");
+    Check(prov == 31 + 4 + 7 + 8 + 2, $"省台=央视频31+浙江4+贵州7+内蒙古8+城市候选2省经济（实际 {prov}）");
+    Check(city == 4 + 2 + 7 + 13, $"城市台 西安4+内蒙古2+广西7+候选13城市/县级台（实际 {city}）");
+    Check(cat.All.Count == 97 + 15, $"v22 第 16 项：原 97 路挂链后总台数 112（实际 {cat.All.Count}）");
+    Check(cat.All.Where(c => c.SourceId == "citycdn").All(c => !string.IsNullOrEmpty(c.StreamUrl) && string.IsNullOrEmpty(c.EpgKey)),
+        "v22 第 16 项：城市候选 15 路全带直连地址、EPG 留空不硬造");
+    Check(ChannelLogoMap.Count == 78, $"v22 第 16 项：台标映射 63+15 枚（实际 {ChannelLogoMap.Count}）");
+    Check(ChannelLogoMap.ResourceName("七台河新闻综合") == "logo_qitaihe_xwzh"
+        && ChannelLogoMap.ResourceName("甘肃经济") == "logo_gansu_jj"
+        && ChannelLogoMap.ResourceName("福建经济") == "logo_fujian_jj"
+        && ChannelLogoMap.ResourceName("不存在的台") is null, "v22 第 16 项：新台标映射按台名精确命中、映射外回退 null");
     var special = cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels.Count;
     Check(special == cat.Groups.First(g => g.Category == ChannelCategory.Special).Channels
         .Count(c => c.SourceId == "yangshipin") + 2, $"专项含 gxtv 重流 CETV-2/4（实际 {special}）");
@@ -256,10 +276,13 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(LiveQuality.OptionsFor(AiLiveTier.Off).Count == 0, "关档无滤镜参数");
     var lowOpts = LiveQuality.OptionsFor(AiLiveTier.Low);
     Check(lowOpts.Any(o => o.Key == "video-filter" && o.Value == "sharpen"), "低档=锐化滤镜");
-    Check(lowOpts.Any(o => o.Key == "sharpen-amplitude"), "低档带锐化幅度");
+    Check(lowOpts.Any(o => o.Key == "sharpen-sigma" && o.Value == "0.8"), "低档带锐化幅度（v22：LibVLC 参数名 sharpen-sigma）");
+    Check(!lowOpts.Any(o => o.Key == "sharpen-amplitude"), "v22 定项：旧参数名 sharpen-amplitude 绝迹");
     var highOpts = LiveQuality.OptionsFor(AiLiveTier.High);
     Check(highOpts.Any(o => o.Key == "video-filter" && o.Value.Contains("sharpen") && o.Value.Contains("adjust")), "高档=锐化+画面微调组合");
     Check(highOpts.Any(o => o.Key == "contrast") && highOpts.Any(o => o.Key == "saturation"), "高档带对比/饱和微调");
+    Check(highOpts.Any(o => o.Key == "brightness" && o.Value == "0.02"), "v22 定项：gamma 超域修正改 brightness 微调（值域 -1~1）");
+    Check(!highOpts.Any(o => o.Key == "gamma"), "v22 定项：gamma 参数绝迹");
     Check(!highOpts.Count(o => o.Key == "video-filter").Equals(2), "video-filter 单条不重复（避免同名覆盖）");
 }
 
@@ -324,6 +347,52 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(multi.Of(vb) == ChannelHealth.Alive, "回写可用后整台状态=可用");
     multi.ReportSourceResult(va, false, 234567L);
     Check(multi.SourceHealthOf(va)?.State == ChannelHealth.Dead, "回写：实测失效覆盖预检结论");
+
+    // ---- v28 主线③源健康度评分：归一化/半衰/空账退化/喂入路径 ----
+    {
+        var clock = 1_700_000_000_000L;
+        var scores = new SourceScoreStore("/tmp/taolive_score_test", () => clock);
+        // 喂入路径：Report 走账、ScoreOf 出分
+        scores.Report("a", "a1", ok: true, ms: 1000);
+        var s1 = scores.ScoreOf("a", "a1");
+        Check(s1.HasValue && s1.Value > 0 && s1.Value <= 100, "v28评分①喂入后出分（0~100 归一化）");
+        // 速度归一化：2s 内满分梯度、10s 及以上为 0
+        var fast = new SourceScoreStore("/tmp/taolive_score_test", () => clock);
+        fast.Report("f", "f1", ok: true, ms: 1000);
+        fast.Report("f", "f2", ok: true, ms: 12000);
+        var sf = fast.ScoreOf("f", "f1")!.Value;
+        var sl = fast.ScoreOf("f", "f2")!.Value;
+        Check(sf > sl, "v28评分②速度归一化：快源分高于慢源");
+        // 半衰：同一笔账，时间后移 7 天分值约减半
+        clock += SourceScoreStore.HalfLifeMs;
+        var s2 = scores.ScoreOf("a", "a1")!.Value;
+        Check(s2 < s1!.Value && s2 > s1.Value * 0.4, "v28评分③七天半衰：旧结论权重衰减约半");
+        clock -= SourceScoreStore.HalfLifeMs;
+        // 空账退化：无评分账时 BestAliveSource 仍按既有「最近核验优先」
+        var bare = new ChannelPrecheck(ch => Task.FromResult(ch.SourceId == "a"), intervalMs: 1);
+        var xa = new Channel { Name = "X", SourceId = "a", EpgKey = "x1" };
+        var xb = new Channel { Name = "X", SourceId = "b", EpgKey = "x2" };
+        await bare.RunAsync(new[] { xa, xb });
+        var pickBare = bare.BestAliveSource(xb, new[] { xa, xb });
+        Check(pickBare?.EpgKey == "x1", "v28评分④空账退化：无评分仍取最近核验可用源（行为不倒退）");
+        // 有账排序：高分源胜出（va 高分、vb 低分，都 Alive）
+        var scoredPre = new ChannelPrecheck(ch => Task.FromResult(true), intervalMs: 1);
+        var sa = new Channel { Name = "S", SourceId = "s", EpgKey = "s1" };
+        var sb = new Channel { Name = "S", SourceId = "s", EpgKey = "s2" };
+        await scoredPre.RunAsync(new[] { sa, sb });
+        var scoreStore = new SourceScoreStore("/tmp/taolive_score_test", () => clock);
+        scoreStore.Report("s", "s1", ok: true, ms: 300);
+        scoreStore.Report("s", "s2", ok: true, ms: 9000);
+        scoredPre.AttachScoreStore(scoreStore);
+        var pickScored = scoredPre.BestAliveSource(sa, new[] { sa, sb });
+        Check(pickScored?.EpgKey == "s1", "v28评分⑤有账按分排序：高分源胜出");
+        // 喂入路径打通：ReportSourceResult 经 WriteSourceResult 入评分账
+        scoredPre.ReportSourceResult(sa, true, clock + 1, 500);
+        Check(scoreStore.HasAccount("s", "s1"), "v28评分⑥喂入路径：ReportSourceResult 同步入评分账");
+        // 落盘：节流 3 秒后台落（不阻塞），这里即时 FlushNow 验证原子写口径（同健康账）
+        scoreStore.FlushNow();
+        Check(File.Exists("/tmp/taolive_score_test/source_score.json"), "v28评分⑦落盘：即时落盘文件在位（原子替换口径同健康账）");
+    }
     Check(multi.Of(va) == ChannelHealth.Alive, "单来源失效但另一来源可用，整台仍=可用");
     multi.ReportSourceResult(vb, false, 345678L);
     Check(multi.SourceHealthOf(vb)?.State == ChannelHealth.Dead, "全部来源实测失败均已记录");
@@ -398,6 +467,42 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
             retire.ReportSourceResult(retireCh, false, now + i);
         Check(retire.SourceHealthOf(retireCh) == null, $"连挂 {ChannelPrecheck.RetireAfterConsecutiveFails} 次自动淘汰（交回预检重探）");
         Check(retire.BestAliveSource(retireCh, new[] { retireCh }) == null, "淘汰后不再被选源取用");
+
+        // v28 读盘优化：灌回改后台后，Load 与 FlushNow/回写并发——并发字典护体，种子条目不丢不覆盖
+        {
+            var cdir = Path.Combine(Path.GetTempPath(), "taolive_health_c_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(cdir);
+            var seedStore = new SourceHealthStore(cdir);
+            seedStore.Entries["yangshipin:seed"] = new SourceHealthEntry
+            {
+                SourceId = "yangshipin", EpgKey = "seed", State = ChannelHealth.Alive,
+                CheckedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
+            seedStore.FlushNow();
+            var cstore = new SourceHealthStore(cdir);
+            var loadTask = Task.Run(cstore.Load); // 模拟 UI 层后台灌回（产品口径：灌回完成前无回写无落盘，预检循环串行其后）
+            Task.WaitAll(loadTask);
+            var errs = new List<Exception>();
+            var workers = Enumerable.Range(0, 8).Select(i => Task.Run(() =>
+            {
+                try
+                {
+                    for (int k = 0; k < 100; k++)
+                    {
+                        cstore.Entries[$"yangshipin:w{i}-{k}"] = new SourceHealthEntry
+                        {
+                            SourceId = "yangshipin", EpgKey = $"w{i}-{k}", State = ChannelHealth.Alive,
+                            CheckedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        };
+                        cstore.FlushNow();
+                    }
+                }
+                catch (Exception ex) { lock (errs) errs.Add(ex); }
+            })).ToArray();
+            Task.WaitAll(workers);
+            Check(errs.Count == 0, $"v28健康账并发回写+落盘无竞态异常（{errs.Count}笔）");
+            Check(cstore.Entries.ContainsKey("yangshipin:seed"), "v28健康账灌回种子条目保留（不被并发落盘冲掉）");
+        }
     }
     finally
     {
@@ -858,7 +963,7 @@ Check(StatsLinePolicy.NextDelayMs(0) == 500 && StatsLinePolicy.NextDelayMs(9) ==
 Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: false).Contains("检测中"), "⑤重试期内维持「检测中」");
 Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: true).Contains("--") && !FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, true).Contains("检测中"), "⑤到限显「--」不留「检测中」");
 Check(FrameStatsLine.FormatEx(null, null, 1920, 1080, 1920, 1080, null, true).Contains("原帧率 --"), "⑤部分缺失到限：缺失项显「--」");
-Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("AI画质：自动"), "⑤并显 AI 档位（口径同【二】全中文）");
+Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("画质增强：自动"), "⑤并显画质增强档位（v22 定项：显示名改画质增强）");
 
 // ⑥换台提速：先连最快出画面档，亮后无感升高档，失败留在当前档
 var tiers = new List<(int Height, long Bandwidth)> { (1080, 8_000_000), (720, 3_000_000), (480, 1_500_000) };
@@ -896,6 +1001,39 @@ fold.ToggleGroup("央视");
 Check(fold.IsCollapsed("央视"), "⑪单组点收原逻辑不变");
 fold.ToggleGroup("央视");
 Check(!fold.IsCollapsed("央视"), "⑪单组再点恢复展开");
+
+// ---- v23 修复批（六条一批修完）：折叠整行退场后 BLL 纯逻辑保留；⑨B 介入升级阶梯；回前台网络等待步进 ----
+Check(ListFoldController.ToggleLabel(0) == "全部收起" && ListFoldController.ToggleLabel(1) == "全部展开",
+    "v23①折叠交互整行退场：ListFoldController 纯逻辑保留（UI 行已清，列表默认铺开）");
+Check(StallRescue.EarlyRescueEscalateAt == 3,
+    "v23⑤⑨B 静默重取流连续介入升级线=3 次（时钟微动假活不再无限循环介入）");
+Check(StallRescue.EarlyRescueResetMs == 60_000,
+    "1.0.12·出过首帧后 60 秒持续走钟才清介入计数（30 秒窗口作废，自救能真正走到重启内核级）");
+Check(StallRescue.DedupWindowMs == 5000,
+    "1.0.12修正①·Buffering 主信号与看门狗 5 秒去重窗（同一次卡顿双触发不重复计，阶梯不跳级）");
+Check(StallRescue.RescueWindowMs == 90_000 && StallRescue.RescueCapPerWindow == 2,
+    "1.0.12修正⑤·90 秒窗口介入上限 2 次（限频代替拉黑，探活与重连共用请求预算口径）");
+Check(StallRescue.BufferingLowPct == 5f,
+    "1.0.12修正①·Buffering 主信号触发线（缓冲接近耗尽即时介入，发现延迟 2–6 秒压到 ≤1 秒）");
+Check(BufferInventory.TargetMs == 3000 && BufferInventory.Default == BufferInventory.Mode.StartFull,
+    "1.0.12发现B·3 秒库存两档：默认档=起播即 3 秒（拍板口径，真机验证后可切）");
+// ---- v25 真机修复批（11-11 真机卡死实锤：两三秒一卡且卡死后永冻，须手动切台才恢复）----
+Check(StallRescue.ExhaustedRecoveryFirstDelayMs == 30_000,
+    "v25真机修复·重连阶梯耗尽后 30 秒起兜底重试（原口径永久躺平只报一次「信号中断」，画面冻死实锤）");
+Check(StallRescue.ExhaustedRecoveryPeriodMs == 60_000,
+    "v25真机修复·耗尽兜底 60 秒常驻节奏（首帧恢复或换台才收摊，不等用户救场）");
+Check(StallRescue.ExhaustedRebuildEveryCycles == 3,
+    "v25真机修复·耗尽兜底每 3 轮升级软重启内核（其余轮静默重取流重接，阶梯仍行进）");
+Check(StallRescue.ExhaustedRecoveryPeriodMs / StallRescue.ExhaustedRebuildEveryCycles > 0,
+    "v25真机修复·耗尽兜底节奏整除守卫（升级间隔=3 分钟，防参数改坏后除零/永不升级）");
+Check(BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 1200) == 3000
+    && BufferInventory.StartCachingMs(BufferInventory.Mode.StartFull, 4000) == 4000
+    && BufferInventory.StartCachingMs(BufferInventory.Mode.SilentRefetch, 1200) == 1200,
+    "1.0.12发现B·起播缓存口径：库存档兜底不低3秒/阶梯高者保留；补库存档先开画（修正②④并入）");
+Check(ResumeNetWaitPolicy.StepMs == 500 && ResumeNetWaitPolicy.MaxSteps == 6,
+    "v23④回前台网络就绪等待步进 500ms×6≈3 秒封顶（常数收口可调）");
+Check(ResumeNetWaitPolicy.ShouldWait(0) && !ResumeNetWaitPolicy.ShouldWait(ResumeNetWaitPolicy.MaxSteps),
+    "v23④等待步进封顶：超时照常发起重接，绝不无限等");
 
 // ⑫连接失败矩阵：失败分类枚举逐类归因；限流冷却退避
 Check(ConnectFailure.Classify("getaddrinfo ENOTFOUND x") == ConnectFailureKind.DnsFailure, "⑫DNS 解析失败单列");
@@ -1631,9 +1769,9 @@ Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: false) == SwapMode.
         var svc = new YspTicketService();
         var t0 = DateTime.UnixEpoch.AddSeconds(1794016800);
         Check(!svc.InCooldown("c1", t0), "fix31 403 冷却：未冷却发现请求照常");
-        svc.MarkCooldown("c1", t0.AddSeconds(YspTicketService.Cooldown.TotalSeconds));
+        svc.MarkCooldown("c1", t0);
         Check(svc.InCooldown("c1", t0.AddSeconds(1)), "fix31 403 冷却：冷却期内跳过多档发现请求");
-        Check(!svc.InCooldown("c1", t0.AddSeconds(YspTicketService.Cooldown.TotalSeconds + 1)), "fix31 403 冷却：冷却期满发现请求自动恢复");
+        Check(!svc.InCooldown("c1", t0.AddSeconds(YspTicketService.CooldownBase.TotalSeconds + 1)), "fix31 403 冷却：冷却期满发现请求自动恢复");
     }
 }
 
@@ -1862,6 +2000,537 @@ Check(HotSwitchPolicy.Decide(sameTarget: false, canHotApply: false) == SwapMode.
     Check(true, "C 限流终局：BeginHotSwap 前置守卫查 Blackout.IsBlackedOut，观察期内拒起第二实例（源码核验 MainActivity.cs BeginHotSwap）");
 }
 
+// ---- B 包（v20 界面优化版）纯逻辑断言：五标签/抽屉装配/节目单/限流提示 ----
+{
+    // 测试台单：央视1、省台1、城市台1，省台/城市台预置收藏
+    var chans = new List<Channel>
+    {
+        new() { Name="CCTV1", Number=1, Category=ChannelCategory.Cctv, SourceId="t", StreamUrl="http://t/1" },
+        new() { Name="WS1", Number=2, Category=ChannelCategory.Provincial, SourceId="t", StreamUrl="http://t/2" },
+        new() { Name="CS1", Number=3, Category=ChannelCategory.City, SourceId="t", StreamUrl="http://t/3", Unavailable=true },
+    };
+    var favOrder = new List<int> { 3, 2 };            // 收藏：城市台在前
+    static ChannelHealth Dead(Channel c) => c.Unavailable ? ChannelHealth.Dead : ChannelHealth.Alive;
+
+    // 标签与循环（1.0.12 UI② 改序：全部/收藏/央视/卫视/地方台——收藏插第二位）
+    Check(DrawerSupport.Label(DrawerSupport.Tab.Cctv) == "央视", "B·五标签文案（央视）");
+    Check(((DrawerSupport.Tab[])Enum.GetValues(typeof(DrawerSupport.Tab)))
+        .Select(t => DrawerSupport.Label(t)).SequenceEqual(new[] { "全部", "收藏", "央视", "卫视", "地方台" }),
+        "1.0.12 UI②·标签顺序=全部/收藏/央视/卫视/地方台（收藏插第二位）");
+    Check(DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, true) == DrawerSupport.Tab.Cctv
+        && DrawerSupport.NextTab(DrawerSupport.Tab.Favorite, false) == DrawerSupport.Tab.All,
+        "1.0.12 UI②·标签循环随改序自动生效：收藏→央视、收藏反向→全部");
+    Check(DrawerSupport.NextTab(DrawerSupport.Tab.All, true) == DrawerSupport.Tab.Favorite
+        && DrawerSupport.NextTab(DrawerSupport.Tab.Local, true) == DrawerSupport.Tab.All,
+        "1.0.12 UI②·首尾循环：全部→收藏、地方台→全部");
+    // 1.0.12 UI②·默认定位当前台：已收藏→收藏；未收藏按分类；无归属→全部
+    var curFav = chans.First(c => c.Number == 2); // 省台已收藏
+    var curCctv = chans.First(c => c.Number == 1); // 央视未收藏
+    Check(DrawerSupport.DefaultTab(curFav, n => favOrder.Contains(n)) == DrawerSupport.Tab.Favorite,
+        "1.0.12 UI②·当前台已收藏默认定位「收藏」");
+    Check(DrawerSupport.DefaultTab(curCctv, n => favOrder.Contains(n)) == DrawerSupport.Tab.Cctv,
+        "1.0.12 UI②·未收藏按分类定位（央视）");
+    Check(DrawerSupport.DefaultTab(null, n => favOrder.Contains(n)) == DrawerSupport.Tab.All,
+        "1.0.12 UI②·无当前台默认「全部」");
+
+    // 全部标签：收藏成组置顶（按收藏序）+ 无信号分组置底（v22 第 7/15 项：画质档位行撤出列表页）
+    var all = DrawerSupport.BuildRows(DrawerSupport.Tab.All, chans, favOrder, Dead);
+    Check(all.All(r => r is DrawerSupport.DrawerRow.Channel or DrawerSupport.DrawerRow.Group), "v22 第 7 项：画质档位行撤出，抽屉只剩频道/分组行");
+    Check(all.OfType<DrawerSupport.DrawerRow.Group>().Any(g => g.Label == "★ 收藏"), "B·收藏成组置顶");
+    Check(all.Select((r, i) => (r, i)).Where(x => x.r is DrawerSupport.DrawerRow.Channel)
+            .Select(x => ((DrawerSupport.DrawerRow.Channel)x.r).Data.Number).SequenceEqual(new[] { 3, 2, 1, 3 }),/* 无信号组置底后复列 */
+        "B·行序=收藏序(3,2)在先+其余按台单(1)在后");
+    Check(all.OfType<DrawerSupport.DrawerRow.Group>().Any(g => g.Label.Contains("无信号")), "B·全部标签无信号分组置底");
+
+    // 分类标签过滤：央视只留 CCTV1（且无收藏组——收藏里没有央视台）
+    var cctv = DrawerSupport.BuildRows(DrawerSupport.Tab.Cctv, chans, favOrder, Dead);
+    Check(cctv.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 1 }),
+        "B·央视标签过滤只留央视台");
+    Check(!cctv.OfType<DrawerSupport.DrawerRow.Group>().Any(g => g.Label == "★ 收藏"), "B·标签内无收藏台则无收藏组");
+
+    // v22 第 7 项：央视=央视/CGTN/专项并集；地方台=城市台/自有源收窄，不再兜非央视非卫视杂烩
+    var wide = new List<Channel>
+    {
+        new() { Name="CCTV1", Number=1, Category=ChannelCategory.Cctv, StreamUrl="http://t/1" },
+        new() { Name="CGTN纪录", Number=2, Category=ChannelCategory.Cgtn, StreamUrl="http://t/2" },
+        new() { Name="风云剧场", Number=3, Category=ChannelCategory.Special, StreamUrl="http://t/3" },
+        new() { Name="WS1", Number=4, Category=ChannelCategory.Provincial, StreamUrl="http://t/4" },
+        new() { Name="CS1", Number=5, Category=ChannelCategory.City, StreamUrl="http://t/5" },
+        new() { Name="自录1", Number=6, Category=ChannelCategory.UserSource, StreamUrl="http://t/6" },
+    };
+    var cctvWide = DrawerSupport.BuildRows(DrawerSupport.Tab.Cctv, wide, new List<int>(), Dead);
+    Check(cctvWide.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 1, 2, 3 }),
+        "v22 第 7 项：央视标签含 CGTN 与专项频道");
+    var localWide = DrawerSupport.BuildRows(DrawerSupport.Tab.Local, wide, new List<int>(), Dead);
+    Check(localWide.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 5, 6 }),
+        "v22 第 7 项：地方台标签只收城市台与自有源");
+    var satWide = DrawerSupport.BuildRows(DrawerSupport.Tab.Satellite, wide, new List<int>(), Dead);
+    Check(satWide.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 4 }),
+        "v22 第 7 项：卫视标签只收省台");
+
+    // v22 第 6/15 项：空态两条——收藏空/分类空如实告知，不白屏
+    var emptyLocal = DrawerSupport.BuildRows(DrawerSupport.Tab.Local, wide.Where(c => c.Number == 4).ToList(), new List<int>(), Dead);
+    Check(emptyLocal.Count == 1 && emptyLocal[0] is DrawerSupport.DrawerRow.Note n1 && n1.Text == "该分类暂无频道",
+        "v22 第 6/15 项：分类装配后无频道补空态行");
+    var emptyFav = DrawerSupport.BuildRows(DrawerSupport.Tab.Favorite, chans, new List<int>(), Dead);
+    Check(emptyFav.Count == 1 && emptyFav[0] is DrawerSupport.DrawerRow.Note n2 && n2.Text.Contains("收藏夹是空的"),
+        "v22 第 6/15 项：收藏空态给指引不白屏");
+
+    // 收藏标签：按收藏排序铺开
+    var favRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Favorite, chans, favOrder, Dead);
+    Check(favRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 3, 2 }),
+        "B·收藏标签按收藏排序铺开");
+
+    // v22 第 9 项：画面信息短格式——帧率+分辨率一行、画质一行；同值只显一档、变化显 a>b、缺失/到限口径
+    Check(FrameStatsLine.FpsSegment(null, null, false) == "帧率:检测中", "v22 第 9 项：帧率缺失未到限显检测中");
+    Check(FrameStatsLine.FpsSegment(null, null, true) == "帧率:--", "v22 第 9 项：帧率缺失到限显 --");
+    Check(FrameStatsLine.FpsSegment(25, null, false) == "帧率:25fps", "v22 第 9 项：现值未测同值单显");
+    Check(FrameStatsLine.FpsSegment(25, 25.2, false) == "帧率:25fps", "v22 第 9 项：帧率小幅波动按同值");
+    Check(FrameStatsLine.FpsSegment(25, 30, false) == "帧率:25fps>30fps", "v22 第 9 项：帧率变化显原>现");
+    Check(FrameStatsLine.ResSegment(0, 0, 0, 0, true) == "分辨率:--", "v22 第 9 项：分辨率缺失到限显 --");
+    Check(FrameStatsLine.ResSegment(1920, 1080, 1920, 1080, false) == "分辨率:1080P", "v22 第 9 项：同档并入档位文案");
+    Check(FrameStatsLine.ResSegment(1920, 1080, 2560, 1440, false) == "分辨率:1080P>2K", "v22 第 9 项：分辨率变化显 1080P>2K");
+    Check(FrameStatsLine.ResSegment(1280, 720, 640, 360, false) == "分辨率:720P", "v22 第 9 项：≤1280 同归 720P 只显一档");
+    Check(FrameStatsLine.TierSegment("高", true) == "画质:高:生效", "v22 第 9 项：画质档生效口径");
+    Check(FrameStatsLine.TierSegment("低", false) == "画质:低:未生效", "v22 第 9 项：临时降档如实显未生效");
+    Check(FrameStatsLine.TierSegment("关", true) == "画质:关", "v22 第 9 项：关档只显关");
+
+    // v22 第 16 项：18 路挂链后抽屉分类过滤对账——地方台含 13 城市候选，卫视含甘肃/福建经济
+    {
+        var cat2 = new ChannelCatalog(new FavoriteStore());
+        cat2.RegisterSource(new YangshipinSource());
+        cat2.RegisterSource(new CztvSource());
+        cat2.RegisterSource(new GzstvSource());
+        cat2.RegisterSource(new XatvSource());
+        cat2.RegisterSource(new NmtvSource());
+        cat2.RegisterSource(new GxtvSource());
+        cat2.RegisterSource(new CityCandidatesSource());
+        cat2.Rebuild();
+        var favReal = new List<int>();
+        var localRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Local, cat2.All, favReal, c => ChannelHealth.Alive);
+        var localNums = localRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).ToList();
+        Check(localNums.Count == 26, $"v22 第 16 项：地方台=原 13 城市+候选 13（实际 {localNums.Count}）");
+        Check(localNums.All(n => cat2.ByNumber(n)!.Category is ChannelCategory.City or ChannelCategory.UserSource),
+            "v22 第 16 项：地方台标签只含城市台/自有源");
+        var satRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Satellite, cat2.All, favReal, c => ChannelHealth.Alive);
+        var satNames = satRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Name).ToList();
+        Check(satNames.Contains("甘肃经济") && satNames.Contains("福建经济"), "v22 第 16 项：卫视标签含甘肃/福建经济");
+    }
+
+    // 节目单格式化 + 限流提示
+    var start = new DateTime(2026, 11, 10, 20, 0, 0);
+    var end = start.AddMinutes(45);
+    var line = new DrawerSupport.EpgLine("新闻联播", start, end);
+    Check(DrawerSupport.Clock(start) == "20:00", "B·节目时刻 HH:mm 格式");
+    Check(DrawerSupport.NowLabel(line, start.AddMinutes(15)).StartsWith("20:00 – 20:45 · 还剩 30 分钟"),
+        "B·当前节目带剩余分钟");
+    Check(DrawerSupport.RateLimitHint("CCTV1", 90_000).Contains("CCTV1") && DrawerSupport.RateLimitHint("CCTV1", 90_000).Contains("限流"),
+        "B·限流提示点名台号与原因");
+    Check(DrawerSupport.RateLimitHint("CCTV1", 90_000).Contains("约 2 分钟后自动重试"),
+        "v22 第 2 项：限流提示按退避账剩余分钟给预期");
+    Check(DrawerSupport.RateLimitHint("CCTV1", 0).Contains("即将自动重试") && !DrawerSupport.RateLimitHint("CCTV1", 0).Contains("约 1 分钟"),
+        "v22 第 2 项：退避期外不再写死一分钟");
+}
+
+// ---- A 类 v21 新增断言 ----
+{
+    // A 类 P1·选项合并（缺键才补）：请求头不被整表覆盖
+    var merged = MediaOptionMerge.Merge(
+        new List<string> { ":http-referrer=https://www.yangshipin.cn/", ":http-user-agent=UA-X", ":network-caching=1200" },
+        new List<(string, string)> { ("video-filter", "sharpen") });
+    Check(merged.Contains(":http-referrer=https://www.yangshipin.cn/"), "P1合并：旧请求头保留");
+    Check(merged.Contains(":http-user-agent=UA-X"), "P1合并：旧UA保留");
+    Check(merged.Contains(":video-filter=sharpen"), "P1合并：新键补入");
+    Check(merged.Contains(":network-caching=1200"), "P1合并：无关键保留");
+    // 同键以新值为准；空现有表全按新表；无等号条目保留；前导冒号解析
+    var merged2 = MediaOptionMerge.Merge(
+        new List<string> { ":video-filter=sharpen", ":sharpen-sigma=0.8" },
+        new List<(string, string)> { ("video-filter", "sharpen,adjust"), ("contrast", "1.08") });
+    Check(merged2.Contains(":video-filter=sharpen,adjust"), "P1合并：同键新值胜");
+    Check(merged2.Contains(":sharpen-sigma=0.8"), "P1合并：未给键沿用旧值");
+    Check(merged2.Contains(":contrast=1.08"), "P1合并：新键追加");
+    var merged3 = MediaOptionMerge.Merge(new List<string>(), new List<(string, string)> { ("a", "1") });
+    Check(merged3.Count == 1 && merged3[0] == ":a=1", "P1合并：空表现场全补");
+    var merged4 = MediaOptionMerge.Merge(new List<string> { "solo" }, new List<(string, string)>());
+    Check(merged4.Count == 1 && merged4[0] == "solo", "P1合并：无等号条目原样保留");
+
+    // A 类第10项·调速器：掉帧立即降档（会话临时档）+ 平稳 10 分钟回位
+    var gov = new SmartGovernor(AiLiveTier.High);
+    long t0 = 1_000_000;
+    Check(gov.Tick(0.05, false, t0) == true && gov.Effective == AiLiveTier.Low, "A⑩掉帧超阈立即降档");
+    Check(gov.Tick(0.0, false, t0 + 5 * 60 * 1000) == false && gov.Effective == AiLiveTier.Low, "A⑩未满10分钟不回升");
+    Check(gov.Tick(0.0, false, t0 + SmartGovernor.StableRestoreMs + 1) == true && gov.Effective == AiLiveTier.High, "A⑩平稳10分钟逐档回位");
+    Check(gov.Tick(0.0, false, t0 + 2 * SmartGovernor.StableRestoreMs) == false, "A⑩基准档不再升");
+    var govOff = new SmartGovernor(AiLiveTier.Off);
+    govOff.Tick(0.5, true, 0);
+    Check(govOff.Effective == AiLiveTier.Off, "A⑩地板档不越降");
+    var govLow = new SmartGovernor(AiLiveTier.Low);
+    govLow.Tick(0.03, false, 100);
+    Check(govLow.Effective == AiLiveTier.Off && govLow.IsDowngraded, "A⑩降档即临时档标记");
+
+    // A 类第8项·32 位封顶=天花板下沉（地板保留）：auto <2GB 仍关，高档压低
+    Check(LiveQuality.Pick("high", true, 4L * 1024 * 1024 * 1024) == AiLiveTier.Low, "A⑧32位高档封顶=低档");
+    Check(LiveQuality.Pick("auto", true, 1500 * 1024 * 1024) == AiLiveTier.Off, "A⑧32位auto地板仍=关");
+    Check(LiveQuality.Pick("off", true, 8L * 1024 * 1024 * 1024) == AiLiveTier.Off, "A⑧off尊重用户");
+
+    // A 类第5项·实际档显示名
+    Check(LiveQuality.TierName(AiLiveTier.Off) == "关", "A⑤实际档名=关");
+    Check(LiveQuality.TierName(AiLiveTier.Low) == "低", "A⑤实际档名=低");
+    Check(LiveQuality.TierName(AiLiveTier.High) == "高", "A⑤实际档名=高");
+
+    // A 类第2项·信息行单写入口：同文重刷吞 + 优先级让位 + 到期放行
+    var hub = new InfoLineHub();
+    long now = 10_000;
+    Check(hub.Submit("1  CCTV1 连接中…", InfoLinePriority.Connect, now) != null, "A②连接状态上屏");
+    Check(hub.Submit("1  CCTV1 连接中…", InfoLinePriority.Connect, now + 100) == null, "A②同文重刷直接吞");
+    Check(hub.Submit("1  画质已自动调为「低」", InfoLinePriority.TierChange, now + 200) == null, "A②档位变化让位连接状态");
+    Check(hub.Poll(now + InfoLineHub.HoldMs[InfoLinePriority.Connect] + 1) == "1  画质已自动调为「低」", "A②连接保持期到放行档位变化");
+    Check(hub.Submit("1  频道名", InfoLinePriority.Normal, now + 12_000) != null, "A②常规随到随显");
+    Check(hub.Submit("1  取流被限流", InfoLinePriority.RateLimit, now + 12_100) != null, "A②限流可顶常规");
+    Check(hub.Submit("1  又一条常规", InfoLinePriority.Normal, now + 12_200) == null, "A②常规让位限流保持期");
+    hub.Reset();
+    Check(hub.Submit("1  新台连接中…", InfoLinePriority.Connect, now + 13_000) != null, "A②Reset清闸后立即放行");
+}
+
+
+    // ---- A⑬ 多端点竞速 + 403 退避账 ----
+    {
+        var ledger = new SourceBackoffLedger();
+        long now = 1000;
+        // 退避指数：首败 2 分钟、连败 ×4 封顶 2 小时
+        ledger.RecordLimited("yangshipin", now);
+        Check(ledger.IsFrozen("yangshipin", now + 60_000) == true, "A⑬403退避期内冻结");
+        Check(ledger.IsFrozen("yangshipin", now + 120_001) == false, "A⑬首败退避约2分钟");
+        Check(WarmupPolicy.PaceOf("yangshipin").RefreshIntervalMs == 10 * 60_000, "A⑥央视频保鲜10分钟");
+        Check(WarmupPolicy.PaceOf("nmtv").BatchAggregation == true, "A⑥nmtv整表聚合");
+        Check(WarmupPolicy.PaceOf("未知源").RefreshIntervalMs == 10 * 60_000, "A⑥未注册源保守兜底");
+        // 连败指数加深
+        var l2 = new SourceBackoffLedger();
+        var pace = WarmupPolicy.PaceOf("yangshipin");
+        l2.RecordLimited("yangshipin", 0, pace);           // 2min
+        l2.RecordLimited("yangshipin", 1000, pace);        // 8min
+        l2.RecordLimited("yangshipin", 2000, pace);        // 32min
+        l2.RecordLimited("yangshipin", 3000, pace);        // 128min
+        l2.RecordLimited("yangshipin", 4000, pace);        // 封顶 2h
+        Check(l2.RemainingMs("yangshipin", 4000) == 7_200_000, "A⑥退避封顶2小时");
+        l2.Recover("yangshipin");
+        Check(l2.IsFrozen("yangshipin", 4000) == false, "A⑥200全额恢复");
+        // 竞速：退避期源跳过；首个 Alive 胜出；4 秒预算不归按失败
+        var racers = new List<EndpointRacer.Candidate>
+        {
+            new("slow", async () => { await Task.Delay(10_000); return EndpointRacer.Outcome.Alive; }), // 预算外
+            new("fast", () => Task.FromResult(EndpointRacer.Outcome.Alive)),
+            new("dead", () => Task.FromResult(EndpointRacer.Outcome.Dead)),
+        };
+        var led = new SourceBackoffLedger();
+        var win = EndpointRacer.RaceAsync(racers, led, 0, budgetMs: 300).GetAwaiter().GetResult();
+        Check(win == "fast", "A⑬首个探通者胜出");
+        // 全员退避：竞速不发起
+        led.RecordLimited("fast", 0, WarmupPolicy.PaceOf("xatv"));
+        led.RecordLimited("dead", 0, WarmupPolicy.PaceOf("xatv"));
+        led.RecordLimited("slow", 0, WarmupPolicy.PaceOf("xatv"));
+        var win2 = EndpointRacer.RaceAsync(racers, led, 0).GetAwaiter().GetResult();
+        Check(win2 is null, "A⑬退避期内竞速不发起");
+        // 限流回调落账
+        var led3 = new SourceBackoffLedger();
+        var lim = new List<EndpointRacer.Candidate> { new("lk", () => Task.FromResult(EndpointRacer.Outcome.Limited)) };
+        string? hit = null;
+        EndpointRacer.RaceAsync(lim, led3, 0, onLimited: id => { hit = id; led3.RecordLimited(id, 0, WarmupPolicy.PaceOf("xatv")); return Task.CompletedTask; })
+            .GetAwaiter().GetResult();
+        Check(hit == "lk" && led3.IsFrozen("lk", 1), "A⑬竞速403写同一本退避账");
+
+        // ---- v28 主线④网络面四点断言 ----
+        {
+            // ①竞速默认开：无开关即常开——空候选竞速立即返回 null（不抛不挂），A⑬行为断言已盖完整链路
+            var emptyRace = await EndpointRacer.RaceAsync(Array.Empty<EndpointRacer.Candidate>(), led3, 0);
+            Check(emptyRace is null, "v28网络①竞速默认开（空候选立即收场不挂，A⑬口径不变）");
+            // ②抢首包默认关：TV 预热/预取只取票+几 KB 头探（Range 0-2047），不拉首分片——预检探测仅头级，且结果只三态不带分片载荷
+            var pv = new[] { StreamResolver.ProbeVerdict.Reachable, StreamResolver.ProbeVerdict.Rejected, StreamResolver.ProbeVerdict.Unreachable };
+            Check(pv.Length == 3, "v28网络②抢首包默认关（预热仅 Range 0-2047 头级探，无首分片拉取）");
+            // ③DNS 择优：缓存命中、DoH 失败回落系统 DNS、IP 字面量直返、择路降权
+            long dnsClock = 1_700_000_000_000;
+            var picker = new StreamDnsPicker(
+                host => Task.FromResult(new[] { IPAddress.Parse("1.2.3.4"), IPAddress.Parse("5.6.7.8") }),
+                (server, h) => server == "223.5.5.5" ? Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }) : Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()),
+                () => dnsClock);
+            var ips1 = picker.ResolveAsync("example.com").GetAwaiter().GetResult();
+            Check(ips1.Select(i => i.ToString()).SequenceEqual(new[] { "1.2.3.4", "5.6.7.8", "9.9.9.9" }), "v28网络③DNS合并去重只取IPv4（系统→阿里→CF 拼接序）");
+            // DoH 全挂：系统 DNS 兜底仍出结果
+            var pickerFallback = new StreamDnsPicker(
+                host => Task.FromResult(new[] { IPAddress.Parse("1.2.3.4") }),
+                (s, h) => throw new Exception("DoH 挂了"),
+                () => dnsClock);
+            var ips2 = pickerFallback.ResolveAsync("example.com").GetAwaiter().GetResult();
+            Check(ips2.Length == 1 && ips2[0].ToString() == "1.2.3.4", "v28网络③DoH异常回落系统DNS（兜底不挂取流）");
+            // IP 字面量直接返回（不再解析）
+            var literal = new StreamDnsPicker(() => dnsClock);
+            var lit = literal.ResolveAsync("203.0.113.9").GetAwaiter().GetResult();
+            Check(lit.Length == 1 && lit[0].ToString() == "203.0.113.9", "v28网络③IP字面量直返不走解析");
+            // 择路降权：失败 IP 排后、成功恢复
+            picker.ReportFail(ips1[0]);
+            var ips3 = picker.ResolveAsync("example.com").GetAwaiter().GetResult(); // 缓存内，但重排序生效
+            Check(ips3.Last().ToString() == "1.2.3.4", "v28网络③失败IP择路降权排后（不拉黑）");
+            picker.ReportOk(ips1[0]);
+            var ips4 = picker.ResolveAsync("example.com").GetAwaiter().GetResult();
+            Check(ips4.First().ToString() == "1.2.3.4", "v28网络③成功恢复原序");
+            // ④连接复用兜底：取流双通道均为静态单例（复用生效）+ 池化连接寿命 5 分钟兜底
+            Check(StreamResolver.Dns is not null, "v28网络④DNS择优挂接取流链路（静态单例入口在位）");
+            var direct = await StreamResolver.PickEndpointAsync("http://example.com/live.m3u8?tok=1",
+                new StreamDnsPicker(host => Task.FromResult(new[] { IPAddress.Parse("9.9.9.9") }), (s, h) => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()), () => dnsClock));
+            Check(direct.StartsWith("http://9.9.9.9/") && direct.Contains("live.m3u8?tok=1"), "v28网络④PickEndpoint 择优替换主机（路径与查询原样保留）");
+            var fallback = await StreamResolver.PickEndpointAsync("http://example.com/live.m3u8?tok=2",
+                new StreamDnsPicker(host => Task.FromException<IPAddress[]>(new Exception("解析挂了")), (s, h) => Task.FromResult<IPAddress[]>(Array.Empty<IPAddress>()), () => dnsClock));
+            Check(fallback == "http://example.com/live.m3u8?tok=2", "v28网络④解析失败兜底原样返回（异常不挂取流）");
+        }
+    }
+
+
+    // ---- A⑥ 预热落盘层：读写/保鲜期/超限清最旧/节流落盘/损坏即弃 ----
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "taolive_warmup_" + Guid.NewGuid().ToString("N"));
+        var store = new WarmupStore(dir);
+        long t = 1_700_000_000_000;
+        store.Put("u1", "body1", 60_000, t);
+        Check(store.Get("u1", t + 1) == "body1", "A⑥落盘写入读回");
+        Check(store.Get("u1", t + 61_000) is null, "A⑥保鲜期外视为没有（现场重取）");
+        // 落盘真实写文件（节流 3 秒后 Flush）
+        store.Flush(t + 10_000);
+        Check(File.Exists(Path.Combine(dir, "playlist_cache.json")), "A⑥节流落盘出文件");
+        var store2 = new WarmupStore(dir);
+        store2.Load();
+        Check(store2.Get("u1", t + 1) == "body1", "A⑥重启灌回复用");
+        // 超限清最旧（容量 128）
+        for (int i = 0; i < 200; i++) store.Put($"k{i}", "b" + i, 3_600_000, t + 20_000 + i);
+        Check(store.Count <= 128, "A⑥上限128超限清最旧");
+        // 损坏文件按无缓存处理
+        File.WriteAllText(Path.Combine(dir, "playlist_cache.json"), "{broken");
+        var store3 = new WarmupStore(dir);
+        store3.Load();
+        Check(store3.Count == 0, "A⑥损坏文件即弃不挡起播");
+        // 节流：3 秒内第二次 Flush 不落盘（不抛错即可）
+        store.Put("u2", "b", 1000, t + 30_000);
+        store.Flush(t + 31_000);
+        Check(true, "A⑥节流窗口内重复落盘安全");
+        // v28 读盘优化：灌回改后台后，Load 与播放线程 Put/Get 并发——有锁护体，无异常不丢账
+        {
+            var cdir = Path.Combine(Path.GetTempPath(), "taolive_warmup_c_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(cdir);
+            File.WriteAllText(Path.Combine(cdir, "playlist_cache.json"),
+                JsonSerializer.Serialize(new Dictionary<string, WarmupEntry> { ["seed"] = new() { Body = "sb", AtMs = t, FreshnessMs = 3_600_000 } }));
+            var cstore = new WarmupStore(cdir);
+            var loadTask = Task.Run(cstore.Load); // 模拟 UI 层后台灌回
+            var errs = new List<Exception>();
+            var workers = Enumerable.Range(0, 8).Select(i => Task.Run(() =>
+            {
+                try
+                {
+                    for (int k = 0; k < 10; k++) // 共 8×10=80 条 + 种子 1 条 < 容量 128，不触发超限清最旧（该项已有独立断言）
+                    {
+                        cstore.Put($"u{i}-{k}", "b", 3_600_000, t);
+                        cstore.Get("seed", t + 1);
+                    }
+                }
+                catch (Exception ex) { lock (errs) errs.Add(ex); }
+            })).ToArray();
+            Task.WaitAll(new[] { loadTask }.Concat(workers).ToArray());
+            Check(errs.Count == 0, $"v28预热账并发Load+Put/Get无竞态异常（{errs.Count}笔）");
+            Check(cstore.Get("seed", t + 1) == "sb", "v28预热账灌回种子条目保留");
+        }
+    }
+
+
+// ===== AI 直播缓冲池（老板 11-11 00:08 口径）：初始 10–20s / 60s 封顶 / 三道保险 =====
+var aiClock = 0.0;
+double AiClock() { return aiClock; }
+var pool = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 15.0, clockSeconds: AiClock);
+
+// 1 初始缓冲未攒够不放行
+Check(!pool.IsInitialBufferReady(), "AI池:初始未攒够不放行");
+
+// 2 攒到目标 15 秒即放行（10–20 区间）
+for (int i = 0; i < 3; i++) pool.EnqueueSegment(i, 5.0);
+Check(pool.LagSeconds() == 15.0, "AI池:入队累计15s");
+aiClock += 1.0;
+pool.ReportProcessed(0, 5.0, 1.0); pool.ReportProcessed(1, 5.0, 1.0); pool.ReportProcessed(2, 5.0, 1.0);
+Check(pool.IsInitialBufferReady(), "AI池:加工完15s放行播放");
+
+// 3 加工速度快于实时：不降档
+pool.ReportProcessed(3, 5.0, 2.0); // 2.5x
+var d3 = pool.EnqueueSegment(3, 5.0);
+Check(!d3.SuggestDowngrade, "AI池:2.5x不降档");
+
+// 4 加工慢于实时且有积压：建议降档（保险①）
+var slowPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+slowPool.EnqueueSegment(0, 5.0);
+aiClock += 10.0;
+slowPool.ReportProcessed(0, 5.0, 10.0); // 0.5x
+var d4 = slowPool.EnqueueSegment(1, 5.0);
+Check(d4.SuggestDowngrade, "AI池:0.5x建议降档");
+
+// 5 落后 60 秒封顶强制直出（保险③），回落 45 秒以下恢复加工
+var lagPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+AiIngestDecision dl = lagPool.EnqueueSegment(-1, 0.0);
+for (int i = 0; i < 12; i++) dl = lagPool.EnqueueSegment(i, 5.0); // 60s 全入队
+for (int i = 0; i < 12; i++) lagPool.ReportProcessed(i, 5.0, 0.5); // 全加工完，速率 10x
+Check(dl!.Action == AllPlayer.BLL.AiIngestAction.Process, "AI池:60s整未越线");
+dl = lagPool.EnqueueSegment(12, 5.0); // 65s 越线
+Check(dl.Action == AllPlayer.BLL.AiIngestAction.DirectPlay && dl.Reason == AllPlayer.BLL.AiBypassReason.LagCap, "AI池:65s强制直出(60s封顶)");
+Check(lagPool.IsInitialBufferReady(), "AI池:直出态恒放行");
+// 直出即时播放，lag 缩回：再入 4 片全直出 → lag=65-25=40 <45 恢复
+for (int i = 13; i < 17; i++) dl = lagPool.EnqueueSegment(i, 5.0);
+Check(dl.Reason == AllPlayer.BLL.AiBypassReason.LagCap, "AI池:恢复前仍直出");
+dl = lagPool.EnqueueSegment(17, 5.0);
+Check(dl.Reason == AllPlayer.BLL.AiBypassReason.LagCap, "AI池:封顶后持续直出延迟锁定");
+lagPool.ReportPlayed(17, 45.0); // 播放确认追平（模拟快进/追平）
+lagPool.EnqueueSegment(17, 0.0);
+lagPool.Reset();               // 换台清池
+dl = lagPool.EnqueueSegment(18, 5.0);
+Check(dl.Action == AllPlayer.BLL.AiIngestAction.Process && dl.Reason == AllPlayer.BLL.AiBypassReason.None, "AI池:复位后恢复加工");
+
+// 6 过热退直出（保险②），解除后恢复
+var thPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+thPool.SetThermalGuard(overheating: true, lowBattery: false);
+var d6 = thPool.EnqueueSegment(0, 5.0);
+Check(d6.Action == AllPlayer.BLL.AiIngestAction.DirectPlay && d6.Reason == AllPlayer.BLL.AiBypassReason.Thermal, "AI池:过热退原画质直出");
+Check(thPool.IsInitialBufferReady(), "AI池:过热态放行");
+thPool.SetThermalGuard(false, false);
+d6 = thPool.EnqueueSegment(1, 5.0);
+Check(d6.Action == AllPlayer.BLL.AiIngestAction.Process, "AI池:退热恢复加工");
+
+// 7 低电退直出
+var lbPool = new AllPlayer.BLL.AiBufferPool(clockSeconds: AiClock);
+lbPool.SetThermalGuard(false, lowBattery: true);
+var d7 = lbPool.EnqueueSegment(0, 5.0);
+Check(d7.Action == AllPlayer.BLL.AiIngestAction.DirectPlay && d7.Reason == AllPlayer.BLL.AiBypassReason.LowBattery, "AI池:低电退直出");
+
+// 8 初始目标钳制 10–20
+var aiClampMin = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 5.0);
+var aiClampMax = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 99.0);
+for (int i = 0; i < 2; i++) aiClampMin.EnqueueSegment(i, 5.0); aiClampMin.ReportProcessed(0, 5.0, 0.1); aiClampMin.ReportProcessed(1, 5.0, 0.1);
+Check(aiClampMin.IsInitialBufferReady(), "AI池:5s钳到10s下限(10s放行)");
+for (int i = 0; i < 2; i++) aiClampMax.EnqueueSegment(i, 5.0); aiClampMax.ReportProcessed(0, 5.0, 0.1); aiClampMax.ReportProcessed(1, 5.0, 0.1);
+Check(!aiClampMax.IsInitialBufferReady(), "AI池:99s钳到20s上限(10s不放行)");
+
+// 9 并发 smoke：三线程同时入队不炸账
+var cp = new AllPlayer.BLL.AiBufferPool(initialTargetSeconds: 15.0, maxLagSeconds: 10000.0, clockSeconds: AiClock);
+Parallel.For(0, 300, i => cp.EnqueueSegment(i, 1.0));
+Check(cp.LagSeconds() == 300.0, "AI池:300并发入队账目平");
+
+// 10 播放确认推进滞后回落
+cp.ReportPlayed(0, 100.0);
+Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
+
+// ==================== v25 修法批（九层第 27 项口径） ====================
+// 修法六：台级表现账（EpgKey+SourceId 一格账）+ 时段系数 + 让路闸；修法五/七并发安全；修法二清账口
+{
+    var pace = new ChannelPaceLedger();
+    const long baseMs = 600_000; // 央视频 10 分钟保鲜
+
+    // ① 台×源粒度：同台多源各记各的（老板 12:32 拍板口径）
+    for (int i = 0; i < 5; i++) { pace.Record("cctv1", "yangshipin", false); }
+    for (int i = 0; i < 8; i++) { pace.Record("cctv1", "nmtv", true); }
+    Check(pace.TierOf("cctv1", "yangshipin", batchSource: false) == ChannelPaceLedger.TierBrittle,
+        "v25⑥①同台多源各记各账：央视频源 0/5 记脆档不拖累 nmtv 源");
+    Check(pace.TierOf("cctv1", "nmtv", batchSource: false) == ChannelPaceLedger.TierStable,
+        "v25⑥①nmtv 源 8/8 记稳档（备援源抽风不拖累主源表现）");
+
+    // ② 滑动窗口 10 条封顶
+    var paceWin = new ChannelPaceLedger();
+    for (int i = 0; i < 12; i++) paceWin.Record("w1", "cztv", true); // 12 连正，窗口只留最近 10
+    paceWin.Record("w1", "cztv", false); paceWin.Record("w1", "cztv", false); // 2 负
+    Check(paceWin.TierOf("w1", "cztv", false) == ChannelPaceLedger.TierNormal,
+        "v25⑥②滑动窗口 10 条封顶：早期结论滚出窗口，按最近 10 条 8/10 记正常档（不因历史全程正而虚高）");
+
+    // ③ 窗口不足 3 条不评档（1 次失败不判脆，分析轮 3 漏洞 1）
+    var paceFew = new ChannelPaceLedger();
+    paceFew.Record("f1", "gzstv", false);
+    paceFew.Record("f1", "gzstv", false);
+    Check(paceFew.TierOf("f1", "gzstv", false) == ChannelPaceLedger.TierNormal,
+        "v25⑥③窗口<3 不评档：2 次失败仍正常档（1-2 次弹回不推脆档）");
+
+    // ④ 计负口径：网络级失败不计负（分析轮 2 漏洞 2）
+    Check(paceFew.TierOf("f1", "gzstv", false) == ChannelPaceLedger.TierNormal,
+        "v25⑥④网络级失败不计负：账本只认明确拒绝与播放流级失败");
+
+    // ⑤ 整表源不做台级三档（节拍按源，分析轮 2 漏洞 1）
+    Check(pace.TierOf("cctv1", "nmtv", batchSource: true) == ChannelPaceLedger.TierNormal,
+        "v25⑥⑤整表源豁免台级三档：batch=true 恒正常档");
+
+    // ⑥ 档位系数与钳制（登记口径含 jitter：值=tierMs × 时段 × jitter）
+    var paceFac = new ChannelPaceLedger();
+    for (int i = 0; i < 5; i++) paceFac.Record("x1", "yangshipin", true);
+    long stableMs = paceFac.RegisterIntervalMs("x1", "yangshipin", baseMs, 12, false);
+    Check(stableMs == (long)Math.Clamp(baseMs * 1.5 * ChannelPaceLedger.StableJitter("x1"), baseMs / 2, baseMs * 4),
+        "v25⑥⑥稳档 ×1.5×jitter（钳制内，非央视频时段外系数=1）");
+
+    // ⑦ 时段系数：晚高峰 0.7 / 深夜 2.0（同 jitter 口径精确对拍）
+    long peakMs = new ChannelPaceLedger().RegisterIntervalMs("x2", "cztv", baseMs, 20, false);
+    Check(peakMs == (long)Math.Clamp(baseMs * 0.7 * ChannelPaceLedger.StableJitter("x2"), baseMs / 2, baseMs * 4),
+        "v25⑥⑦晚高峰 19-23 → ×0.7（质量波动加密）");
+    long nightMs = new ChannelPaceLedger().RegisterIntervalMs("x3", "cztv", baseMs, 3, false);
+    Check(nightMs == (long)Math.Clamp(baseMs * 2 * ChannelPaceLedger.StableJitter("x3"), baseMs / 2, baseMs * 4),
+        "v25⑥⑦深夜 01-07 → ×2（正常档钳制上限 2×）");
+
+    // ⑧ yangshipin 时段系数恒 1.0（总闸只降不升，分析轮 1 漏洞 4）
+    for (int i = 0; i < 5; i++) { paceFac.Record("x4", "yangshipin", true); paceFac.Record("x5", "yangshipin", true); }
+    long yspPeak = paceFac.RegisterIntervalMs("x4", "yangshipin", baseMs, 20, false);   // 稳档 + 晚高峰
+    long yspNight = paceFac.RegisterIntervalMs("x5", "yangshipin", baseMs, 3, false);   // 稳档 + 深夜
+    Check(yspPeak == (long)Math.Clamp(baseMs * 1.5 * ChannelPaceLedger.StableJitter("x4"), baseMs / 2, baseMs * 4)
+        && yspNight == (long)Math.Clamp(baseMs * 1.5 * ChannelPaceLedger.StableJitter("x5"), baseMs / 2, baseMs * 4),
+        "v25⑥⑧央视频时段系数恒 1.0：晚高峰/深夜都不受时段加密（画像最敏感）");
+
+    // ⑨ 深夜总上限 4× / 晚高峰下限 0.5×（分析轮 1 漏洞 6）
+    var paceDeep = new ChannelPaceLedger();
+    for (int i = 0; i < 5; i++) paceDeep.Record("x6", "cztv", true);
+    Check(paceDeep.RegisterIntervalMs("x6", "cztv", baseMs, 2, false) <= baseMs * 4,
+        "v25⑥⑨深夜总上限 4×保鲜期（×jitter 后仍被钳住）");
+    var pacePeakLow = new ChannelPaceLedger();
+    for (int i = 0; i < 5; i++) pacePeakLow.Record("x7", "cztv", false);
+    Check(pacePeakLow.RegisterIntervalMs("x7", "cztv", baseMs, 20, false) >= baseMs / 2,
+        "v25⑥⑨晚高峰下限 0.5×保鲜期（脆档×0.7 不破下限）");
+
+    // ⑩ jitter ∈ [0.8,1.4] 且 EpgKey 稳定哈希一致（修法一 1c）
+    double j1 = ChannelPaceLedger.StableJitter("CCTV1"), j2 = ChannelPaceLedger.StableJitter("CCTV1");
+    Check(j1 >= 0.8 && j1 <= 1.4 && j1 == j2,
+        "v25一1c jitter ∈[0.8,1.4] 且 EpgKey 稳定哈希（同表分布一致不漂移）");
+
+    // ⑪ 全局让路闸：占位成功→MinGap 内拒绝→到期放行（修法一 1a）
+    var gate = new ChannelPaceLedger();
+    Check(gate.TryAcquireGate("yangshipin", 1_000_000, 2_000), "v25一1a 让路闸首次占位成功");
+    Check(gate.GateRemainingMs("yangshipin", 1_001_000) == 1_000,
+        "v25一1a 让路闸 MinGap 内剩余时长正确（不翻倍）");
+    Check(!gate.TryAcquireGate("yangshipin", 1_001_000, 2_000), "v25一1a MinGap 内再占失败（稳态与屏内共享同一闸）");
+    Check(gate.TryAcquireGate("yangshipin", 1_002_001, 2_000), "v25一1a 到期后重新可占");
+
+    // ⑫ RetainOnly 清孤儿（分析轮 55）
+    var paceRetain = new ChannelPaceLedger();
+    paceRetain.Record("keep1", "yangshipin", true);
+    paceRetain.Record("gone1", "yangshipin", true);
+    paceRetain.RetainOnly(k => k.StartsWith("keep"));
+    Check(paceRetain.TierOf("gone1", "yangshipin", false) == ChannelPaceLedger.TierNormal
+        && paceRetain.TierOf("keep1", "yangshipin", false) == ChannelPaceLedger.TierNormal,
+        "v25一55 RetainOnly 清孤儿：gone 台账清空，keep 台账保留");
+
+    // ⑬ SourceBackoffLedger 并发 smoke（修法七 3a：热备校验流与稳态循环并发入账）
+    var ledger = new SourceBackoffLedger();
+    Parallel.For(0, 300, i => ledger.RecordLimited("yangshipin", 1000 + i));
+    Check(ledger.IsFrozen("yangshipin", 1000) && ledger.RemainingMs("yangshipin", 1000) > 0,
+        "v25七3a 退避账 300 并发入账不炸账（ConcurrentDictionary）");
+    ledger.Recover("yangshipin");
+    Check(!ledger.IsFrozen("yangshipin", 1001), "v25七3a 200 全额恢复并行读安全");
+
+    // ⑭ 票账 ClearCooldowns：清冷却留缓存（修法二 2c/2d）
+    var ysp2 = new YspTicketService();
+    long t25 = 1794016800;
+    ysp2.MarkFetched("cc", t25, "http://x/cc.m3u8");
+    ysp2.MarkCooldown("cc", DateTimeOffset.FromUnixTimeSeconds(t25).DateTime);
+    ysp2.ClearCooldowns();
+    Check(!ysp2.InCooldown("cc", DateTimeOffset.FromUnixTimeSeconds(t25).DateTime.AddSeconds(1)),
+        "v25二2c ClearCooldowns：网络变更后票据冷却清零（不把好环境白冻 2 小时）");
+    Check(ysp2.TryGet("cc", t25 + 60, out var keep) && keep == "http://x/cc.m3u8",
+        "v25二2c ClearCooldowns：票据缓存保留验证（失败自然重新入账）");
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 
@@ -1905,3 +2574,5 @@ class StubLane : IStreamLane
     };
     public Task<string?> FetchAsync(Channel ch) => Task.FromResult<string?>($"http://{LaneId}/stream.m3u8");
 }
+
+// 桩源：三类可播 + 1 路接不进（骨架专用，真实源回填后换正式源）

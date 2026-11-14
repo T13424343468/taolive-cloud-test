@@ -140,24 +140,25 @@ public class HotStandbyKeeper
     /// 切换预算（2b：90 秒窗 4 次）：vc46 起统一由 resolver.Budget 账本收口，帧级切换同样消耗预算
     /// （耗尽返回 null，主路走既有自救链），防连环切源拖垮播放。
     /// </summary>
-    public async Task<(string Url, List<(string Key, string Value)> Options)?> TrySwitchAsync()
+    public Task<(string Url, List<(string Key, string Value)> Options)?> TrySwitchAsync()
     {
         // vc52 黄六：Stop()（换台，UI 线程）可在判空后 return 前把 _standbyUrl 置 null——
         // 原写法判空用字段、返回也用字段，两读之间竞窗可返回 (null, opts) 非空元组，
         // TryHotStandbyAsync 拿到后直写 _currentUrl=null → StartInternal 静默 return 看门狗失明。
         // 先捕局部变量：判空、返回同源，竞窗内置空也只会返回 null（走原自救链）
         var standbyUrlNow = _standbyUrl;
-        if (!_standbyOk || standbyUrlNow is null || _channel is null) return null;
+        if (!_standbyOk || standbyUrlNow is null || _channel is null)
+            return Task.FromResult<(string Url, List<(string Key, string Value)> Options)?>(null);
         // vc46②9-3：热备帧级切换同样受切换预算约束（此前注释说预算由 LiveVideoHost 侧计数——实际接线位在
         // resolver 账本，此注释与事实不符；vc46 起统一收口：帧级切换消耗一次预算，耗尽返回 null 走原自救链）。
         if (_resolver.Budget != null && !_resolver.Budget.TryConsume(_channel.EpgKey))
-            return null;
+            return Task.FromResult<(string Url, List<(string Key, string Value)> Options)?>(null);
         _standbyOk = false; // 粘住备路：本台会话不再自动回主路
         var ch = _channel;
         var opts = new List<(string Key, string Value)>();
         if (!string.IsNullOrEmpty(ch.Referer)) opts.Add(("http-referrer", ch.Referer));
         if (!string.IsNullOrEmpty(ch.UserAgent)) opts.Add(("http-user-agent", ch.UserAgent));
         CrashNet.Record($"[热备] {ch.Name} 主路断 → 帧级切备援（画面跳 2–3 秒；本台会话粘住备路，不回主路）");
-        return (standbyUrlNow, opts);
+        return Task.FromResult<(string Url, List<(string Key, string Value)> Options)?>((standbyUrlNow, opts));
     }
 }

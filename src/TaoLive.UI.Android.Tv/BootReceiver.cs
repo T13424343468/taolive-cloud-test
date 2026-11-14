@@ -26,7 +26,10 @@ public class WarmupBootReceiver : BroadcastReceiver
         try
         {
             var svc = new Intent(context, typeof(WarmupService)); // A⑥：只拉保活服务，预热引擎同进程共享
-            if (Build.VERSION.SdkInt >= BuildVersionCodes.O) context.StartForegroundService(svc);
+            if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：分析器只识别 OperatingSystem 判定，行为不变 */
+            {
+                context.StartForegroundService(svc); // ≥26 分支（CA1416 场景守卫显式化）
+            }
             else context.StartService(svc);
         }
         catch { /* ROM 拦截则静默，退化为「打开 App 时才预热」，功能不残废 */ }

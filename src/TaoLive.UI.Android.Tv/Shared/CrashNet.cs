@@ -93,7 +93,9 @@ public static class CrashNet
             {
                 fs.Seek(-MaxLogBytes / 2, SeekOrigin.End);
                 var rest = new byte[fs.Length - fs.Position];
-                fs.Read(rest, 0, rest.Length);
+                // 审查清零（CA2022）：FileStream.Read 不保证一次读满，循环读到位
+                int read, off = 0;
+                while (off < rest.Length && (read = fs.Read(rest, off, rest.Length - off)) > 0) off += read;
                 fs.SetLength(0);
                 fs.Write(rest, 0, rest.Length);
             }
@@ -124,6 +126,6 @@ public class UncaughtCrashPeer : Java.Lang.Object, Java.Lang.Thread.IUncaughtExc
     {
         // UR1: 未捕获异常现场同步落盘（进程可能随默认处理器终止, 排队会丢）
         CrashNet.RecordNow($"未捕获异常 线程={thread?.Name} {ex}");
-        _next?.UncaughtException(thread, ex);
+        if (thread != null && ex != null) _next?.UncaughtException(thread, ex); // 审查清零：接口契约参数非空，双判空消 CS8604
     }
 }

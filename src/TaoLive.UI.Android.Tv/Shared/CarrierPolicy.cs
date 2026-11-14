@@ -16,8 +16,15 @@ public static class CarrierPolicy
 {
     const string PrefName = "carrier";
 
-    static ISharedPreferences Prefs(Context c) =>
-        c.GetSharedPreferences(PrefName, FileCreationMode.Private)!;
+    static ISharedPreferences Prefs(Context c)
+    {
+        var p = c.GetSharedPreferences(PrefName, FileCreationMode.Private);
+        return p ?? throw new InvalidOperationException($"SharedPreferences '{PrefName}' 不可用（系统级异常，不该发生）");
+    }
+
+    /// <summary>打开偏好编辑器（审查清零：绑定 API Edit()/PutInt() 标注可空，工程内恒非空——统一封装判空消 CS8602；链式 PutInt 返回值可空，故逐条调用不解引用返回值）。</summary>
+    static ISharedPreferencesEditor EditOf(Context c) =>
+        Prefs(c).Edit() ?? throw new InvalidOperationException("SharedPreferences 编辑器不可用（系统级异常，不该发生）");
 
     /// <summary>启动时决定载体：纹理可用返回 true；上一次纹理启动没活到首帧则回退表面视图。</summary>
     public static bool ResolveStartupCarrier(Context c)
@@ -27,7 +34,10 @@ public static class CarrierPolicy
         if (p.GetInt("attempt", 0) == 1)
         {
             // 上一次纹理启动没活到首帧：判定不兼容，永久回退
-            p.Edit()!.PutInt("mode", 0).PutInt("attempt", 0).Apply();
+            var e0 = EditOf(c);
+            e0.PutInt("mode", 0);
+            e0.PutInt("attempt", 0);
+            e0.Apply();
             try
             {
                 File.AppendAllText(NoticePath(c),
@@ -39,17 +49,29 @@ public static class CarrierPolicy
         return true;
     }
 
-    public static void MarkAttempt(Context c) =>
-        Prefs(c).Edit()!.PutInt("attempt", 1).Apply();
+    public static void MarkAttempt(Context c)
+    {
+        var e1 = EditOf(c);
+        e1.PutInt("attempt", 1);
+        e1.Apply();
+    }
 
     /// <summary>首帧落地（或正常退后台）= 载体兼容，清标记。</summary>
-    public static void MarkOk(Context c) =>
-        Prefs(c).Edit()!.PutInt("attempt", 0).PutInt("ok", 1).Apply();
+    public static void MarkOk(Context c)
+    {
+        var e2 = EditOf(c);
+        e2.PutInt("attempt", 0);
+        e2.PutInt("ok", 1);
+        e2.Apply();
+    }
 
     /// <summary>纹理接线当场报错：永久回退，并把原因写进日志。</summary>
     public static void DisableTexture(Context c, string reason)
     {
-        Prefs(c).Edit()!.PutInt("mode", 0).PutInt("attempt", 0).Apply();
+        var e3 = EditOf(c);
+        e3.PutInt("mode", 0);
+        e3.PutInt("attempt", 0);
+        e3.Apply();
         try
         {
             File.AppendAllText(NoticePath(c),

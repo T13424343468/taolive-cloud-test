@@ -489,6 +489,8 @@ public class LiveVideoHost : IDisposable
     private async Task<bool> TryHotStandbyAsync(string via)
     {
         if (HotStandbySwitch is null || _userStopped) return false;
+        var hotSwitch = HotStandbySwitch; // 审查清零：先捕委托（防判空后委托被置空，消 CS8602）
+        if (hotSwitch is null || _userStopped) return false;
         long brokeAt = Environment.TickCount64;
         long now = brokeAt;
         if (now - _hotWindowStartMs > StallRescue.RescueWindowMs)
@@ -498,18 +500,21 @@ public class LiveVideoHost : IDisposable
         }
         if (_hotWindowCount >= 4) return false; // 修法七 2b：独立窗 4 次，防乒乓
         long hotGen = _genCounter.Current;   // PL1: 备路等待期间换台/新一代起播, 结果作废
-        var standby = await HotStandbySwitch();
-        if (_userStopped || standby is null || !_genCounter.IsCurrent(hotGen)) return false;
+        // 审查清零：委托返回值 Task 本身标注可空，先判 Task 再 await，消 CS8602（await 可空 Task 即解引用）
+        var standbyTask = hotSwitch();
+        var standby = standbyTask is null ? null : await standbyTask;
+        // 审查清零：属性模式匹配一次性建立非空绑定，消 CS8602（standby.Value 对可空值类型的解引用）
+        if (_userStopped || standby is not { } standbySrc || standbySrc.Url is null || !_genCounter.IsCurrent(hotGen)) return false;
         _hotWindowCount++;
         lock (_startLock)   // PL5: 热备写 _currentUrl+StartInternal 串行，防与换台/重连并发落账
         {
             if (_userStopped || !_genCounter.IsCurrent(hotGen)) return false;   // PL1: 落账前再守一次
             // vc52 黄六：Url=null 的元组不落账——直写 _currentUrl=null 会令 StartInternal 静默
             // return（_frameShown=false、看门狗在 _currentUrl is null 早退），画面定格无自救
-            if (string.IsNullOrEmpty(standby.Value.Url)) return false;
-            _currentUrl = standby.Value.Url;
+            if (string.IsNullOrEmpty(standbySrc.Url)) return false;
+            _currentUrl = standbySrc.Url;
             // 缺键才补：热备流只带 Referer/UA 两项，并入现有表保持既有选项（同 A 类 P1 口径）
-            _currentOptions = MergeOptions(_currentOptions, standby.Value.Options);
+            _currentOptions = MergeOptions(_currentOptions, standbySrc.Options);
             StartInternal(silent: true); // 定格保帧：同台自救不铺清场遮罩
         }
         try { CrashNet.Record($"[热备] {via}：帧级切备援发起（主路断到切换 {Environment.TickCount64 - brokeAt}ms，90 秒独立窗第 {_hotWindowCount}/4 次）"); } catch { }

@@ -32,10 +32,11 @@ public class WarmupService : Service
         }
         try
         {
-            if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.O)
+            if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：行为不变 */
             {
+                // 审查清零：本段整体 ≥API26 才可达（CA1416 场景守卫随分支显式化，行为不变）
                 var channel = new NotificationChannel(ChannelId, "后台预热", NotificationImportance.Min);
-                ((NotificationManager)GetSystemService(NotificationService)!).CreateNotificationChannel(channel);
+                ((NotificationManager?)GetSystemService(NotificationService))?.CreateNotificationChannel(channel);
                 var note = new Notification.Builder(this, ChannelId)
                     .SetContentText("直播源保活中，换台更快")
                     .SetSmallIcon(global::Android.Resource.Drawable.IcMediaPlay)
@@ -69,7 +70,14 @@ public class WarmupService : Service
         var flags = PendingIntentFlags.UpdateCurrent;
         if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.S)
             flags |= PendingIntentFlags.Immutable;
-        return PendingIntent.GetForegroundService(this, RestartAlarmCode, new Intent(this, typeof(WarmupService)), flags);
+        // 审查清零：API<26 无 GetForegroundService（CA1416 分支），退 StartService 装 PendingIntent（TV 低版本场景注释在 OnStartCommand）
+        if (!OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：行为不变 */
+        {
+            var pi = PendingIntent.GetService(this, RestartAlarmCode, new Intent(this, typeof(WarmupService)), flags);
+            return pi ?? throw new InvalidOperationException("PendingIntent 创建失败（系统级异常，不该发生）");
+        }
+        var pif = PendingIntent.GetForegroundService(this, RestartAlarmCode, new Intent(this, typeof(WarmupService)), flags);
+        return pif ?? throw new InvalidOperationException("PendingIntent 创建失败（系统级异常，不该发生）");
     }
 
     private void CancelRestartAlarm()

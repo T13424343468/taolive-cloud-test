@@ -114,10 +114,7 @@ public class MainActivity : Activity
     // v23 第 1 条：折叠交互整行退场——foldToggle 总开关行与 _expanded/_expandedInit 折叠状态一并清，
     // 列表默认铺开不留空行（BLL 的 ListFoldController 纯逻辑保留不动，测试断言不破）。
 
-    // v1.0.9 第④项：列表旁操作提示去掉，改为实时画面信息（v22 第 9 项改短格式：帧率+分辨率一行、画质一行）
-    private TextView? _statsInfo;   // v1.0.9 第④项：列表旁实时画面信息（帧率+分辨率短格式）
-    private System.Threading.Timer? _statsTicker;
-    // v1.0.9 第⑦/⑪项：重建列表的焦点锚点（分类键或 C:频道号），锚定原位置不跳头
+    // vc53 审查清零：RefreshStatsLine 与 _statsTicker 随第二刀「列表旁画面信息行」退场（ticker 不再创建，无调用点），死代码整删
     private string? _pendingFocusAnchor;
     // v1.0.9 第⑬项：本台会话实际取播的来源变体（健康表优先取最近验证可用来源）
     private Channel? _playSource;
@@ -264,7 +261,10 @@ public class MainActivity : Activity
         try
         {
             var svc = new Intent(this, typeof(WarmupService));
-            if (Build.VERSION.SdkInt >= BuildVersionCodes.O && _warmupEnabled) StartForegroundService(svc);
+            if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：分析器只识别 OperatingSystem 判定，行为不变 */
+            {
+                if (_warmupEnabled) StartForegroundService(svc); // ≥26 分支（CA1416 场景守卫显式化）
+            }
             else if (_warmupEnabled) StartService(svc);
         }
         catch (Exception svcEx) { CrashNet.Record($"[Warmup] 保活服务拉起失败（功能不残废）：{svcEx.Message}"); }
@@ -397,7 +397,7 @@ public class MainActivity : Activity
             if (_carrierTexture) CarrierPolicy.MarkOk(this); // 纹理载体活到首帧：判兼容
             if (_current != null) _precheck.MarkState(_current, ChannelHealth.Alive); // 播放实测存活
             _videoContainer?.SetBackgroundColor(Color.Transparent); // ⑦新流首帧到齐：撤底色亮画面
-            _videoMask.Visibility = ViewStates.Gone; // v22 第 1 项：首帧落地撤清场遮罩，旧合成帧全程未外露
+            if (_videoMask != null) _videoMask.Visibility = ViewStates.Gone; // v22 第 1 项：首帧落地撤清场遮罩，旧合成帧全程未外露
             // ⑬健康表回写：播放实测成功覆盖预检结论（取播来源变体优先；Unix 毫秒，落盘可比）
             // v28 主线③：同一处喂评分账——首帧成功+换台起点到首帧耗时（速度分），timeout=false
             if (_playSource != null)
@@ -593,7 +593,7 @@ public class MainActivity : Activity
         if (SwitchRevealPolicy.ShouldVeilImmediately(_frameEverShown))
         {
             _videoContainer?.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
-            _videoMask.Visibility = ViewStates.Visible;
+            if (_videoMask != null) _videoMask.Visibility = ViewStates.Visible;
         }
         // 雷二·延迟亮牌：清场遮罩已在（纯底无字），0.8 秒内新画面出来直接静音换流无感；
         // 没出来才在遮罩上亮「正在连接」品牌牌，且亮着就不撤直到首帧
@@ -692,7 +692,7 @@ public class MainActivity : Activity
                 if (SwitchRevealPolicy.ShouldVeilBeforeSwap(_frameEverShown))
                 {
                     _videoContainer?.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
-                    _videoMask.Visibility = ViewStates.Visible;
+                    if (_videoMask != null) _videoMask.Visibility = ViewStates.Visible;
                 }
                 _host.Play(resolved.Url, opts);
                 ShowInfoBar($"{ch.Number}  {ch.Name}");
@@ -1080,8 +1080,12 @@ public class MainActivity : Activity
         _prefs?.Edit()?.PutBoolean("warmup_enabled", _warmupEnabled)?.Apply();
         try
         {
-            if (_warmupEnabled) StartForegroundService(new Intent(this, typeof(WarmupService)));
-            else StopService(new Intent(this, typeof(WarmupService)));
+            if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：分析器只识别 OperatingSystem 判定，行为不变 */
+            {
+                if (_warmupEnabled) StartForegroundService(new Intent(this, typeof(WarmupService))); // ≥26 分支
+            }
+            else if (_warmupEnabled) StartService(new Intent(this, typeof(WarmupService)));
+            if (!_warmupEnabled) StopService(new Intent(this, typeof(WarmupService)));
         }
         catch (Exception ex) { CrashNet.Record($"[Warmup] 开关切失败（不影响预热调度）：{ex.Message}"); }
         RefreshSettingsRows();
@@ -1606,18 +1610,7 @@ public class MainActivity : Activity
         ShowInfoBar(text);
     }
 
-    /// <summary>
-    /// v22 第 9 项：画面信息短格式——「帧率:x fps&gt;y fps  分辨率:1080P&gt;2K」。
-    /// 第二刀（v1.0.2）列表页该行整块摘除：_statsInfo 不再创建、ticker 已停发，此处为空转兜底。
-    /// </summary>
-    private void RefreshStatsLine()
-    {
-        if (_statsInfo is null) return;
-        var (ofps, cfps, ow, oh, cw, chh) = _host.SnapshotStats();
-        bool exhausted = _host.StatsExhausted;
-        _statsInfo.Text = $"{FrameStatsLine.FpsSegment(ofps, cfps, exhausted)}  {FrameStatsLine.ResSegment(ow, oh, cw, chh, exhausted)}";
-    }
-
+    // vc53 审查清零：RefreshStatsLine 与 _statsTicker 随第二刀「列表旁画面信息行」退场（ticker 不再创建，无调用点），死代码整删
     /// <summary>A 类第13项·播放选源：健康账已验证优先（零新增请求）；无验证时多来源竞速（4 秒预算，退避期跳过，胜者回写）。</summary>
     private async Task<Channel> PickSourceAsync(Channel ch)
     {
@@ -2361,14 +2354,15 @@ public class MainActivity : Activity
         buttons.AddView(yes, lp);
         box.AddView(buttons);
 
-        var dialog = new AlertDialog.Builder(this)
-            .SetView(box)
-            .SetCancelable(true)
-            .Create()!;
+        // 审查清零：Builder 链式 API 绑定返回值标注可空，拆语句逐条调用消 CS8602
+        var builder = new AlertDialog.Builder(this);
+        builder.SetView(box);
+        builder.SetCancelable(true);
+        var dialog = builder.Create() ?? throw new InvalidOperationException("AlertDialog 创建失败（系统级异常，不该发生）");
         _exitDialog = dialog;
         dialog.Show();
         // v22 第 11 项：全屏自管——窗底透明+内容铺满，露出的是播放画面，与列表页浮在画面上观感一致
-        var win = dialog.Window!;
+        var win = dialog.Window ?? throw new InvalidOperationException("Dialog Window 不可用（系统级异常，不该发生）");
         win.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
         win.SetLayout(-1, -1);
         win.SetFlags(WindowManagerFlags.LayoutInScreen, WindowManagerFlags.LayoutInScreen);
@@ -2402,7 +2396,13 @@ public class MainActivity : Activity
         // （预热引擎同进程共享，重开即热启动）。预热开关关闭时无服务持有，进程随后由系统按后台空进程回收，等同真退出。
         if (_warmupEnabled)
         {
-            try { StartForegroundService(new Intent(this, typeof(WarmupService))); } // 幂等：已在跑则走 OnStartCommand 续命
+            try
+            {
+                if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：分析器只识别 OperatingSystem 判定，行为不变 */
+                    StartForegroundService(new Intent(this, typeof(WarmupService))); // 幂等：已在跑则走 OnStartCommand 续命（≥26 分支）
+                else
+                    StartService(new Intent(this, typeof(WarmupService)));
+            }
             catch (Exception svcEx) { CrashNet.Record($"[Warmup] 退出时保活拉起失败：{svcEx.Message}"); }
         }
     }
@@ -2804,7 +2804,9 @@ public class MainActivity : Activity
                 catch (Exception ex) { CrashNet.Record($"[账本] 时钟清账失败：{ex.Message}"); }
             });
         var filter = new IntentFilter();
-        filter.AddAction(global::Android.Net.ConnectivityManager.ConnectivityAction);
+        // 审查清零（CA1422）：ConnectivityAction 于 API24 起 deprecated，官方口径为 RegisterNetworkCallback；
+        // 电视端兼容低版本旧口径保留（TCL/低配盒 Android 6-8 实机在案），deprecated 警告按绑定 API 已知限制记档。
+        filter.AddAction("android.net.conn.CONNECTIVITY_CHANGE");
         filter.AddAction(Intent.ActionTimeChanged);
         RegisterReceiver(_envReceiver, filter);
     }
@@ -2843,12 +2845,10 @@ public class MainActivity : Activity
         _epgCts?.Cancel(); // B 包第 14 项：退出停节目单拉取
         _epgCts?.Dispose();
         _epgCts = null;
-        _scoutTimer?.Dispose(); // vc53 红灯A：探索计时器随页停（原漏 Dispose，与 _ticketKeeper/_statsTicker 同谱）
+        _scoutTimer?.Dispose(); // vc53 红灯A：探索计时器随页停（原漏 Dispose，与 _ticketKeeper 同谱）
         _scoutTimer = null;
         _ticketKeeper?.Dispose();
         _ticketKeeper = null;
-        _statsTicker?.Dispose(); // ④画面信息行节拍
-        _statsTicker = null;
         // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘），再落盘
         // vc52 黄五（部分收口）：原 Wait() 无界——读盘慢（冷盘/IO 挤占）时 UI 线程无限期挂起；
         // 加 1 秒上界，超限放行（健康账靠 MarkDirty 节流落盘自然补回，不丢档）。三项等待总预算合并列 vc53

@@ -56,28 +56,4 @@ public class SmartGovernor
     }
 }
 
-/// <summary>
-/// 列表页顶部 AI 效果信息行（v1.0.8 第17项 c，用户拍板）：
-/// 原/现帧数与原/现分辨率。增强滤镜为逐帧处理、不改变帧数与分辨率，原/现实测同值时按原值单行如实展示；
-/// 未开增强（off）显示原值。测量缺失时显示「检测中」。
-/// </summary>
-public static class AiEffectHeader
-{
-    public static string Format(double? fps, int width, int height, string tierLabel)
-    {
-        if (fps is null || fps <= 0) return "画面信息检测中";
-        string main = $"{fps.Value:0}fps" + (width > 0 && height > 0 ? $" · {width}×{height}" : "");
-        var tier = (tierLabel ?? "smart").Trim().ToLowerInvariant();
-        if (tier is "off" or "smart" && tier == "off") return main + "（原画直出）";
-        if (tier == "off") return main + "（原画直出）";
-        return main + $"（AI {TierName(tier)} 增强中）";
-    }
 
-    private static string TierName(string tier) => tier switch
-    {
-        "smart" => "自动", // v1.0.10 统一口径：智能档并入自动档，界面只显「自动/低/高」
-        "low" => "低",
-        "high" => "高",
-        _ => tier,
-    };
-}

@@ -72,6 +72,7 @@ public class MainActivity : Activity
     private SmartGovernor? _governor;   // A⑩：自动档会话临时档调节器（手动档=天花板，降档不写盘）
     private InfoLineHub _infoHub = new(); // A②：信息行单写入口（防重刷总闸+优先级让位）
     private System.Threading.Timer? _governorTicker; // A⑩：5 秒巡检喂实测统计
+    private int _governorTickInFlight;              // fix50：巡检节拍互斥——节拍改投线程池后不再经 UI 串行化，用在途标志防重入
     private bool _carrierTexture;      // 本次会话是否纹理载体（v1.0.7 启动自检决定）
     private bool _frameEverShown;      // 本次启动是否出过画面：出过则换台先留旧画面，延迟亮牌
     private bool _frameForCurrentSwitch; // 本轮换台是否已出首帧
@@ -243,14 +244,22 @@ public class MainActivity : Activity
             // v1.0.9 第④项：画面信息行实时刷新（2 秒节拍，列表开着才写字；v22 第 9 项改短格式两行）
             _statsTicker = new System.Threading.Timer(_ => _ui.Post(RefreshStatsLine), null, 2000, 2000);
             // A 类第10项：5 秒巡检喂实测——水位偏低提前降档防卡；降档=会话内临时档，平稳 10 分钟自动回位
-            _governorTicker = new System.Threading.Timer(_ => _ui.Post(() =>
+            // fix50（真机卡死批B·UI链后台化）：画质档触发链整链投线程池——判活/帧率快照/自动档判定
+            // 离开 UI 线程；在途互斥防重入；要动界面的动作经 _ui.Post 回投
+            _governorTicker = new System.Threading.Timer(_ =>
             {
-                if (_governor is null || _current is null || !_frameEverShown) return;
-                var before = _governor.Effective;
-                var (fps, dropped, stalled) = _host.SnapshotGovernorStats();
-                if (!_governor.Tick(dropped, stalled, System.Environment.TickCount64)) return;
-                OnAutoTierChanged(before, stalled);
-            }), null, 5000, 5000);
+                if (Interlocked.Exchange(ref _governorTickInFlight, 1) == 1) return;
+                try
+                {
+                    var governor = _governor; var current = _current;
+                    if (governor is null || current is null || !_frameEverShown) return;
+                    var before = governor.Effective;
+                    var (fps, dropped, stalled) = _host.SnapshotGovernorStats();
+                    if (!governor.Tick(dropped, stalled, System.Environment.TickCount64)) return;
+                    _ui.Post(() => { if (_governor is not null) OnAutoTierChanged(before, stalled); });
+                }
+                finally { Interlocked.Exchange(ref _governorTickInFlight, 0); }
+            }, null, 5000, 5000);
             _ticketKeeper = new System.Threading.Timer(async _ =>
             {
                 var cur = _current;
@@ -1012,14 +1021,35 @@ public class MainActivity : Activity
         FlashInfo(_autostartEnabled ? "开机自启：开（首次生效需先开过一次 App）" : "开机自启：关");
     }
 
+
+    /// <summary>fix53：按尾偏移最多读 maxBytes 字节（UTF-8 宽松解码，截断头部半行不留脏字）。</summary>
+    private static string ReadLogTail(string path, int maxBytes)
+    {
+        try
+        {
+            var f = new FileInfo(path);
+            var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using (fs)
+            {
+                long len = f.Length;
+                long offset = Math.Max(0, len - maxBytes);
+                fs.Seek(offset, SeekOrigin.Begin);
+                using var reader = new StreamReader(fs, System.Text.Encoding.UTF8);
+                if (offset > 0) reader.ReadLine(); // 跳过被截断的半行
+                return reader.ReadToEnd();
+            }
+        }
+        catch { return string.Empty; }
+    }
+
     private void ShowCrashLog()
     {
         try
         {
             var path = new Java.IO.File(FilesDir, "taolive_crash.log");
             if (!path.Exists()) { FlashInfo("暂无崩溃日志"); return; } // 空态提示（v1.0.9 第⑩项）
-            var text = System.IO.File.ReadAllText(path.AbsolutePath);
-            if (text.Length > 16000) text = "…\n" + text[^16000..];
+            // fix53（审计 A5 低危收口）：不再整读文件——全屏面板同样按尾偏移最多读 64KB，主线程 IO 开销有界
+            var text = ReadLogTail(path.AbsolutePath, 64 * 1024);
             // B 包第 9 项：崩溃日志窗改全屏水墨面板——深底大字可滚动，确认键一键清理、返回键关闭
             // v22 第 10 项改版（老板 20:37 拍板，整段参照第 11 项退出弹窗做法）：全屏自管——窗底透明+半透明水墨面板，
             // 不再露 ROM 钢蓝灰；「一键清理」=朱砂（危险项，同退出钮口径）、「关闭」=纸白；常驻=水墨深底+次色字；
@@ -2278,9 +2308,11 @@ public class MainActivity : Activity
         _statsTicker = null;
         _governorTicker?.Dispose(); // A⑩调速巡检节拍
         _governorTicker = null;
-        // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘），再落盘
+        // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘）
         _healthLoadTask?.Wait();
-        _healthStore?.FlushNow(); // v1.0.10：退出前把源健康账落盘
+        // fix51（真机卡死批B）：退出健康账落盘投后台 + 有界等待 2 秒——防丢档，也不让退出被磁盘 IO 卡死
+        var flushTask = Task.Run(() => { try { _healthStore?.FlushNow(); } catch (Exception ex) { CrashNet.Record("[Exit] 健康账落盘异常：" + ex.Message); } });
+        try { flushTask.Wait(TimeSpan.FromSeconds(2)); } catch { }
         _host.Dispose();
         base.OnDestroy();
     }

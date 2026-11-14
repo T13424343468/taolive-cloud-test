@@ -597,7 +597,7 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
 // 用户 23:30 指令：重点项必须专用对应用例。直播流停止推进时 VLC 不报错，
 // 唯一可靠信号是播放时钟停走；看门狗 2 秒巡检、6 秒停滞即按断流重连（退避 2/4/6 秒）。
 {
-    Check(PlaybackWatchdog.PollMs == 2000, "重点①看门狗：2秒巡检周期");
+    Check(PlaybackWatchdog.PollMs == 1000, "重点①看门狗：1秒巡检节拍（fix56 提前口径）");
     Check(PlaybackWatchdog.StallMs == 6000, "重点①看门狗：6秒停滞阈值");
     Check(PlaybackWatchdog.IsStalled(true, 1000, 7000), "重点①看门狗：首帧后时钟停走满6秒=卡流（触发重连）");
     Check(!PlaybackWatchdog.IsStalled(true, 1000, 6999), "重点①看门狗：未满6秒不误判（起播缓冲不中断）");
@@ -618,8 +618,8 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
 
 // ============ v1.0.8 重连缓存阶梯 + 代数守卫（与重点项联动） ============
 {
-    Check(CacheLadder.At(0) == 1200 && CacheLadder.At(3) == 6000, "缓存阶梯：首连1200→重连6000");
-    Check(CacheLadder.At(99) == 6000 && CacheLadder.At(-1) == 1200, "缓存阶梯：越界钳制不越档");
+    Check(CacheLadder.At(0) == 1200 && CacheLadder.At(3) == 20000, "缓存阶梯（fix55拿满口径）：首连1200→深水20000");
+    Check(CacheLadder.At(99) == 20000 && CacheLadder.At(-1) == 1200, "缓存阶梯：越界钳制不越档");
     Check(CacheLadder.Next(0) == 1 && CacheLadder.Next(2) == 3 && CacheLadder.Next(3) == 3, "缓存阶梯：递增封顶");
     var g = new GenerationCounter();
     long g0 = g.Current;

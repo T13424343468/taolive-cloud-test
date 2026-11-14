@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>com.taolive.tv</ApplicationId>
-    <ApplicationVersion>51</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.22</ApplicationDisplayVersion>
+    <ApplicationVersion>52</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0.23</ApplicationDisplayVersion>
     <ApplicationTitle>道映</ApplicationTitle>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <!-- vc50（2026-11-13）：对齐 1.x 交付线裁剪口径——SdkOnly 默认裁剪会误裁运行库（System.Runtime.Numerics 47%、

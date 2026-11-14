@@ -2206,6 +2206,17 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
     Check(ChannelPrefetcher.TryHost("http://cdn.example/x", out var h) && h == "cdn.example", "预取：TryHost 取域名主机");
 }
 
+// ===== vc53 任务9·切台不闪黑（策略层，UI 接线见 MainActivity） =====
+{
+    Check(SwitchRevealPolicy.ShouldHoldLastFrame(true, false), "不闪黑：出过画面且新流未到=留旧画面");
+    Check(!SwitchRevealPolicy.ShouldHoldLastFrame(false, false), "不闪黑：冷启动无旧画面=立即清场");
+    Check(!SwitchRevealPolicy.ShouldHoldLastFrame(true, true), "不闪黑：新流首帧到=换流");
+    Check(SwitchRevealPolicy.ShouldVeilImmediately(false), "清场：冷启动立即铺底色");
+    Check(!SwitchRevealPolicy.ShouldVeilImmediately(true), "清场：有旧画面换流前才铺（解析期零黑场）");
+    Check(SwitchRevealPolicy.ShouldVeilBeforeSwap(true) && SwitchRevealPolicy.ShouldVeilBeforeSwap(false),
+        "清场：新播放器接管前一律清场（GPU 残留防护不回退）");
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
 

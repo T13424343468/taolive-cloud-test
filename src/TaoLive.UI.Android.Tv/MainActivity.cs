@@ -588,11 +588,13 @@ public class MainActivity : Activity
         _tuneBeginMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); // v28 主线③：换台起点（首帧耗时喂入评分账）
         CloseChannelList();
         // v1.0.10 修复⑦：撤旧画面的同时铺干净底色，GPU 残留旧缓冲绝不外露（花屏竖条）；
-        // 新流首帧到齐才撤底色亮画面（FrameShown 处清回透明）
-        _videoContainer?.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
-        // v22 第 1 项·确定性清场：不透明遮罩立即盖住旧表面（换台/重取流/内核重建全走这里），
-        // ghost 旧合成帧从根上清掉；首帧前遮罩维持，新画面从纯底上亮出
-        _videoMask.Visibility = ViewStates.Visible;
+        // vc53 任务9·切台不闪黑：出过画面（旧流还活着）→ 解析期留旧画面不铺底色，
+        // 新流就绪换流前一刻才清场（零黑场）；冷启动维持立即清场，残留防护不回退
+        if (SwitchRevealPolicy.ShouldVeilImmediately(_frameEverShown))
+        {
+            _videoContainer?.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
+            _videoMask.Visibility = ViewStates.Visible;
+        }
         // 雷二·延迟亮牌：清场遮罩已在（纯底无字），0.8 秒内新画面出来直接静音换流无感；
         // 没出来才在遮罩上亮「正在连接」品牌牌，且亮着就不撤直到首帧
         CancelPendingLoading();
@@ -685,6 +687,13 @@ public class MainActivity : Activity
             {
                 if (IsFinishing || IsDestroyed) return; // UI#2：页面退出后回调不落播放器
                 if (seq != _playSeq) return;
+                // vc53 任务9·切台不闪黑：换流前一刻清场——解析期旧画面一直亮着，
+                // 只在旧播放器释放→新播放器接管的瞬间铺底色（GPU 残留防护⑦不回退），首帧到撤
+                if (SwitchRevealPolicy.ShouldVeilBeforeSwap(_frameEverShown))
+                {
+                    _videoContainer?.SetBackgroundColor(Color.ParseColor(TaoPalette.Current.Bg));
+                    _videoMask.Visibility = ViewStates.Visible;
+                }
                 _host.Play(resolved.Url, opts);
                 ShowInfoBar($"{ch.Number}  {ch.Name}");
                 RefreshEpg(ch); // B 包第 14 项：进台成功即拉官方节目单（换台即刷新，无数据不显示）

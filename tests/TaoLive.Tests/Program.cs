@@ -525,9 +525,9 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
 
 // ============ v1.0.8 重点项①：中央一台播两三秒卡死——看门狗停滞判定专项 ============
 // 用户 23:30 指令：重点项必须专用对应用例。直播流停止推进时 VLC 不报错，
-// 唯一可靠信号是播放时钟停走；看门狗 2 秒巡检、6 秒停滞即按断流重连（退避 2/4/6 秒）。
+// 唯一可靠信号是播放时钟停走；看门狗 1 秒巡检（fix56 提前口径）、6 秒停滞即按断流重连（退避 2/4/6 秒）。
 {
-    Check(PlaybackWatchdog.PollMs == 2000, "重点①看门狗：2秒巡检周期");
+    Check(PlaybackWatchdog.PollMs == 1000, "重点①看门狗：1秒巡检节拍（fix56 提前口径）");
     Check(PlaybackWatchdog.StallMs == 6000, "重点①看门狗：6秒停滞阈值");
     Check(PlaybackWatchdog.IsStalled(true, 1000, 7000), "重点①看门狗：首帧后时钟停走满6秒=卡流（触发重连）");
     Check(!PlaybackWatchdog.IsStalled(true, 1000, 6999), "重点①看门狗：未满6秒不误判（起播缓冲不中断）");
@@ -548,9 +548,24 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
 
 // ============ v1.0.8 重连缓存阶梯 + 代数守卫（与重点项联动） ============
 {
-    Check(CacheLadder.At(0) == 1200 && CacheLadder.At(3) == 6000, "缓存阶梯：首连1200→重连6000");
-    Check(CacheLadder.At(99) == 6000 && CacheLadder.At(-1) == 1200, "缓存阶梯：越界钳制不越档");
+    Check(CacheLadder.At(0) == 1200 && CacheLadder.At(3) == 20000, "缓存阶梯（fix55拿满口径）：首连1200→深水20000");
+    Check(CacheLadder.At(99) == 20000 && CacheLadder.At(-1) == 1200, "缓存阶梯：越界钳制不越档");
     Check(CacheLadder.Next(0) == 1 && CacheLadder.Next(2) == 3 && CacheLadder.Next(3) == 3, "缓存阶梯：递增封顶");
+    // fix56 提前预警（2026-11-14 真机令「实时监听、卡顿前反应」）：供水持续不足抢在画面冻住前出手
+    {
+        var m = new EarlyWarningMonitor();
+        Check(!m.Sample(clockAlive: true, waterSec: 5.0), "fix56 预警：水位充足不预警");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.8), "fix56 预警：供水不足第1拍不出手（防短抖动）");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.5), "fix56 预警：连续第2拍仍不出手");
+        Check(m.Sample(clockAlive: true, waterSec: 0.2), "fix56 预警：连续3秒供水不足=跨线出手（抢在卡顿前）");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.2), "fix56 预警：跨线只报一次（防连环出手）");
+        Check(m.Sample(clockAlive: true, waterSec: 0.1) == false && !m.Sample(clockAlive: true, waterSec: 5.0), "fix56 预警：水位恢复清零重计");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.9), "fix56 预警：恢复后重新累计第1拍");
+        var m2 = new EarlyWarningMonitor();
+        Check(!m2.Sample(clockAlive: true, waterSec: 0.1) && !m2.Sample(clockAlive: true, waterSec: 0.1), "fix56 预警：停滞前奏第1、2拍");
+        Check(!m2.Sample(clockAlive: false, waterSec: 0.1), "fix56 预警：时钟停滞不再预警（交 ⑨B/卡流路径管）");
+        Check(m2.Sample(clockAlive: true, waterSec: 0.1) == false, "fix56 预警：时钟停滞清零连计（新会话新算）");
+    }
     var g = new GenerationCounter();
     long g0 = g.Current;
     long g1 = g.NextGeneration();

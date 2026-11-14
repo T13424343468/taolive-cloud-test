@@ -55,6 +55,7 @@ public class LiveVideoHost : IDisposable
     private int _statsRetries;                              // ⑤已重试次数
     public bool StatsExhausted => _statsRetries >= StatsLinePolicy.MaxRetries; // ⑤到限仍无数据显「--」
     private bool _earlyRescueUsed;           // ⑨B本轮卡顿已提前介入（水位低先动，不等6秒）
+    private readonly EarlyWarningMonitor _drainMonitor = new(); // fix56 提前预警：供水持续不足抢在卡顿前重取流
     private float _bufferPct = 100f;          // ⑩播放器缓冲百分比（Buffering 事件回报，0–100）
     private BufferAction? _lastBufferAction;  // ⑩上一次水位动作（变化才落日志，防刷屏）
     private long _lastDeescalateMs;           // ⑩水位追回：降档节流（30 秒最多降一档）
@@ -190,6 +191,11 @@ public class LiveVideoHost : IDisposable
     /// <summary>⑫②级降清晰度：是否还有可降档（UI 按 AI 增强档位判断）；无档可降时自救直接并入重取流。</summary>
     public Func<bool>? HasLowerQuality { get; set; }
 
+    /// <summary>fix57 无感续接（老板 2026-11-14 令「预警切备源，不给用户看」）：fix56 预警出手时由 UI 侧
+    /// 优先热切备源——第二实例后台连新流，首帧到齐无感顶上，主画面全程原样。
+    /// 返回 false=无备源/未受理，宿主回落静默重取流（同 ⑨B 口径，不发状态）。</summary>
+    public Func<bool>? PreemptiveRescueRequested { get; set; }
+
     /// <summary>⑫②级降清晰度请求：UI 收到后降一档 AI 增强（软解负载减轻），随后静默重接。</summary>
     public event Action? LowerQualityRequested;
 
@@ -252,7 +258,7 @@ public class LiveVideoHost : IDisposable
         _cachedDisplayed = 0;    // fix35：帧数统计随新媒体从头记账
         _volume = 100;           // fix34：新播放器音量为默认满档，缓存对齐
         if (_watchdog is null)
-            _watchdog = new Timer(OnWatchdogTick, null, 2000, 2000);
+            _watchdog = new Timer(OnWatchdogTick, null, PlaybackWatchdog.PollMs, PlaybackWatchdog.PollMs); // fix56：1 秒/拍
     }
 
     /// <summary>主实例事件接线（BuildKernel 与双实例提交共用：提交后第二实例立即接管全部宿主职责）。</summary>
@@ -352,6 +358,20 @@ public class LiveVideoHost : IDisposable
                 try { CrashNet.Record($"[LiveVideoHost] ⑨B 水位低提前介入：时钟 {age}ms 未走，静默重取流"); } catch { }
                 _ = SilentRefreshAsync();
             }
+            // fix56 提前预警：水位在掉时画面还活着——「供水持续不足」比卡顿更早。
+            // 时钟在走（未到 ⑨B 的 2.5 秒线）但估算水位连续 3 秒不足 → 抢在画面冻住之前静默重取流。
+            // 与 ⑨B 共用一轮一次额度（TimeChanged 恢复），只在跨线一拍出手，防连环。
+            if (_drainMonitor.Sample(
+                    clockAlive: age < 2500,
+                    waterSec: CacheLadder.At(_cachingIndex) / 1000.0 * (Volatile.Read(ref _bufferPct) / 100.0))
+                && !_earlyRescueUsed && !_kernelRebuilding && !IsSwapPending)
+            {
+                _earlyRescueUsed = true;
+                try { CrashNet.Record("[LiveVideoHost] fix56 提前预警：水位连续不足，启动无感续接（优先热切备源）"); } catch { }
+                // fix57：优先热切备源——主画面原样、第二实例后台连备源，首帧到齐无感顶上；
+                // 无备源或热切未受理时回落静默重取流（同 ⑨B 口径）。
+                if (PreemptiveRescueRequested?.Invoke() != true) _ = SilentRefreshAsync();
+            }
             ObserveBufferWatermark(age); // ⑩水位实接：默认贴边、抖动攒水位、平稳追回，动作变化落日志
             return;
         }
@@ -448,6 +468,9 @@ public class LiveVideoHost : IDisposable
         }
     }
 
+    /// <summary>fix57：无感续接未受理（无备源/热切冷却）时的回落：静默重取流（同 ⑨B 口径，不发状态）。</summary>
+    public void RefreshSilently() => _ = SilentRefreshAsync();
+
     /// <summary>静默重取流：换新鲜入口立即快速重接，不发状态、不动断流重连计数。</summary>
     private async Task SilentRefreshAsync()
     {
@@ -485,6 +508,7 @@ public class LiveVideoHost : IDisposable
         _exhaustedNotified = false;
         _cachingIndex = 0;
         _stallCount = 0;      // ⑫：换台自救行进清零，分级从静默重取流重新走
+        _drainMonitor.Reset(); // fix56：换台预警连计清零（新台新算）
         _firstFrameFails = 0; // fix29：换台清首帧兜底计数（新台新算）
         _measuredFps = null;  // ④：换台重新实测
         _fpsLastDisplayed = 0;

@@ -9,8 +9,9 @@ namespace TaoLive.BLL;
 /// </summary>
 public static class PlaybackWatchdog
 {
-    /// <summary>看门狗巡检周期（毫秒）。</summary>
-    public const int PollMs = 2000;
+    /// <summary>看门狗巡检周期（毫秒）。fix56（2026-11-14 真机令「实时监听、提前反应」）：2000→1000 收紧节拍，
+    /// 6 秒停滞与 2.5 秒提前介入的判定阈值不变，反应时点最多提前约 1~2 秒。</summary>
+    public const int PollMs = 1000;
 
     /// <summary>播放时钟停滞判定阈值（毫秒）：6 秒无推进即按断流处理。</summary>
     public const int StallMs = 6000;
@@ -26,7 +27,7 @@ public static class PlaybackWatchdog
     public static bool IsLive(bool frameShown, long lastTickMs, long nowMs, int livenessMs = LivenessMs) =>
         frameShown && nowMs - lastTickMs < livenessMs;
 
-    /// <summary>fix29 防假活：画面帧停滞判定的看门狗周期数（3 周期 ≈ 6 秒不涨即按卡流）。</summary>
+    /// <summary>fix29 防假活：画面帧停滞判定的看门狗周期数（fix56 巡检 1 秒/拍：3 周期 ≈ 3 秒不涨即按卡流，反应较旧 6 秒口径提前）。</summary>
     public const int DecodedStallTicksMax = 3;
 
     /// <summary>
@@ -36,6 +37,37 @@ public static class PlaybackWatchdog
     /// </summary>
     public static bool IsFakeLive(int decodedNow, int decodedLast, int stallTicks) =>
         decodedNow == decodedLast && decodedNow > 0 && stallTicks + 1 >= DecodedStallTicksMax;
+}
+
+/// <summary>
+/// fix56 提前预警（2026-11-14 真机令「实时监听画面、卡顿前做出反应」）：
+/// 原看门狗只认「时钟停走」，出手时画面已经冻住；水位在掉时画面其实还活着，
+/// 「供水不足」是比卡顿更早的信号。本监视器随看门狗 1 秒一拍采样：时钟还在走、
+/// 但估算水位持续不足（播放器缓存换算秒数低于阈值）→ 连续 3 秒即预警出手，
+/// 抢在画面冻住之前静默重取流。只在跨越阈值那一拍报一次（防连环出手），
+/// 水位恢复或时钟停滞即清零重计；换台随宿主清账。
+/// </summary>
+public class EarlyWarningMonitor
+{
+    /// <summary>预警水位阈值（秒）：估算水位低于该值=源头供不上播放，画面随时会冻。</summary>
+    public const double DrainWaterSec = 1.0;
+
+    /// <summary>连续供水不足采样次数（1 秒一拍）：连续 3 秒供不上才动手，短抖动不动。</summary>
+    public const int DrainSamples = 3;
+
+    private int _streak;
+
+    /// <summary>喂一拍采样。clockAlive=时钟仍在推进；waterSec=估算水位秒数（缓存窗口×缓冲百分比）。
+    /// 返回 true=本拍跨越预警线，应抢在卡顿前出手（仅跨越那一拍为真）。</summary>
+    public bool Sample(bool clockAlive, double waterSec)
+    {
+        if (!clockAlive || waterSec >= DrainWaterSec) { _streak = 0; return false; }
+        _streak++;
+        return _streak == DrainSamples; // 只在跨线那一拍报，防连环出手（宿主另有轮次额度）
+    }
+
+    /// <summary>换台/重连：连计清零，新会话新算。</summary>
+    public void Reset() => _streak = 0;
 }
 
 /// <summary>
@@ -78,7 +110,10 @@ public class ConnectRetryLedger
 /// <summary>重连网络缓存阶梯（毫秒）：首连 1200，重连逐级 2500→4000→6000 自适应软解。</summary>
 public static class CacheLadder
 {
-    public static readonly int[] Values = { 1200, 2500, 4000, 6000 };
+    /// <summary>fix55（2026-11-14 真机令拍板「起播后不停拿、拿满」）：起播保持 1200ms 秒连口径不变，
+    /// 水位升档大幅加深——升档后按 5→10→20 秒深水攒片；内核切片监听照常第一时间取新片，攒满为止。
+    /// 20 秒深水在主流码率下约占 5~10MB 内存，电视端可承受。</summary>
+    public static readonly int[] Values = { 1200, 5000, 10000, 20000 };
 
     public static int At(int index) => Values[Math.Clamp(index, 0, Values.Length - 1)];
 

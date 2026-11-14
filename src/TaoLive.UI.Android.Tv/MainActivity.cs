@@ -438,6 +438,8 @@ public class MainActivity : Activity
         // 双实例无感切换（【六】【九】A）：新流亮了再换——提交前旧画面原样保留，绝不黑屏闪卡
         _host.SwapReady += () => _ui.Post(CommitHotSwap);
         _host.SwapFailed += () => _ui.Post(() => AbortHotSwapUi("第二实例起流失败（连接被拒或流不可用），留当前档，热切进入冷却"));
+        // fix57 无感续接：预警出手优先热切备源；无备源/未受理由宿主回落静默重取流
+        _host.PreemptiveRescueRequested = TryPreemptiveHotSwap;
 
         // fix29（首帧兜底）：8 秒无首帧阶梯走尽（重取流→降清晰度→重启内核）仍黑屏——
         // CCTV-7 类盲区：预检全通、内核无声不报、锁死在连接态。这里收口：判死本台来源、
@@ -1035,10 +1037,11 @@ public class MainActivity : Activity
         }
     }
 
-    /// <summary>发起一次双实例切换（会话受理→第二载体入视图树→宿主后台连新流）。受理失败=留在当前档，不重试到崩。</summary>
-    private void BeginHotSwap(string url, IReadOnlyList<(string Key, string Value)> options, int targetHeight, string reason)
+    /// <summary>发起一次双实例切换（会话受理→第二载体入视图树→宿主后台连新流）。受理失败=留在当前档，不重试到崩。
+    /// 返回 true=已发起；false=未受理（fix57 无感续接据此回落静默重取流）。</summary>
+    private bool BeginHotSwap(string url, IReadOnlyList<(string Key, string Value)> options, int targetHeight, string reason)
     {
-        if (_current is null || _host.IsSwapPending || _hotSwap.HasPending) return;
+        if (_current is null || _host.IsSwapPending || _hotSwap.HasPending) return false;
         // v1.0.20 C 拉黑期禁第二实例：整源观察期内热切只会再撞一次拒绝，禁起第二实例（403 不进热切）
         if (_playSource != null && _resolver.Blackout.IsBlackedOut(_playSource.SourceId))
         {
@@ -1048,7 +1051,7 @@ public class MainActivity : Activity
                 _lastCooldownLogMs = blkNow;
                 CrashNet.Record($"[HotSwap] 源观察期内热切禁用（{_playSource.SourceId}，{reason}），保持当前画面");
             }
-            return;
+            return false;
         }
         var session = _hotSwap.Begin(_playSeq, targetHeight, reason, System.Environment.TickCount64);
         if (session is null)
@@ -1060,14 +1063,14 @@ public class MainActivity : Activity
                 _lastCooldownLogMs = now;
                 CrashNet.Record($"[HotSwap] 切换冷却未受理，保持当前档（{reason}）"); // 防横跳：反复升降档不闪卡
             }
-            return;
+            return false;
         }
         var carrier = CreateSwapCarrier();
-        if (carrier is null) return; // 载体创建失败：不切换，当前画面原样
+        if (carrier is null) return false; // 载体创建失败：不切换，当前画面原样
         if (!_host.BeginSwap(carrier, url, options))
         {
             AbortHotSwapUi("第二实例受理失败，留当前档");
-            return;
+            return false;
         }
         _swapSession = session;
         // 老板 2026-11-08 拍板（连接优先）：第二实例连接期间冷启动让路，提交或放弃后恢复
@@ -1075,6 +1078,38 @@ public class MainActivity : Activity
         // 超时兜底：新流迟迟不亮判升级失败（留当前档，画面全程原样），绝不黑屏干等
         _swapTimeoutRun = () => _ui.Post(OnSwapTimeoutCheck);
         _ui.PostDelayed(_swapTimeoutRun, HotSwapCoordinator.PrepareTimeoutMs + 500);
+        return true;
+    }
+
+    /// <summary>fix57 无感续接（老板 2026-11-14 令「预警切备源，不给用户看到」）：fix56 预警发现主源供不上时，
+    /// 优先按健康表挑最活备源，第二实例后台连、首帧到齐直接顶上——全程不发任何提示、主画面原样；
+    /// 无备源返回 false（宿主回落静默重取流），发起后的成败由热切链路自收口。</summary>
+    private bool TryPreemptiveHotSwap()
+    {
+        var cur = _current;
+        if (cur is null || _host.IsSwapPending || _hotSwap.HasPending) return false;
+        var source = _precheck.BestAliveSource(cur, _catalog.All.ToList());
+        if (source is null || source.SourceId == _playSource?.SourceId) return false; // 没有可用备源：回落
+        _ = PreemptiveHotSwapAsync(source);
+        return true; // 已受理发起（发起即接管本轮预警，成败热切自收口）
+    }
+
+    private async Task PreemptiveHotSwapAsync(Channel source)
+    {
+        try
+        {
+            var fresh = await _resolver.ResolveWithChainAsync(source, force: true);
+            if (fresh is null || string.IsNullOrEmpty(fresh.Url)) { _host.RefreshSilently(); return; }
+            var opts = new List<(string Key, string Value)>(fresh.Options);
+            foreach (var (k, v) in LiveQuality.OptionsFor(_aiTier)) opts.Add((k, v));
+            _playSource = source;
+            _ui.Post(() =>
+            {
+                if (!BeginHotSwap(fresh.Url, opts, 0, "fix57 预警无感续接"))
+                    _host.RefreshSilently(); // 热切未受理（冷却/拉黑）：回落静默重取流
+            });
+        }
+        catch { _host.RefreshSilently(); }
     }
 
     /// <summary>第二实例新流已亮：顶上成主画面（无黑无闪），档位落账。</summary>

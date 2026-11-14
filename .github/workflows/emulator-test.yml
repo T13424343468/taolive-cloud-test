@@ -195,15 +195,26 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.320'
+      # SDK 11 抢路：NETSDK1202（net9-android EOL）+NU1101（SDK11 对 android-arm 行为不同）——
+      # 2026-11-14 支援班：显式把 HOME/.dotnet 顶到 PATH 最前，restore/publish 全用 9.0.320
+      - name: Pin dotnet 9.0.320
+        run: echo "$HOME/.dotnet" >> $GITHUB_PATH
       - name: Install android workload
-        run: dotnet workload install android
+        run: |
+          export PATH="$HOME/.dotnet:$PATH"
+          dotnet --version
+          dotnet workload install android
       - name: Restore three-step sequence
         run: |
+          export PATH="$HOME/.dotnet:$PATH"
+          dotnet --version
           dotnet restore src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj -p:Configuration=Release -p:TargetFramework=net9.0-android35.0
           dotnet restore src/TaoLive.BLL/TaoLive.BLL.csproj -p:Configuration=Release -p:TargetFramework=net8.0
           dotnet restore src/TaoLive.Model/TaoLive.Model.csproj -p:Configuration=Release -p:TargetFramework=net8.0
       - name: Publish APK (trim+AOT default)
         run: |
+          export PATH="$HOME/.dotnet:$PATH"
+          dotnet --version
           dotnet publish src/TaoLive.UI.Android.Tv -c Release -f net9.0-android35.0 --no-restore
           find src/TaoLive.UI.Android.Tv/bin -name "*.apk" -size +20M | head -1 | xargs -I{} cp {} TaoLive.apk
           ls -la TaoLive.apk

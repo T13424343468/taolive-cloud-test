@@ -216,9 +216,9 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     var city = cat.Groups.First(g => g.Category == ChannelCategory.City).Channels.Count;
     Check(cctv == 21, $"央视 21 路（实际 {cctv}）");
     Check(cgtn == 6, $"CGTN 6 路（实际 {cgtn}）");
-    Check(prov == 31 + 4 + 7 + 8 + 2, $"省台=央视频31+浙江4+贵州7+内蒙古8+城市候选2省经济（实际 {prov}）");
+    Check(prov == 31 + 4 + 7 + 8 + 2 - 4, $"vc53 任务13 合并口径：省台 52 减 4 路跨来源同台（浙江/贵州/内蒙古卫视央视频重复 + 经济生活浙江/内蒙古双端）=48（实际 {prov}）");
     Check(city == 4 + 2 + 7 + 13, $"城市台 西安4+内蒙古2+广西7+候选13城市/县级台（实际 {city}）");
-    Check(cat.All.Count == 97 + 15, $"v22 第 16 项：原 97 路挂链后总台数 112（实际 {cat.All.Count}）");
+    Check(cat.All.Count == 97 + 15 - 4, $"vc53 任务13 合并口径：原 112 路减 4 路跨来源同台 =108（实际 {cat.All.Count}）");
     Check(cat.All.Where(c => c.SourceId == "citycdn").All(c => !string.IsNullOrEmpty(c.StreamUrl) && string.IsNullOrEmpty(c.EpgKey)),
         "v22 第 16 项：城市候选 15 路全带直连地址、EPG 留空不硬造");
     Check(ChannelLogoMap.Count == 78, $"v22 第 16 项：台标映射 63+15 枚（实际 {ChannelLogoMap.Count}）");
@@ -2217,8 +2217,45 @@ Check(cp.LagSeconds() == 200.0, "AI池:播放确认滞后回落");
         "清场：新播放器接管前一律清场（GPU 残留防护不回退）");
 }
 
+// ===== vc53 任务13·目录双来源合并（收录口径） =====
+{
+    var cat2 = new ChannelCatalog(new FavoriteStore());
+    cat2.RegisterSource(new DupSource("官方", new()
+    {
+        new Channel { Name = "CCTV-1 综合", Category = ChannelCategory.Cctv, StreamUrl = "http://cdn.cctv.example/live.m3u8", Referer = "http://cctv.example" },
+        new Channel { Name = "CCTV2", Category = ChannelCategory.Cctv, StreamUrl = "http://cdn.cctv2.example/live.m3u8" },
+    }));
+    cat2.RegisterSource(new DupSource("用户", new()
+    {
+        new Channel { Name = "CCTV1", Category = ChannelCategory.Cctv, StreamUrl = "http://183.11.2.3:8080/cctv1.m3u8" },
+        new Channel { Name = "CCTV2 高清", Category = ChannelCategory.Cctv, StreamUrl = "http://gmxw.example/cctv2.m3u8" },
+    }));
+    cat2.Rebuild();
+    var cctv = cat2.Groups.First(g => g.Category == ChannelCategory.Cctv).Channels;
+    Check(cctv.Count == 2, "双来源：同台多源只留一档");
+    var c1 = cctv.First(x => ChannelCatalog.NormalizeName(x.Name) == "cctv1");
+    Check(c1.SourceId == "用户", "双来源：纯IP免解析排前");
+    var c2 = cctv.First(x => ChannelCatalog.NormalizeName(x.Name) == "cctv2");
+    Check(c2.SourceId == "官方", "双来源：同分按收录序（先收录优先）");
+    Check(ChannelCatalog.NormalizeName("CCTV-1 综合") == ChannelCatalog.NormalizeName("cctv1"), "台名归一：跨口径一致");
+    Check(ChannelCatalog.NormalizeName("CCTV2 高清") == "cctv2", "台名归一：后缀噪音去除");
+}
+
 Console.WriteLine($"\n{pass} PASS / {fail} FAIL");
 return fail == 0 ? 0 : 1;
+
+class DupSource : IChannelSource
+{
+    public string SourceId { get; }
+    private readonly List<Channel> _chs;
+    public DupSource(string id, List<Channel> chs)
+    {
+        SourceId = id;
+        _chs = chs;
+        foreach (var c in _chs) c.SourceId = id;
+    }
+    public List<Channel> FetchChannels() => _chs;
+}
 
 class StubSource : IChannelSource
 {

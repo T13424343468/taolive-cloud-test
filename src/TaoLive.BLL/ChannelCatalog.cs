@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using TaoLive.Model;
 
 namespace TaoLive.BLL;
@@ -30,6 +31,9 @@ public class ChannelCatalog
     /// <summary>
     /// 重建目录：六大分类依序编号（接不进的台不占号、单独归档供界面说明），
     /// 自有源接在最后顺次编。编号随台单版本固化，用户记住编号永久直达。
+    /// vc53 任务13·双来源合并（收录口径，projects/1377423/goal.md 收录账）：
+    /// 多来源同台（同分类+归一台名）只留一档——纯 IP 免解析排前、带防盗头适配源次之、
+    /// 同分按收录序（先收录优先，编号稳定）；同台同主机流计 1 家族（183.11/gmxw 双端口径）只收一档。
     /// </summary>
     public void Rebuild()
     {
@@ -44,8 +48,8 @@ public class ChannelCatalog
         };
         foreach (var cat in titles.Keys)
         {
-            var usable = _sources.SelectMany(s => s.FetchChannels())
-                .Where(c => c.Category == cat && !c.Unavailable).ToList();
+            var usable = MergeDuplicates(_sources.SelectMany(s => s.FetchChannels())
+                .Where(c => c.Category == cat && !c.Unavailable).ToList());
             foreach (var ch in usable) ch.Number = number++;
             all.AddRange(usable);
             groups.Add(new CategoryGroup { Category = cat, Title = titles[cat], Channels = usable });
@@ -56,6 +60,47 @@ public class ChannelCatalog
         UnavailableChannels = dead;
         All = all; Groups = groups;
         FavoriteTop = _favorites.TopGroup(all);
+    }
+
+    /// <summary>
+    /// 同台合并：按（分类内）归一台名分组，每组按收录优先级取最优档（收录序保持）。
+    /// 同台同主机流自然落在同一归一名组内只计一档（183.11/gmxw 双端计 1 家族口径）。
+    /// </summary>
+    private static List<Channel> MergeDuplicates(List<Channel> channels)
+    {
+        var result = new List<Channel>();
+        foreach (var group in channels.GroupBy(c => NormalizeName(c.Name)))
+        {
+            Channel best = group.First();
+            foreach (var c in group.Skip(1))
+                if (SourceRank(c) > SourceRank(best)) best = c;
+            result.Add(best);
+        }
+        return result;
+    }
+
+    /// <summary>台名归一：去分隔/装饰符、统一小写；「+」保留（CCTV-5+ 与 CCTV5 是两台，绝不过合并）；
+    /// 「综合/频道/高清/超清/标清/HD」等后缀噪音去除（跨来源对齐）。</summary>
+    public static string NormalizeName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "";
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var ch in name)
+            if (char.IsLetterOrDigit(ch) || ch == '+') sb.Append(char.ToLowerInvariant(ch));
+        foreach (var suffix in new[] { "综合", "频道", "超清", "标清", "高清", "hd" })
+            while (sb.Length > suffix.Length && sb.ToString().EndsWith(suffix, StringComparison.Ordinal))
+                sb.Length -= suffix.Length;
+        return sb.ToString();
+    }
+
+    /// <summary>收录优先级（收录账口径）：纯 IP 免解析（8）&gt; 带防盗头适配源（4）&gt; 裸流（2）；同分按收录序。</summary>
+    private static int SourceRank(Channel c)
+    {
+        int score = 2;
+        if (Uri.TryCreate(c.StreamUrl, UriKind.Absolute, out var uri)
+            && IPAddress.TryParse(uri.Host, out _)) score = 8; // 纯 IP 免解析排前
+        else if (!string.IsNullOrEmpty(c.Referer) || !string.IsNullOrEmpty(c.UserAgent)) score = 4; // 官方适配源次之
+        return score;
     }
 
     public List<Channel> UnavailableChannels { get; private set; } = new();

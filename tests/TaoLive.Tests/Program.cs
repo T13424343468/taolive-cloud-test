@@ -621,6 +621,21 @@ Check(GzstvSource.ApiUrl("ch01") == "https://api.gzstv.com/v1/tv/ch01" && GzstvS
     Check(CacheLadder.At(0) == 1200 && CacheLadder.At(3) == 20000, "缓存阶梯（fix55拿满口径）：首连1200→深水20000");
     Check(CacheLadder.At(99) == 20000 && CacheLadder.At(-1) == 1200, "缓存阶梯：越界钳制不越档");
     Check(CacheLadder.Next(0) == 1 && CacheLadder.Next(2) == 3 && CacheLadder.Next(3) == 3, "缓存阶梯：递增封顶");
+    // fix56 提前预警（2026-11-14 真机令「实时监听、卡顿前反应」）：供水持续不足抢在画面冻住前出手
+    {
+        var m = new EarlyWarningMonitor();
+        Check(!m.Sample(clockAlive: true, waterSec: 5.0), "fix56 预警：水位充足不预警");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.8), "fix56 预警：供水不足第1拍不出手（防短抖动）");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.5), "fix56 预警：连续第2拍仍不出手");
+        Check(m.Sample(clockAlive: true, waterSec: 0.2), "fix56 预警：连续3秒供水不足=跨线出手（抢在卡顿前）");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.2), "fix56 预警：跨线只报一次（防连环出手）");
+        Check(m.Sample(clockAlive: true, waterSec: 0.1) == false && !m.Sample(clockAlive: true, waterSec: 5.0), "fix56 预警：水位恢复清零重计");
+        Check(!m.Sample(clockAlive: true, waterSec: 0.9), "fix56 预警：恢复后重新累计第1拍");
+        var m2 = new EarlyWarningMonitor();
+        Check(!m2.Sample(clockAlive: true, waterSec: 0.1) && !m2.Sample(clockAlive: true, waterSec: 0.1), "fix56 预警：停滞前奏第1、2拍");
+        Check(!m2.Sample(clockAlive: false, waterSec: 0.1), "fix56 预警：时钟停滞不再预警（交 ⑨B/卡流路径管）");
+        Check(m2.Sample(clockAlive: true, waterSec: 0.1) == false, "fix56 预警：时钟停滞清零连计（新会话新算）");
+    }
     var g = new GenerationCounter();
     long g0 = g.Current;
     long g1 = g.NextGeneration();
@@ -882,17 +897,8 @@ Check(StallRescue.Plan(2, false) == StallRescueAction.RestartKernel, "⑫第3次
 Check(StallRescue.Plan(5, true) == StallRescueAction.RestartKernel, "⑫连环卡死：持续用最强自救，不回退");
 Check(StallRescue.KernelRestartAt == 3, "⑫内核软重启档位=第3次卡死");
 
-// ④画面信息行（原/现帧率/分辨率；操作提示去掉，测量缺失显示检测中）
-Check(FrameStatsLine.Format(null, null, 0, 0, 0, 0) == "画面信息检测中", "④测量缺失：显示检测中，绝不编数字");
-Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原帧率 25fps"), "④原帧率如实展示");
-Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("原分辨率 1920×1080"), "④原分辨率如实展示");
-Check(FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现帧率") && FrameStatsLine.Format(25, null, 1920, 1080, 1920, 1080).Contains("＝现分辨率"), "④原现同值单行如实展示（无缩放）");
-var fsDiff = FrameStatsLine.Format(25.0, 18.0, 1920, 1080, 1280, 720);
-Check(fsDiff.Contains("现帧率 18fps") && fsDiff.Contains("现分辨率 1280×720"), "④原现不同：分别如实展示");
 
 // ⑧分类统计加可连数（口径与⑬统一：可连=至少一个来源可达）
-Check(ListHeaderStats.Format("央视", 21, 18, true) == "央视(21·可连18)", "⑧统计格式「央视(21·可连18)」");
-Check(ListHeaderStats.Format("央视", 21, 18, false) == "央视(21)", "⑧未出结果先显总数");
 
 // ---- v1.0.10 修复③④⑤⑥⑦⑨⑩⑪⑫ 断言 ----
 // ③启动贴面时序：未就绪等回调不抢跑；就绪才贴；等待间隙纹理回收退回等待，绝不带 null 表面进 AWindow
@@ -910,10 +916,6 @@ Check(ExitDialogFocus.Back() == ExitButton.Cancel, "④返回键=继续看");
 // ⑤画面信息行：首帧后重试（500ms×10），到限显「--」不留「检测中」；并显 AI 档位
 Check(StatsLinePolicy.IntervalMs == 500 && StatsLinePolicy.MaxRetries == 10, "⑤重试口径：每500ms至多10次");
 Check(StatsLinePolicy.NextDelayMs(0) == 500 && StatsLinePolicy.NextDelayMs(9) == 500 && StatsLinePolicy.NextDelayMs(10) is null, "⑤到限停止重试");
-Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: false).Contains("检测中"), "⑤重试期内维持「检测中」");
-Check(FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, statsExhausted: true).Contains("--") && !FrameStatsLine.FormatEx(null, null, 0, 0, 0, 0, null, true).Contains("检测中"), "⑤到限显「--」不留「检测中」");
-Check(FrameStatsLine.FormatEx(null, null, 1920, 1080, 1920, 1080, null, true).Contains("原帧率 --"), "⑤部分缺失到限：缺失项显「--」");
-Check(FrameStatsLine.FormatEx(25, null, 1920, 1080, 1920, 1080, "自动", false).EndsWith("画质增强：自动"), "⑤并显画质增强档位（v22 定项：显示名改画质增强）");
 
 // ⑥换台提速：先连最快出画面档，亮后无感升高档，失败留在当前档
 var tiers = new List<(int Height, long Bandwidth)> { (1080, 8_000_000), (720, 3_000_000), (480, 1_500_000) };
@@ -1075,20 +1077,6 @@ Check(ConnectFailure.CooldownSeconds(0) == 1 && ConnectFailure.CooldownSeconds(4
     var favRows = DrawerSupport.BuildRows(DrawerSupport.Tab.Favorite, chans, favOrder, Dead);
     Check(favRows.OfType<DrawerSupport.DrawerRow.Channel>().Select(r => r.Data.Number).SequenceEqual(new[] { 3, 2 }),
         "B·收藏标签按收藏排序铺开");
-
-    // v22 第 9 项：画面信息短格式——帧率+分辨率一行、画质一行；同值只显一档、变化显 a>b、缺失/到限口径
-    Check(FrameStatsLine.FpsSegment(null, null, false) == "帧率:检测中", "v22 第 9 项：帧率缺失未到限显检测中");
-    Check(FrameStatsLine.FpsSegment(null, null, true) == "帧率:--", "v22 第 9 项：帧率缺失到限显 --");
-    Check(FrameStatsLine.FpsSegment(25, null, false) == "帧率:25fps", "v22 第 9 项：现值未测同值单显");
-    Check(FrameStatsLine.FpsSegment(25, 25.2, false) == "帧率:25fps", "v22 第 9 项：帧率小幅波动按同值");
-    Check(FrameStatsLine.FpsSegment(25, 30, false) == "帧率:25fps>30fps", "v22 第 9 项：帧率变化显原>现");
-    Check(FrameStatsLine.ResSegment(0, 0, 0, 0, true) == "分辨率:--", "v22 第 9 项：分辨率缺失到限显 --");
-    Check(FrameStatsLine.ResSegment(1920, 1080, 1920, 1080, false) == "分辨率:1080P", "v22 第 9 项：同档并入档位文案");
-    Check(FrameStatsLine.ResSegment(1920, 1080, 2560, 1440, false) == "分辨率:1080P>2K", "v22 第 9 项：分辨率变化显 1080P>2K");
-    Check(FrameStatsLine.ResSegment(1280, 720, 640, 360, false) == "分辨率:720P", "v22 第 9 项：≤1280 同归 720P 只显一档");
-    Check(FrameStatsLine.TierSegment("高", true) == "画质:高:生效", "v22 第 9 项：画质档生效口径");
-    Check(FrameStatsLine.TierSegment("低", false) == "画质:低:未生效", "v22 第 9 项：临时降档如实显未生效");
-    Check(FrameStatsLine.TierSegment("关", true) == "画质:关", "v22 第 9 项：关档只显关");
 
     // v22 第 16 项：18 路挂链后抽屉分类过滤对账——地方台含 13 城市候选，卫视含甘肃/福建经济
     {

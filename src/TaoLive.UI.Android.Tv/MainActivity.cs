@@ -106,10 +106,6 @@ public class MainActivity : Activity
     // v23 第 1 条：折叠交互整行退场——foldToggle 总开关行与 _expanded/_expandedInit 折叠状态一并清，
     // 列表默认铺开不留空行（BLL 的 ListFoldController 纯逻辑保留不动，测试断言不破）。
 
-    // v1.0.9 第④项：列表旁操作提示去掉，改为实时画面信息（v22 第 9 项改短格式：帧率+分辨率一行、画质一行）
-    private TextView? _statsInfo;
-    private TextView? _statsTier;
-    private System.Threading.Timer? _statsTicker;
     // v1.0.9 第⑦/⑪项：重建列表的焦点锚点（分类键或 C:频道号），锚定原位置不跳头
     private string? _pendingFocusAnchor;
     // v1.0.9 第⑬项：本台会话实际取播的来源变体（健康表优先取最近验证可用来源）
@@ -241,8 +237,6 @@ public class MainActivity : Activity
                 _precheck.AttachHealthStore(healthStore);
                 await PrecheckLoopAsync(precheckCts.Token);
             });
-            // v1.0.9 第④项：画面信息行实时刷新（2 秒节拍，列表开着才写字；v22 第 9 项改短格式两行）
-            _statsTicker = new System.Threading.Timer(_ => _ui.Post(RefreshStatsLine), null, 2000, 2000);
             // A 类第10项：5 秒巡检喂实测——水位偏低提前降档防卡；降档=会话内临时档，平稳 10 分钟自动回位
             // fix50（真机卡死批B·UI链后台化）：画质档触发链整链投线程池——判活/帧率快照/自动档判定
             // 离开 UI 线程；在途互斥防重入；要动界面的动作经 _ui.Post 回投
@@ -1149,20 +1143,6 @@ public class MainActivity : Activity
     /// <summary>A⑩：实际生效档（自动档临时调节含在内；手动档=天花板）。</summary>
     private AiLiveTier EffectiveTier => _governor?.Effective ?? _aiTier;
 
-    /// <summary>
-    /// v22 第 9 项：画面信息短格式两行——「帧率:x fps&gt;y fps  分辨率:1080P&gt;2K」+「画质:高:生效」。
-    /// 一律真实画面真实数据：测量缺失显「检测中」、到限显「--」；行高由装配时固定，跳变只换文字不换高度。
-    /// </summary>
-    private void RefreshStatsLine()
-    {
-        if (_statsInfo is null || _statsTier is null) return;
-        var (ofps, cfps, ow, oh, cw, chh) = _host.SnapshotStats();
-        bool exhausted = _host.StatsExhausted;
-        _statsInfo.Text = $"{FrameStatsLine.FpsSegment(ofps, cfps, exhausted)}  {FrameStatsLine.ResSegment(ow, oh, cw, chh, exhausted)}";
-        string tier = LiveQuality.TierName(EffectiveTier);
-        bool effective = EffectiveTier == _aiTier; // 实际档=基准档即设置档生效；A⑩临时降档如实显「未生效」
-        _statsTier.Text = FrameStatsLine.TierSegment(tier, effective);
-    }
 
     /// <summary>A⑩/A⑤：自动档变化后统一动作——重挂滤镜、调档打点、信息行（档位变化优先级，走单写入口）。</summary>
     private void OnAutoTierChanged(AiLiveTier before, bool stalled)
@@ -1296,22 +1276,6 @@ public class MainActivity : Activity
         header.AddView(count);
         _listPanel.AddView(header);
 
-        // v22 第 9 项（老板 20:36 加严拍板）：画面信息块提前占位第一块——帧率+分辨率一行、画质一行，
-        // 两行固定行高一次量足：「检测中」→实测值、数值跳变只换文字不换高度，不因数据变化挤高度
-        int lineH = (int)(30 * Resources!.DisplayMetrics!.Density);
-        var statsBlock = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        _statsInfo = new TextView(this) { Text = "画面信息检测中", TextSize = 17, Gravity = GravityFlags.CenterVertical };
-        _statsInfo.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(_statsInfo);
-        _statsInfo.SetPadding(DrawerPad, 4, DrawerPad, 4);
-        _statsTier = new TextView(this) { Text = "画质:检测中", TextSize = 17, Gravity = GravityFlags.CenterVertical };
-        _statsTier.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(_statsTier);
-        _statsTier.SetPadding(DrawerPad, 4, DrawerPad, 4);
-        statsBlock.AddView(_statsInfo, new LinearLayout.LayoutParams(-1, lineH));
-        statsBlock.AddView(_statsTier, new LinearLayout.LayoutParams(-1, lineH));
-        _listPanel.AddView(statsBlock);
-        RefreshStatsLine(); // 立即按实测值填充（2 秒节拍在跑，不等下一拍）
 
         // 五分类标签行（第二块，v22 第 9 项换位后随画面信息块之后）；
         // 1.0.12 UI③：行边距统一走 DrawerPad 基准，与页头/列表项同一水平对齐线；
@@ -2304,8 +2268,6 @@ public class MainActivity : Activity
         _epgCts = null;
         _ticketKeeper?.Dispose();
         _ticketKeeper = null;
-        _statsTicker?.Dispose(); // ④画面信息行节拍
-        _statsTicker = null;
         _governorTicker?.Dispose(); // A⑩调速巡检节拍
         _governorTicker = null;
         // v28 读盘优化：退出前先等健康账灌回（启动初期即退出的窗口，毫秒级读盘）

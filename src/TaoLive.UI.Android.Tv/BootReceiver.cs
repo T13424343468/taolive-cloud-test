@@ -32,7 +32,7 @@ public class WarmupBootReceiver : BroadcastReceiver
             }
             else context.StartService(svc);
         }
-        catch { /* ROM 拦截则静默，退化为「打开 App 时才预热」，功能不残废 */ }
+        catch (Exception ex) { Shared.CrashNet.Record($"[Boot] 开机拉起被 ROM 拦截（退化为打开 App 时才预热，功能不残废）：{ex.Message}"); }
     }
 }
 

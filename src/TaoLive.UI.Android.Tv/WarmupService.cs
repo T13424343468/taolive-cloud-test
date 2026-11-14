@@ -79,10 +79,12 @@ public class WarmupService : Service
         try
         {
             var am = (AlarmManager)GetSystemService(AlarmService)!;
+            var restartPi = BuildRestartPendingIntent();
+            _pendingRestart = restartPi; // 审查归并修复：Set 前存引用，CancelRestartAlarm 不再空转（乙班 F1）
             am.SetAndAllowWhileIdle(AlarmType.RtcWakeup,
-                Java.Lang.JavaSystem.CurrentTimeMillis() + 5000, BuildRestartPendingIntent());
+                Java.Lang.JavaSystem.CurrentTimeMillis() + 5000, restartPi);
         }
-        catch { /* ROM 拦截则靠 Sticky 重建兜底 */ }
+        catch (Exception ex) { Shared.CrashNet.Record($"[Warmup] 兜底闹钟挂设被 ROM 拦截（靠 Sticky 重建兜底）：{ex.Message}"); }
         base.OnTaskRemoved(rootIntent);
     }
 
@@ -109,6 +111,6 @@ public class WarmupService : Service
             ((AlarmManager)GetSystemService(AlarmService)!).Cancel(_pendingRestart);
             _pendingRestart = null;
         }
-        catch { /* 闹钟本就没挂：静默 */ }
+        catch (Exception ex) { Shared.CrashNet.Record($"[Warmup] 兜底闹钟取消异常（闹钟本就没挂则无影响）：{ex.Message}"); }
     }
 }

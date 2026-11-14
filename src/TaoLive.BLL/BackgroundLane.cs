@@ -12,6 +12,8 @@ namespace TaoLive.BLL;
 /// - 首帧未落地零后台网络：FirstFrameLanded=false 时后台任务一律等待（消费不超一份）；
 /// - 有画面在播时后台单请求间隔 ≥10 秒（整轮 10 分钟级）；空闲（无画面）维持调用方既有节拍。
 /// - 车道优先级（老板 01:16 令，vc53 任务12）：播放救助（Rescue）> 常规后台（Standard）> 慢探摸源（Scout）。
+/// 适用范围（老板 2026-11-14 拍板）：仅电视端（TV）；手机端豁免，书面口径见
+/// projects/1377423/审查/单车道令适用范围-电视端豁免-手机端.md。
 /// 纯逻辑可测：时钟注入。唤醒后的等待用 Task.Delay 轮询（电视端 IO 定时器足量，避免复杂唤醒原语）。
 /// </summary>
 public static class BackgroundLane

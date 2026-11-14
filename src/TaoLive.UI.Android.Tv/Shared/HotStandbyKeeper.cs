@@ -74,7 +74,8 @@ public class HotStandbyKeeper
         {
             await Task.Delay(5_000, ct); // 修法七 1c：连接完成 5 秒后再起校验流
             // 备援候选：与 ResolveWithFailoverAsync 同一注册表序（vc45 隐患①：内置备援表优先，非主源下一路；注册表无路退用户源）
-            var alt = await _resolver.ResolveStandbyCandidateAsync(ch, mainUrl);
+            // 红灯收编（审查 2026-11-14 红1）：备援候选解析过全局单车道（Standard 档，自带首帧门控+间隔让路）
+            var alt = await BackgroundLane.RunAsync(async () => await _resolver.ResolveStandbyCandidateAsync(ch, mainUrl), ct);
             if (session != Volatile.Read(ref _session)) return; // 期间换台：作废
             // 修法七 3b：同流去重——备路与主路完全相同则热备无意义，保持单路
             if (string.IsNullOrEmpty(alt) || string.Equals(alt, mainUrl, StringComparison.Ordinal)) return;
@@ -91,7 +92,8 @@ public class HotStandbyKeeper
                 if (SourceProfileStore.ClassifyUrl(_standbyUrl) is SourceKind.ShortSign or SourceKind.TicketShort
                     && Environment.TickCount64 - _standbyFetchedMs > StandbyTicketTtlMs)
                 {
-                    var fresh = await _resolver.ResolveStandbyCandidateAsync(ch, mainUrl);
+                    // 红灯收编：票据换新过车道（Standard 档）
+                    var fresh = await BackgroundLane.RunAsync(async () => await _resolver.ResolveStandbyCandidateAsync(ch, mainUrl), ct);
                     if (session != Volatile.Read(ref _session)) return;
                     if (!string.IsNullOrEmpty(fresh) && !string.Equals(fresh, _standbyUrl, StringComparison.Ordinal))
                     {
@@ -107,8 +109,10 @@ public class HotStandbyKeeper
                     }
                 }
                 // 主路 IP 绑定源（源档案 IpBound，出厂=央视频）→ 备路仅清单级（同 IP 不建双会话）；其余源清单+单分片头
+                // 红灯收编：热备校验探测过全局单车道（Standard 档）——换台起播期首帧未落地时车道不放行，零并发飞行
                 bool segmentLevel = !SourceProfileStore.Shared.ProfileOf(ch.SourceId).IpBound;
-                var (ok, rejected) = await _resolver.ProbeHotStandbyAsync(_standbyUrl, referer, ua, segmentLevel);
+                var (ok, rejected) = await BackgroundLane.RunAsync(
+                    async () => await _resolver.ProbeHotStandbyAsync(_standbyUrl, referer, ua, segmentLevel), ct);
                 if (rejected)
                 {
                     // 修法七 3：备路被服务器明确拒绝 → 退避账照记（共用一本）+ 退回单路不硬顶

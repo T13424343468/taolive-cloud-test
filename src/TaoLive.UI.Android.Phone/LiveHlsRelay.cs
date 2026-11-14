@@ -18,6 +18,8 @@ namespace TaoLive.UI.Android.Phone
     /// v1 边界（如实注明）：AiSegmentRunner 现只吃 MP4 封装（MediaMuxer 不支持 ts），
     /// 直播 ts 分片走池的账目+保险路径=直出不挡播；加工插槽留好，runner 支持 ts 后自动接上。
     /// ReportPlayed 以分片送达播放端近似（libvlc 内部拉流进度不外露），账目口径见发布说明。
+    /// 车道令豁免声明（2026-11-14 审查红2 收尾）：本中继即画面本身（播放链内取流），不入后台单车道；
+    /// 单车道令适用范围=仅电视端，手机端豁免见 projects/1377423/审查/单车道令适用范围-电视端豁免-手机端.md。
     /// </summary>
     internal sealed class LiveHlsRelay : IDisposable
     {

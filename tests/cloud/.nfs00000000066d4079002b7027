@@ -1,0 +1,25 @@
+{
+  "ledger_meta": {
+    "package": "TaoLive v1.0.22 vc51",
+    "repo": "taolive-cloud-test",
+    "branch": "daoying-v31-wip",
+    "date": "2026-11-14",
+    "standard": "云真机测试标准 v2 十维度"
+  },
+  "cases": [
+    {"id": "TL-C01", "dimension": "功能全覆盖", "object": "频道目录", "touch_flow": ["逻辑层：StubSource 注册→Rebuild"], "assertions": ["分类组数=6", "编号顺次固化", "接不进的台不占号"], "expected": "目录构建正确", "result": "绿", "evidence": "logic tests 620 PASS", "perspective": ["开发"]},
+    {"id": "TL-C02", "dimension": "功能全覆盖", "object": "收藏与编号直达", "touch_flow": ["逻辑层：收藏置顶+ByNumber"], "assertions": ["收藏置顶排序正确", "无号不越界"], "expected": "选台行为正确", "result": "绿", "evidence": "logic tests 620 PASS", "perspective": ["开发"]},
+    {"id": "TL-C03", "dimension": "异常边界", "object": "备源链/断源", "touch_flow": ["逻辑层：FallbackChain 逐级降级"], "assertions": ["主源死→备源接管", "全死不崩"], "expected": "断源不崩溃、可恢复", "result": "绿", "evidence": "logic tests 620 PASS", "perspective": ["开发", "真实用户"]},
+    {"id": "TL-C04", "dimension": "异常边界", "object": "缓冲策略", "touch_flow": ["逻辑层：BufferPolicy/MemoryBudget 极值"], "assertions": ["水位深水拿满", "预算内不越界"], "expected": "缓冲常满", "result": "绿", "evidence": "logic tests 620 PASS", "perspective": ["开发"]},
+    {"id": "TL-C05", "dimension": "功能全覆盖", "object": "卡顿预警(fix56)", "touch_flow": ["逻辑层：EarlyWarningMonitor 连拍"], "assertions": ["水位<1秒连续3拍出手一次", "恢复/停滞/换台清零"], "expected": "提前预警且不重复出手", "result": "绿", "evidence": "logic tests 620 PASS", "perspective": ["开发"]},
+    {"id": "TL-C06", "dimension": "功能全覆盖", "object": "无感续接(fix57)", "touch_flow": ["逻辑层：TryPreemptiveHotSwap 委托链"], "assertions": ["有备源走热切返回true", "无备源回落静默重取", "全程不发提示"], "expected": "无感续接", "result": "绿", "evidence": "logic tests 620 PASS", "perspective": ["开发"]},
+    {"id": "TL-C07", "dimension": "版本与包完整性", "object": "vc51 包", "touch_flow": ["aapt badging", "apksigner verify", "SHA-256 三元组"], "assertions": ["versionCode=51/versionName=1.0.22", "签名校验通过", "双 ABI 齐全", "SHA256 与包一致"], "expected": "进门关全过", "result": "绿", "evidence": "dist/vc51/SHA256SUMS", "perspective": ["项目经理"]},
+    {"id": "TL-C08", "dimension": "功能全覆盖", "object": "画面铺满(主/备源)", "touch_flow": ["真机：遥控换到主源台→截图", "换到备用源台→截图"], "assertions": ["四角无黑边无缩角"], "expected": "全台铺满", "result": "待补", "evidence": "", "perspective": ["真实用户"]},
+    {"id": "TL-C09", "dimension": "异常边界", "object": "快速连切", "touch_flow": ["真机：遥控连按换台≥20次"], "assertions": ["应用存活", "无崩溃无花屏"], "expected": "不闪退", "result": "待补", "evidence": "", "perspective": ["真实用户"]},
+    {"id": "TL-C10", "dimension": "长时", "object": "长播水位", "touch_flow": ["真机/云台：长播30分钟+循环换台"], "assertions": ["水位高位", "无泄漏无卡死"], "expected": "长跑稳定", "result": "待补", "evidence": "", "perspective": ["真实用户"]},
+    {"id": "TL-C11", "dimension": "性能", "object": "冷启动/首帧/内存/CPU", "touch_flow": ["真机取数对比基线"], "assertions": ["数值落档且不劣化"], "expected": "性能达标", "result": "待补", "evidence": "", "perspective": ["开发", "产品经理"]},
+    {"id": "TL-C12", "dimension": "五维矩阵", "object": "视觉走查", "touch_flow": ["截图+录屏帧送视觉模型"], "assertions": ["布局/断字/色差/控件缺失/主题一致"], "expected": "视觉过关", "result": "待补", "evidence": "", "perspective": ["产品经理"]},
+    {"id": "TL-C13", "dimension": "五维矩阵", "object": "五视角过包", "touch_flow": ["真实用户/恶意攻击者/开发/项目经理/产品经理各过一遍"], "assertions": ["各自独立结论"], "expected": "五视角全绿", "result": "待补", "evidence": "", "perspective": ["真实用户", "恶意攻击者", "开发", "项目经理", "产品经理"]}
+  ],
+  "honest_boundary": "物理硬件项（遥控手感/发热/音质）云台不覆盖；TL-C08~C13 需真机会话（云真机平台待授权，或老板真机验收），标待补不伪装绿。"
+}

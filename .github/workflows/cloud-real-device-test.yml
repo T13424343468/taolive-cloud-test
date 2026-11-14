@@ -1,0 +1,98 @@
+name: cloud-real-device-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk-url:
+        description: "被测包下载地址（Release 资产）"
+        required: false
+        default: ""
+      soak-minutes:
+        description: "长时段时长（真机段，分钟）"
+        required: false
+        default: "30"
+
+jobs:
+  gate-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 版本锚/签名/包一致性
+        run: |
+          if [ -n "${{ github.event.inputs.apk-url }}" ]; then
+            curl -sL -o app.apk "${{ github.event.inputs.apk-url }}"
+            sha256sum app.apk | tee gate-package.sha256
+            ls -l app.apk
+          else
+            echo "未提供 apk-url，进门关以仓库内 SHA256SUMS 记录为准（待补）"
+          fi
+      - name: 台账产物归档
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-package
+          path: gate-package.sha256
+          if-no-files-found: ignore
+
+  run-cases:
+    needs: gate-package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 逻辑全测（FAIL=0 才算过）
+        run: |
+          dotnet run --project tests/TaoLive.Tests -c Release | tee run-cases.log
+          grep -c '^FAIL' run-cases.log | grep -qx '0' || { echo '存在 FAIL，红即停'; exit 1; }
+      - name: 用例台账落盘
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-cases
+          path: run-cases.log
+
+  perspectives:
+    needs: run-cases
+    runs-on: ubuntu-latest
+    steps:
+      - name: 五视角清点
+        run: echo '逻辑层视角已由段2覆盖；真机视角待真机会话——待补，不伪装绿。'
+
+  visual-review:
+    needs: run-cases
+    runs-on: ubuntu-latest
+    steps:
+      - name: 视觉走查
+        run: echo '待云真机平台接入后执行，不伪装绿。'
+
+  perf-soak:
+    needs: gate-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: 性能与长时
+        run: echo '待云真机平台接入后执行长跑，不伪装绿。'
+
+  ledger:
+    needs: [gate-package, run-cases, perspectives, visual-review, perf-soak]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 台账清点与交付结论
+        run: |
+          python3 - <<'EOF'
+          import json
+          data = json.load(open('tests/cloud/cases-taolive-v51.json'))
+          green = [c['id'] for c in data['cases'] if c['result']=='绿']
+          pending = [c['id'] for c in data['cases'] if c['result']=='待补']
+          red = [c['id'] for c in data['cases'] if c['result']=='红']
+          print(f"绿 {len(green)}: {', '.join(green)}")
+          print(f"待补 {len(pending)}: {', '.join(pending)}")
+          print(f"红 {len(red)}: {', '.join(red) if red else '无'}")
+          print("结论：逻辑层绿、真机段待补——红绿如实，不伪装交付。")
+          EOF
+      - name: 台账产物归档
+        uses: actions/upload-artifact@v4
+        with:
+          name: ledger
+          path: tests/cloud/cases-taolive-v51.json

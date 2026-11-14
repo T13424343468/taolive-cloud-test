@@ -55,3 +55,16 @@
 - 批2 状态：✔ 完成并收口。竞速逻辑（RushNet.cs RacePreconnector）+ MainActivity 接线（含场景⑫内存档收缩 RaceConcurrencyPolicy）+ 6 断言齐备；未动线2 所有物。
 - 线1 无阻塞。12:10 收口口径满足：改动清单=RaceConcurrencyPolicy.cs（新）/MainActivity.cs（接线+收缩）/tests（+6 断言）；断点=build111_state.md【线1】段落。
 - 待 12:20 合流后批6：22 场景走查+恶意专项+九层全测（本批免双检，小光转支援）。
+
+## 【线2】批3/4/5/7 G2兜底链+F/G/C/H 收口（2026-11-09 11:50 前后）
+
+- 核对结论：F DNS 优选（DnsPick/DoH+TTL 缓存+静默回落）、G IP 测速择路（DnsRouteHandler+延迟记账+OrderIps）、C 备用域名延迟记账择优（DomainFallback.RecordLatency/OrderedAlternativesFor）均已在 v1.0.16 落码，本批核对在位未重做。
+- 【G2 跨源兜底链：✔ 已落码+接线】
+  - 新模块 src/TaoLive.BLL/FallbackChain.cs：FallbackChainPlanner.Plan——同名台官方源进链、健康评分降序（央视频不再唯一支柱）、去重（一源一候选）、非法地址整条剔除、拉黑观察期整段跳过、用户自有源不进链（修正令：由现行备援链路承接）。
+  - StreamResolver.ResolveWithChainAsync：主源失败沿链下家（NextCandidateOnFailure）、成功 OnSuccess 回链、未注入链退现行两候选备援、链尾全败返回 null（「全源不可达」现行收口）。
+  - MainActivity 接线（线1 批2 已收口后合流接线）：ChainProvider=同名台可用官方源、ChainScore=SourceScorer 实时评分；起播取流与重连取流改走 ResolveWithChainAsync，重试循环/换台作废/失败矩阵语义不变。
+- 【H 连接复用·内存档自适应：✔ 已落码】RaceConcurrencyPolicy.PoolPerServer——紧张/极低档（<800MB，与竞速同口径）连接池单域并发 16→8，充裕/未知维持 16；StreamResolver 共享客户端改 Lazy 惰性装配（MemAvailProvider 先行注入，BLL 纯逻辑不依赖平台 API）；MainActivity OnCreate 注入 ActivityManager 内存读取器。
+- 改动文件：FallbackChain.cs（新）、StreamResolver.cs（G2 取流+Lazy 客户端+池参数自适应）、RaceConcurrencyPolicy.cs（PoolPerServer）、MainActivity.cs（MemAvailProvider+ChainProvider/ChainScore 接线+两处取流改走链）、tests/Program.cs（G2 8 断言+H 自适应 4 断言，共 +12）、build111_state.md。
+- 测试结果：全量 610 PASS / 0 FAIL 两遍全绿（597→610，+13 含反射口径修正项）；BLL Release 0 警 0 错。
+- versionCode=22 / 1.0.21（csproj 已改，UI publish 断点见下）。
+- 当前步：✔ 线2 收口（2026-11-09 11:54）：UI 安卓 publish 编译通过（v1.0.21/versionCode=22 签名包已出），仅 XA0033/XA0141 两条非代码警告（基线同口径报备）；待 12:10 合流→批6 走查+全测→12:50 前出包。

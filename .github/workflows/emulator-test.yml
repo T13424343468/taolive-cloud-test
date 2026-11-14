@@ -179,3 +179,35 @@ jobs:
             proc-ps.txt
             emulator.log
           if-no-files-found: warn
+
+  build-apk:
+    # 云上出包治本：沙箱 3.8G 内存 ILLink OOM 三连败+swap 被禁（2026-11-14 支援班）；
+    # runner 7G 内存，restore 闭包互踩需三步序列（Tv 显式 TFM→BLL→Model）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: live-src
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.320'
+      - name: Install android workload
+        run: dotnet workload install android
+      - name: Restore three-step sequence
+        run: |
+          dotnet restore src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj -p:Configuration=Release -p:TargetFramework=net9.0-android35.0
+          dotnet restore src/TaoLive.BLL/TaoLive.BLL.csproj -p:Configuration=Release -p:TargetFramework=net8.0
+          dotnet restore src/TaoLive.Model/TaoLive.Model.csproj -p:Configuration=Release -p:TargetFramework=net8.0
+      - name: Publish APK (trim+AOT default)
+        run: |
+          dotnet publish src/TaoLive.UI.Android.Tv -c Release -f net9.0-android35.0 --no-restore
+          find src/TaoLive.UI.Android.Tv/bin -name "*.apk" -size +20M | head -1 | xargs -I{} cp {} TaoLive.apk
+          ls -la TaoLive.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taolive-vc53-apk
+          path: TaoLive.apk

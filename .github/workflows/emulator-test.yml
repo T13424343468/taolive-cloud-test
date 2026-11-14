@@ -197,17 +197,16 @@ jobs:
           dotnet-version: '9.0.320'
       # SDK 11 抢路：NETSDK1202（net9-android EOL）+NU1101（SDK11 对 android-arm 行为不同）——
       # 2026-11-14 支援班：显式把 HOME/.dotnet 顶到 PATH 最前，restore/publish 全用 9.0.320
-      - name: Pin dotnet 9.0.320
-        run: echo "$HOME/.dotnet" >> $GITHUB_PATH
+      # SDK 11 与 9.0.320 同装 /usr/share/dotnet，host 默认选最高 SDK=11
+      # → NETSDK1202 EOL error + NU1101；global.json 才是硬钉（pin 本轮要跑的 SDK）
+      - name: Pin SDK via global.json
+        run: echo '{"sdk":{"version":"9.0.320","rollForward":"disable"}}' > global.json
+      - name: Verify dotnet
+        run: dotnet --version
       - name: Install android workload
-        run: |
-          export PATH="$HOME/.dotnet:$PATH"
-          dotnet --version
-          dotnet workload install android
+        run: dotnet workload install android
       - name: Restore three-step sequence
         run: |
-          export PATH="$HOME/.dotnet:$PATH"
-          dotnet --version
           dotnet restore src/TaoLive.UI.Android.Tv/TaoLive.UI.Android.Tv.csproj -p:Configuration=Release -p:TargetFramework=net9.0-android35.0
           dotnet restore src/TaoLive.BLL/TaoLive.BLL.csproj -p:Configuration=Release -p:TargetFramework=net8.0
           dotnet restore src/TaoLive.Model/TaoLive.Model.csproj -p:Configuration=Release -p:TargetFramework=net8.0

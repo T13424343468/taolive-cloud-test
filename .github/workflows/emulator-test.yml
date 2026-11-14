@@ -143,7 +143,10 @@ jobs:
 
       - name: Launch app and capture evidence
         run: |
+          adb logcat -G 16M || true
           adb logcat -c
+          # 全程持续落盘：后台抓 logcat 直到取证结束，环形缓冲噪音不再刷掉 app 崩溃行
+          (adb logcat -v time > logcat-continuous.txt 2>&1 &) || true
           adb shell monkey -p com.taolive.tv -c android.intent.category.LAUNCHER 1 || true
           sleep 60
           adb shell "dumpsys activity activities | grep -i taolive" || echo "ACTIVITY_NOT_TOP"
@@ -153,6 +156,9 @@ jobs:
           adb shell screencap -p /sdcard/launch.png && adb pull /sdcard/launch.png launch-180s.png || true
           adb shell "dumpsys activity processes | grep -i taolive | head -20" > proc-info.txt || true
           adb shell "ps -A | grep taolive" > proc-ps.txt || true
+          # 崩溃归因金源：dropbox 全量（am_crash 全字段，窗口外崩溃也能归因）
+          adb shell "dumpsys dropbox --print" > dropbox.txt 2>/dev/null || echo "NO_DROPBOX"
+          grep -c taolive dropbox.txt > dropbox-taolive-count.txt || true
 
       - name: Dump emulator log
         if: always()
@@ -165,6 +171,8 @@ jobs:
           name: tao-live-vc48-crash-evidence
           path: |
             logcat-full.txt
+            logcat-continuous.txt
+            dropbox.txt
             launch-60s.png
             launch-180s.png
             proc-info.txt

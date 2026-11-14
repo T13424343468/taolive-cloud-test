@@ -24,17 +24,14 @@ public class WarmupService : Service
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
         CancelRestartAlarm();
-        var prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
-        if (!prefs.GetBoolean("warmup_enabled", true))
-        {
-            StopSelf(); // 用户关掉后台预热：服务空转退出（细案 §六：关掉时引擎等待，不探测）
-            return StartCommandResult.NotSticky;
-        }
+        // vc53 云测金证修复（round19 全程 logcat 定谳 ForegroundServiceDidNotStartInTimeException）：
+        // startForegroundService 拉起后 5 秒窗内必须转前台，本方法任何早退/异常路径都不许绕过。
+        // 故 StartForeground 无条件最先执行（通道构建失败也不阻断，降级裸通知再试）；
+        // 关开关分支改为「先转前台再 StopSelf」（先转前台再退合法，封死超时窗口）。
         try
         {
             if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：行为不变 */
             {
-                // 审查清零：本段整体 ≥API26 才可达（CA1416 场景守卫随分支显式化，行为不变）
                 var channel = new NotificationChannel(ChannelId, "后台预热", NotificationImportance.Min);
                 ((NotificationManager?)GetSystemService(NotificationService))?.CreateNotificationChannel(channel);
                 var note = new Notification.Builder(this, ChannelId)
@@ -45,7 +42,31 @@ public class WarmupService : Service
             }
             // API 26 以下：静默保活（TV 低版本场景，startForeground 需通知这里不强制）
         }
-        catch { /* 通知权限被拒：服务照跑只是无通知（细案 §二口径） */ }
+        catch
+        {
+            // 通知渠道/权限异常不得吞掉 startForeground 义务：降级独立渠道再试一次（round19 修复令 A）
+            try
+            {
+                if (OperatingSystem.IsAndroidVersionAtLeast(26))
+                {
+                    const string FallbackChannelId = "warmup_fb";
+                    ((NotificationManager?)GetSystemService(NotificationService))?.CreateNotificationChannel(
+                        new NotificationChannel(FallbackChannelId, "后台预热", NotificationImportance.Min));
+                    var bare = new Notification.Builder(this, FallbackChannelId)
+                        .SetContentText("直播源保活中，换台更快")
+                        .SetSmallIcon(global::Android.Resource.Drawable.IcMediaPlay)
+                        .Build();
+                    StartForeground(1001, bare);
+                }
+            }
+            catch (Exception fgEx) { Shared.CrashNet.Record($"[Warmup] 转前台失败（可能被系统降级为普通服务）：{fgEx.Message}"); }
+        }
+        var prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
+        if (!prefs.GetBoolean("warmup_enabled", true))
+        {
+            StopSelf(); // 用户关掉后台预热：已转前台再退（细案 §六：关掉时引擎等待，不探测）
+            return StartCommandResult.NotSticky;
+        }
         return StartCommandResult.Sticky; // 被杀自动重建（TCL 低配冻结属设计内行为：落盘层兜底）
     }
 

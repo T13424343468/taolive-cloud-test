@@ -258,16 +258,9 @@ public class MainActivity : Activity
         // v28 读盘优化：预热缓存灌回改后台预载（两本账内部均有锁/并发字典，与首播并发访问无竞态；损坏文件按无缓存处理口径不变）
         Task.Run(_resolver.WarmupDisk.Load);
         // A 类第6项：App 打开即拉起后台预热服务（同进程共享同一预热引擎，绝不起第二份）
-        try
-        {
-            var svc = new Intent(this, typeof(WarmupService));
-            if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：分析器只识别 OperatingSystem 判定，行为不变 */
-            {
-                if (_warmupEnabled) StartForegroundService(svc); // ≥26 分支（CA1416 场景守卫显式化）
-            }
-            else if (_warmupEnabled) StartService(svc);
-        }
-        catch (Exception svcEx) { CrashNet.Record($"[Warmup] 保活服务拉起失败（功能不残废）：{svcEx.Message}"); }
+        // vc53 云测金证修复（round19 定谳 FGS 超时崩溃）：冷启动主线程高载会饿死 OnStartCommand→
+        // startForeground 5 秒窗超时 FATAL；拉起点改到首帧落地（EnsureWarmupServiceStarted，幂等），
+        // 主线程闲时再转前台。此处仅留拉起时机位，不在此启动。
         var healthStore = _healthStore = new SourceHealthStore(FilesDir!.AbsolutePath);
         // v28 主线③：评分账与健康账同生命周期——启动灌回→挂预检（选源按分排序；账空退化既有顺序）
         var scoreStore = _scoreStore = new SourceScoreStore(FilesDir.AbsolutePath);
@@ -391,6 +384,7 @@ public class MainActivity : Activity
         {
             _frameEverShown = true;            // 首帧落地：延迟亮牌基准开启，此后换台先留旧画面
             _frameForCurrentSwitch = true;
+            EnsureWarmupServiceStarted(); // vc53 金证修复：首帧后主线程闲，此时才拉预热前台服务（幂等）
             _foregroundBusy = false;           // A⑥ PauseGate：连接完成，预热恢复
             BackgroundLane.SetFirstFrameLanded(true); // 画面平稳优先令：首帧落地才放行后台网络
             BackgroundLane.SetPlaying(true);          // 播放中：后台单请求间隔 ≥10 秒档
@@ -1071,6 +1065,24 @@ public class MainActivity : Activity
         _prefs?.Edit()?.PutBoolean("precheck_enabled", _precheckEnabled)?.Apply();
         RefreshSettingsRows();
         FlashInfo(_precheckEnabled ? "预检握手：开" : "预检握手：关");
+    }
+
+    private bool _warmupServiceKicked; // vc53 金证修复：首帧后幂等拉起标记（防重复 StartForegroundService）
+
+    /// <summary>vc53 云测金证修复：预热前台服务延迟到首帧落地后拉起（冷启动主线程高载会饿死 startForeground 5 秒窗→FATAL）。
+    /// 幂等：只拉一次；模拟器等极端环境到不了首帧则等 ExitAppCompletely/下次 OnCreate 兜底，不加定时器。</summary>
+    private void EnsureWarmupServiceStarted()
+    {
+        if (_warmupServiceKicked || !_warmupEnabled) return;
+        _warmupServiceKicked = true;
+        try
+        {
+            var svc = new Intent(this, typeof(WarmupService));
+            if (OperatingSystem.IsAndroidVersionAtLeast(26)) /* CA1416 场景守卫：分析器只识别 OperatingSystem 判定，行为不变 */
+                StartForegroundService(svc); // ≥26 分支（CA1416 场景守卫显式化）
+            else StartService(svc);
+        }
+        catch (Exception svcEx) { CrashNet.Record($"[Warmup] 保活服务拉起失败（功能不残废）：{svcEx.Message}"); }
     }
 
     /// <summary>A⑥：后台预热开关（关=保活服务退出+调度空转，功能不残废）。</summary>

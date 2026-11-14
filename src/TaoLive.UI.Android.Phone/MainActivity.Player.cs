@@ -1076,7 +1076,7 @@ namespace TaoLive.UI.Android.Phone
                     else _smartSub?.Cancel();
                     TaoUi.Toast(this, AppSettings.Current.SmartSubtitleEnabled ? "智能字幕: 开 (首次使用自动下载识别模型)" : "智能字幕: 关");
                 },
-                Bench => RunRealtimeBenchEntry,
+                Bench => () => RunRealtimeBenchEntry(false), // vc53 审查收口：switch 臂需 Action 值，可选参方法组不可转（CS0123），包 lambda 显式传默认参（与刀3 前的 RunRealtimeBenchEntry() 同语义）
                 _ => EnterPipMode, // 画中画（含未知项兜底，同原口径）
             };
             TaoPopup.ShowMenu(this, _playerMoreBtn!, items.Select((t, i) => (t, At(i))).ToArray(), belowLeft: true, title: "更多");   // v3.13 投屏/倍速升级为专用按钮, 不再占菜单

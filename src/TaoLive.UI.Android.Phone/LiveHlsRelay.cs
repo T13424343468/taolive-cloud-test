@@ -35,7 +35,6 @@ namespace TaoLive.UI.Android.Phone
         private readonly Queue<int> _segOrder = new();
         private string _srcUrl = "";
         private List<(string Key, string Value)> _headers = new();
-        private string? _cachedManifestBody;            // 源清单缓存（重写前的原始行）
         private List<double> _segDurations = new();     // 逐段秒数（EXTINF）
         private int _readyPort;
 

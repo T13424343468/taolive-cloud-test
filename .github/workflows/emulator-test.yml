@@ -166,6 +166,70 @@ jobs:
           adb shell "dumpsys dropbox --print" > dropbox.txt 2>/dev/null || echo "NO_DROPBOX"
           grep -c taolive dropbox.txt > dropbox-taolive-count.txt || true
 
+      - name: Blindspot A - per-screen visual walkthrough (10/30/60/120/300s)
+        run: |
+          mkdir -p walkthrough
+          snap() {
+            adb shell screencap -p /sdcard/w-$1.png && adb pull /sdcard/w-$1.png walkthrough/ || true
+            adb shell rm -f /sdcard/w-$1.png || true
+            adb shell uiautomator dump /sdcard/w-$1.xml >/dev/null 2>&1 \
+              && adb pull /sdcard/w-$1.xml walkthrough/ \
+              || echo "UIDUMP_FAIL_$1" >> walkthrough/uidump-fails.txt
+            adb shell rm -f /sdcard/w-$1.xml || true
+          }
+          sleep 10; snap 010s
+          sleep 20; snap 030s
+          sleep 30; snap 060s
+          sleep 60; snap 120s
+          sleep 180; snap 300s
+          ls -la walkthrough/
+
+      - name: Blindspot B - segmented screen recording (36 min, background)
+        run: |
+          mkdir -p rec
+          nohup bash -c '
+            for i in $(seq -w 1 12); do
+              timeout 200 adb shell screenrecord --time-limit 180 /sdcard/rec-$i.mp4 || true
+              adb pull /sdcard/rec-$i.mp4 rec/ 2>/dev/null || true
+              adb shell rm -f /sdcard/rec-$i.mp4 || true
+            done
+            touch rec/DONE
+          ' > rec/recorder.log 2>&1 &
+          echo "RECORDER_STARTED"
+
+      - name: Blindspot C - 30 min long run with health checks
+        run: |
+          mkdir -p longrun
+          for M in $(seq 1 10); do
+            adb shell "dumpsys activity activities | grep -i taolive | head -3" > longrun/health-$M.txt 2>&1 || true
+            adb logcat -d | grep -c "FATAL EXCEPTION" > longrun/fatal-count-$M.txt || true
+            if [ $((M % 2)) -eq 0 ]; then
+              adb shell screencap -p /sdcard/lr-$M.png && adb pull /sdcard/lr-$M.png longrun/ || true
+              adb shell rm -f /sdcard/lr-$M.png || true
+            fi
+            if [ $((M % 3)) -eq 0 ]; then
+              adb shell uiautomator dump /sdcard/ui-lr-$M.xml >/dev/null 2>&1 \
+                && adb pull /sdcard/ui-lr-$M.xml longrun/ \
+                || echo "UIDUMP_FAIL_lr_$M" >> longrun/uidump-fails.txt
+              adb shell rm -f /sdcard/ui-lr-$M.xml || true
+            fi
+            sleep 180
+          done
+          echo "LONGRUN_30MIN_DONE"
+
+      - name: Blindspot D - stop recording and final crash accounting
+        run: |
+          for WAIT in $(seq 1 20); do
+            [ -f rec/DONE ] && break
+            sleep 30
+          done
+          ls -la rec/ || true
+          adb logcat -d > logcat-final.txt || true
+          grep -c "FATAL EXCEPTION" logcat-final.txt > fatal-final-count.txt || true
+          adb shell "dumpsys dropbox --print" > dropbox-final.txt 2>/dev/null || echo "NO_DROPBOX"
+          grep -c taolive dropbox-final.txt > dropbox-final-taolive-count.txt || true
+          adb shell screencap -p /sdcard/final.png && adb pull /sdcard/final.png final-state.png || true
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -174,7 +238,15 @@ jobs:
           path: |
             logcat-full.txt
             logcat-continuous.txt
+            logcat-final.txt
             dropbox.txt
+            dropbox-final.txt
+            dropbox-final-taolive-count.txt
+            fatal-final-count.txt
             launch-60s.png
+            final-state.png
             emulator.log
+            walkthrough/
+            rec/
+            longrun/
           if-no-files-found: warn

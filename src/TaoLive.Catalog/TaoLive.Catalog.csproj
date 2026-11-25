@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- 台单与取票：一期 BLL 摸底成果逐字移植（素材沿用令 + 不分期令），纯库可全测 -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../TaoLive.Model/TaoLive.Model.csproj" />
+    <ProjectReference Include="../TaoLive.Foundation/TaoLive.Foundation.csproj" />
+    <ProjectReference Include="../TaoLive.Session/TaoLive.Session.csproj" />
+    <InternalsVisibleTo Include="TaoLive.Tests" />
+  </ItemGroup>
+</Project>

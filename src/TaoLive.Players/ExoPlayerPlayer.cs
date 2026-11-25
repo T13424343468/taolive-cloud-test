@@ -1,0 +1,564 @@
+﻿using Android.Runtime;
+using Android.Views;
+using MediaItemLiveConfiguration = AndroidX.Media3.Common.MediaItem.LiveConfiguration;
+using TaoLive.Foundation;
+using TaoLive.Model;
+
+namespace TaoLive.Players;
+
+/// <summary>
+/// ExoPlayer（Media3）适配器：2.0 第一内核（老板 2026-11-15 03:37 拍板，不采用 LibVLC 打底）。
+/// 实现契约：Foundation/IPlayer——事件语义（次序即文档）与 IPlayer 契约保持一致，
+/// 会话层只认 IPlayer 不认内核本尊。
+/// 事件映射：
+///   内核进入 Buffering → OnBufferingStart；
+///   内核进入 Ready → OnBufferingEnd + OnFirstFrame（每次 Play 仅一次）；
+///   内核进入 Ended → 视同卡流 OnBufferingStart（R2-72 发现即改：直播流被服务端掐断时内核进
+///   ENDED，此前未映射 → 无错误回调、无卡流事件，状态机停在 Playing，画面冻结且看门狗/
+///   备源自救永不触发——冻画黑洞。直播语义 ENDED=流断，交会话卡流路径自救）；
+///   OnPlayerError → OnError（终态，直到下一次 Play）。
+/// </summary>
+public sealed class ExoPlayerPlayer : IPlayer
+{
+    private readonly Forwarder _forwarder;
+    private readonly FrameTickForwarder _frameForwarder;
+    private readonly DiagAnalyticsForwarder _diagForwarder;
+    private readonly AndroidX.Media3.ExoPlayer.IExoPlayer _player;
+    private readonly Android.OS.Handler _main;
+    private Func<TaoLive.Model.SourceEndpoint, Task<string?>>? _streamResolver;
+    private bool _firstFrameRaisedThisPlay;
+    private int _playGeneration; // 播放代次（闪退镜红② 11-15）：迟到 resolver 回调对不上代次即弃，不碰已释放内核
+    private volatile bool _released; // vc74 P3⑧：释放旗——Dispose 摘听→Release 窗口期在途回调查旗即弃（收窄窗口口径，vc75 定案）
+    private IntPtr _surfaceHandle;
+    private bool _hasSurface;
+    private readonly Android.Content.Context _context;
+    private AndroidX.Media3.ExoPlayer.Video.PlaceholderSurface? _warmupSink; // vc66 哑面预热：攒流期焐热视频解码器
+
+    /// <summary>
+    /// 取流注入点（2.0 W4 口径）：API 取票口端点播前经 resolver 换真实流（频道号+运行时取票），
+    /// 直连端点原样放行。null=全部直连。解析失败按 OnError 交会话备源自救，契约不变。
+    /// 频道上下文（缓存键/整表行匹配名）由壳层在 Play 前设置。
+    /// </summary>
+    public ExoPlayerPlayer(Android.Content.Context context,
+        Func<TaoLive.Model.SourceEndpoint, Task<string?>>? streamResolver = null)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        _forwarder = new Forwarder(this);
+        _context = context;
+        var playerBuilder = new AndroidX.Media3.ExoPlayer.ExoPlayerBuilder(context);
+        playerBuilder.SetLoadControl(BuildLoadControl(context));
+        // #76 锁画质防抖（2026-11-15 老板令，治「放 1 秒卡半秒」循环）：默认 ABR 在估速贴档位线抖动时
+        // 逐秒重选流——每次切换渲染器拆建一遍（真机「视频渲染器停用」实锤），画面停半秒再续。
+        // 改黏性自适应：升档要缓冲满 30 秒、降档判据放宽到 60 秒、估速按折扣取档——宁稳勿抖，
+        // 起播按当前带宽选一档合理画质放住，不再随估速逐秒换挡。
+        // vc71（2026-11-16）：折扣 0.5→0.15 限档验证包。2.0.13 真机「画面停半秒再续」复发疑回旧病：
+        // 五折取档把估速 6.7~14.6Mbps 锁在最高 fhd 档，若盒子解 fhd 只有 ~2fps，症状同款；
+        // 且 OnDroppedVideoFrames 的 ≥5 帧过滤把慢解的零星丢帧吞了（vc70「零丢帧行」有盲区）。
+        // 压到一五折迫使选档落到低档（当年 799kbps 估速选低档跑得动=「之前都没抖」）：
+        // 低档不抖即坐实「最高档盒子跑不动」，下一版按解码能力定档上限（疑点先降档、降不动再换线）。
+        playerBuilder.SetTrackSelector(new AndroidX.Media3.ExoPlayer.TrackSelection.DefaultTrackSelector(
+            context,
+            new AndroidX.Media3.ExoPlayer.TrackSelection.AdaptiveTrackSelection.Factory(
+                /* minDurationForQualityIncreaseMs */ 30_000,
+                /* maxDurationForQualityDecreaseMs */ 60_000,
+                /* minDurationToRetainAfterDiscardMs */ 25_000,
+                /* bandwidthFraction */ 0.15f)));
+        _player = playerBuilder.Build()!;
+        _player.AddListener(_forwarder);
+        _frameForwarder = new FrameTickForwarder(this); // 帧回调（v76：10Hz 节流）随内核装配一次，Play 全程复用
+        _player.SetVideoFrameMetadataListener(_frameForwarder);
+        _main = new Android.OS.Handler(Android.OS.Looper.MainLooper!);
+        _diagForwarder = new DiagAnalyticsForwarder(this); // 内核诊断监听（埋点补充 2026-11-15：解码报错/丢帧/欠载/带宽账）
+        _player.AddAnalyticsListener(_diagForwarder); // 回调在内核播放线程：仅进 Reporter（CrashNet 有界队列线程安全），不碰 UI
+        _streamResolver = streamResolver;
+    }
+
+    /// <summary>
+    /// 缓冲深水接线（vc53 fix56 思路在 ExoPlayer 内核原生落位）：
+    /// - 起播门槛线=首帧 5 秒即出画（vc66 提速令），出画后继续填水到预取水位线；
+    ///   卡后重入门槛 12 秒（#12 顺滑令保留）——首帧快、重入稳，两头都要；
+    /// - 预取水位线=按设备内存自适应安全水位（BufferPolicy.MaxWatermarkSeconds：内存足 60s、低配 30-45s），
+    ///   出画后内核后台继续把窗口填满——保满预取即此；
+    /// - 水位读写下沉 Players 适配层口径：水位由内核 LoadControl 承担，会话层不掺内部。
+    /// </summary>
+    private static AndroidX.Media3.ExoPlayer.DefaultLoadControl BuildLoadControl(Android.Content.Context context)
+    {
+        long totalMem = 0;
+        try
+        {
+            if (context.GetSystemService(Android.Content.Context.ActivityService)
+                is Android.App.ActivityManager am)
+            {
+                var mi = new Android.App.ActivityManager.MemoryInfo();
+                am.GetMemoryInfo(mi);
+                totalMem = mi.TotalMem;
+            }
+        }
+        catch { /* 内存探测失败按低配保守（BufferPolicy 未知内存=30s） */ }
+        int watermarkMs = BufferPolicy.MaxWatermarkSeconds(totalMem) * 1000;
+        int startupGateMs = (int)PrefetchCurve.StartupThreshold.TotalMilliseconds;
+        // 步进式 builder（消 CS8602 可空链，同构造器口径）：绑定 fluent 链挂在可空返回上会报空解引用
+        var loadBuilder = new AndroidX.Media3.ExoPlayer.DefaultLoadControl.Builder();
+        // vc66 提速令：首帧门槛与重入门槛分家——首起播 5 秒即出画（快字当头），卡后重入仍 12 秒（出就得流畅，#12 意图保留）
+        loadBuilder.SetBufferDurationsMs(
+            watermarkMs, watermarkMs,
+            (int)PrefetchCurve.FirstFrameGate.TotalMilliseconds,
+            startupGateMs);
+        return loadBuilder.Build()!;
+    }
+
+    /// <summary>频道上下文：缓存键与整表行匹配名（nmtv/gxtv 按 name 定位），Play 前由壳层设置。</summary>
+    public string? CurrentChannelKey { get; set; }
+    public string? CurrentChannelName { get; set; }
+
+    /// <summary>
+    /// 内核诊断出口（埋点补充 2026-11-15）：解码器报错/丢帧/欠载等内核事件经壳层接 CrashNet 落运行台账
+    /// （真机 logcat 不进自诊断，Console.Error 通道保留）；未接线为空操作。
+    /// </summary>
+    public static Action<string>? Reporter { get; set; }
+
+    /// <summary>构造后补挂取流注入点（内核工厂场景：独享内核创建后挂本实例的解析器）。</summary>
+    public ExoPlayerPlayer WithStreamResolver(Func<TaoLive.Model.SourceEndpoint, Task<string?>> resolver)
+    {
+        _streamResolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
+        return this;
+    }
+
+    // —— 事件出口（契约语义，供会话层订阅）——
+
+    public event EventHandler<PlayerFirstFrameEventArgs>? OnFirstFrame;
+    public event EventHandler<PlayerBufferingEventArgs>? OnBufferingStart;
+    public event EventHandler<PlayerBufferingEventArgs>? OnBufferingEnd;
+    public event EventHandler<PlayerErrorEventArgs>? OnError;
+    public event EventHandler<PlayerFrameTickEventArgs>? OnFrameTick;
+
+    /// <summary>vc66 视频故障信号（老板令「根因上屏」）：视频解码器报错/视频渲染器停用即触发——
+    /// 壳层只出声守卫据此把零帧账直接判过期，快速递进自救，不等零帧窗硬等。仅诊断口径，不影响内核状态机。</summary>
+    public event EventHandler<string>? OnVideoFault;
+
+    internal void HandleVideoFault(string detail) => OnVideoFault?.Invoke(this, detail);
+
+    public void Play(PlaybackParams params_)
+    {
+        ArgumentNullException.ThrowIfNull(params_);
+        _playGeneration++; // 新一轮播放：作废旧代次迟到回调（闪退镜红②）
+        _firstFrameRaisedThisPlay = false;
+        // 频道上下文自取（双实例热切前提：每会话独享内核，壳层不再代设）
+        if (!string.IsNullOrEmpty(params_.Channel.Id)) CurrentChannelKey = params_.Channel.Id;
+        if (!string.IsNullOrEmpty(params_.Channel.Name)) CurrentChannelName = params_.Channel.Name;
+        if (_streamResolver is null)
+        {
+            StartMedia(params_.Endpoint.Url, params_.Channel);
+            return;
+        }
+        // 取票口：异步换真实流，回到主线程再挂 MediaItem（ExoPlayer 要求在其创建线程调用）
+        var channelKey = CurrentChannelKey;
+        var channelName = CurrentChannelName;
+        var pending = params_;
+        var generation = _playGeneration;
+        _ = Task.Run(async () =>
+        {
+            string? url = null;
+            try { url = await _streamResolver(pending.Endpoint).ConfigureAwait(false); }
+            catch { url = null; }
+            _main.Post(() =>
+            {
+                // 代次校验（闪退镜红② 11-15）：resolver 迟到回调落在 Stop/Dispose/新一轮 Play 之后即弃，
+                // 不对已让位或已释放的内核 StartMedia（防 IllegalStateException 与慢源覆盖后播流）
+                if (generation != _playGeneration) return;
+                if (string.IsNullOrEmpty(url))
+                    HandleError("RESOLVE_FAILED", $"取流失败（{channelName ?? channelKey ?? "channel"}）");
+                else
+                    StartMedia(url, pending.Channel);
+            });
+        });
+    }
+
+    private void StartMedia(string url, TaoLive.Model.Channel? channel = null)
+    {
+        try
+        {
+            // 请求头纪律（vc53 同口径）：当前频道表与备源表全部无自定义 UA/Referer（11-15 清点=0 路），
+            // 内核走 Media3 默认头即可；将来某路源带校验需补头时，改在 ExoPlayerBuilder 构造期注入工厂，
+            // 不在每次 Play 动态挂（IExoPlayer 绑定无 SetMediaSourceFactory，云闸已实锤）。
+            var builder = new AndroidX.Media3.Common.MediaItem.Builder();
+            var uri = Android.Net.Uri.Parse(url);
+            builder.SetUri(uri);
+            if (IsHls(uri)) // vc73 审查清零 P2：按路径判 HLS，query 带 .m3u8 的非 HLS 不再误设 MIME
+            {
+                builder.SetMimeType(AndroidX.Media3.Common.MimeTypes.ApplicationM3u8);
+                // 落后边缘留水（老板 2026-11-16 22:5x 拍板「能多久之前就多久之前」）：
+                // 目标落后=进阶设置「播放落后」旋钮（默认 60 秒，5 秒一档），实际落后由源清单窗口自然封顶——
+                // 设定值大于源真实窗口取真实最大值、真实窗口更深取设定值（min 口径），窗口给多深就落后多深，
+                // 播放点前面常备存量，治「贴边播→存货只剩一片→4 秒循环到卡死再拿」。
+                // 起播门槛不变（5 秒即出画），仅起播定位与直播追赶目标后移，首帧速度不受影响。
+                // 设 0=贴边缘播（留水改动前口径），不挂 LiveConfiguration 原语义直出。
+                var lagMs = (long)TaoLive.Foundation.AdvancedTuning.LiveLagSec * 1000;
+                if (lagMs > 0)
+                {
+                    // Builder 起、属性补口（绑定缺 fluent 设定器，5 参构造弃用走不了）：
+                    // 目标落后=播放落后旋钮；min/max 留未设（内核按清单窗口自钳=min 口径），
+                    // 窗口给多深就落后多深。
+                    var liveConfig = new MediaItemLiveConfiguration.Builder().Build()
+                        ?? throw new InvalidOperationException("LiveConfiguration build returned null");
+                    liveConfig.TargetOffsetMs = lagMs;
+                    builder.SetLiveConfiguration(liveConfig);
+                }
+            }
+            var mediaItem = builder.Build() ?? throw new InvalidOperationException("MediaItem build returned null");
+            EnsureWarmVideoSink(); // vc66 哑面预热：无真面起播（热备攒流）也把视频解码器初始化到位，热切接管零解码器冷启
+            _player.SetMediaItem(mediaItem);
+            _player.Prepare();
+            _player.PlayWhenReady = true;
+        }
+        catch (Exception ex)
+        {
+            // 同步路径与异步同口径（闪退镜黄⑩ 11-15）：起播异常接 HandleError 交会话备源自救，不裸奔冒泡主线程
+            HandleError("START_FAILED", $"起播失败：{ex.Message}");
+        }
+    }
+
+    public void Pause()
+    {
+        _player.PlayWhenReady = false;
+    }
+
+    /// <summary>vc68 热备静音攒流：备台热切接管时恢复出声出画（PlayWhenReady=true，缓冲攒流不中断）。</summary>
+    public void Resume()
+    {
+        _player.PlayWhenReady = true;
+    }
+
+    public void Stop()
+    {
+        // vc72 审查清零 P1：Stop 同 Dispose 口径作废在途 resolver 回调——否则让位会话的内核
+        // 会被迟到的取流回调复活，旧台无声画但外放音频（vc68「退软件音频照放」残余通路）。
+        _playGeneration++;
+        _firstFrameRaisedThisPlay = false;
+        _player.Stop();
+        _player.ClearMediaItems();
+    }
+
+    /// <summary>接输出面：句柄为壳层 Android.Views.Surface 的 Java 对象指针。</summary>
+    public void AttachSurface(IntPtr surfaceHandle)
+    {
+        _surfaceHandle = surfaceHandle;
+        _hasSurface = surfaceHandle != IntPtr.Zero;
+        if (_hasSurface)
+        {
+            ReleaseWarmupSink(); // 真面就位即退哑面：解码器保持热态，换面不换码（setSurface 廉价）
+            // 壳层传入的是 Android.Views.Surface 的 Java 对象指针，需还原包装（壳层仍持有所有权，不转移）。
+            // Media3 契约（官方 Javadoc 原文，vc73 审查清零核验定案）：所有权在壳层，Surface 销毁须壳层摘面（DetachSurface），内核不代释。
+            try
+            {
+                var surface = Java.Lang.Object.GetObject<Android.Views.Surface>(surfaceHandle, JniHandleOwnership.DoNotTransfer);
+                if (surface is not null)
+                {
+                    _player.SetVideoSurface(surface);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 死面挂接（闪退镜黄⑥ 11-15）：SurfaceDestroyed 后热切重挂不砸主线程，摘面待壳层重挂
+                _hasSurface = false;
+                _surfaceHandle = IntPtr.Zero;
+                // 挂面失败出口（埋点补充 2026-11-15）：此前走 Console.Error 只进 logcat，自诊断对不上账——统一落运行台账
+                Console.Error.WriteLine($"[ExoPlayer] attach surface failed: {ex.Message}");
+                Reporter?.Invoke($"[内核挂面] 挂面失败（热切重挂遇死面）：{ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// vc66 哑面预热（老板令「加快解码器渲染速度」）：无真面起播时挂内核官方哑面（PlaceholderSurface），
+    /// 视频解码器随攒流初始化并解码——热备「无面起播」此前不解码视频，热切接管才现初始化解码器，
+    /// 慢热全压在换台瞬间（音先画后的主要时延之一）。真面 AttachSurface 即退哑面，解码器不冷启。
+    /// </summary>
+    private void EnsureWarmVideoSink()
+    {
+        if (_hasSurface || _warmupSink is not null) return;
+        try
+        {
+            _warmupSink = AndroidX.Media3.ExoPlayer.Video.PlaceholderSurface.NewInstance(_context, false);
+            if (_warmupSink is { } sink) _player.SetVideoSurface(sink);
+            Reporter?.Invoke("[内核预热] 无面起播挂哑面：视频解码器随攒流预热（vc66 提速令）");
+        }
+        catch (Exception ex)
+        {
+            _warmupSink = null;
+            Reporter?.Invoke($"[内核预热] 哑面预热不可用，退回无面攒流：{ex.Message}");
+        }
+    }
+
+    private void ReleaseWarmupSink()
+    {
+        if (_warmupSink is not { } sink) return;
+        _warmupSink = null;
+        try { _player.ClearVideoSurface(sink); } catch { /* 内核已释放等边界：释放自身即可 */ }
+        sink.Release();
+    }
+
+    /// <summary>摘输出面：换源/换台/退出前必调，防黑屏花屏。重复 detach 无害。</summary>
+    public void DetachSurface()
+    {
+        if (_hasSurface)
+        {
+            _player.ClearVideoSurface();
+            _hasSurface = false;
+            _surfaceHandle = IntPtr.Zero;
+        }
+    }
+
+    /// <summary>
+    /// 缓冲库存读数（IPlayer 契约，老板令 #24）：内核缓冲位置 − 播放位置=播放点之后的存货毫秒。
+    /// 未就绪（TIME_UNSET/负数）、位置异常一律按 0=「无读数」上交，会话层不据此判趋势防误切。
+    /// </summary>
+    public long BufferedMs
+    {
+        get
+        {
+            try
+            {
+                long buffered = _player.BufferedPosition;
+                long position = _player.CurrentPosition;
+                if (buffered < 0 || position < 0) return 0; // TIME_UNSET=未就绪：按无读数
+                return Math.Max(0, buffered - position);
+            }
+            catch
+            {
+                return 0; // 内核已释放等边界：按无读数，交既有卡流自救路径兜底
+            }
+        }
+    }
+
+    /// <summary>读数是否可靠（vc85 水位跟手令）：TIME_UNSET/位置异常/内核已释放=不可靠，
+    /// 壳层据此保持上一拍水位显示，不把「读不出」当 0 闪跳归零。</summary>
+    public bool BufferedMsKnown
+    {
+        get
+        {
+            try
+            {
+                long buffered = _player.BufferedPosition;
+                long position = _player.CurrentPosition;
+                return buffered >= 0 && position >= 0;
+            }
+            catch
+            {
+                return false; // 内核已释放等边界：按不可靠，壳层保上一拍
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _playGeneration++; // 释放后作废一切在途回调（闪退镜红②）
+        _released = true;  // vc74 P3⑧：监听摘除→Release 与内核/渲染线程在途回调有窗口，回调桥入口查旗收窄窗口（vc75 定案：查旗到执行间非原子，Dispose 可在窗内完成——诊断噪声由 Reporter 有界队列与会话守卫兜底，口径是收窄非消除）
+        ReleaseWarmupSink();
+        _player.RemoveListener(_forwarder);
+        _player.RemoveAnalyticsListener(_diagForwarder);
+        _player.ClearVideoFrameMetadataListener(null);
+        _frameForwarder.Dispose();
+        _player.Release();
+    }
+
+    private void HandleBufferingStarted()
+    {
+        OnBufferingStart?.Invoke(this, new PlayerBufferingEventArgs { IsSeeking = false });
+    }
+
+    private void HandleReady()
+    {
+        OnBufferingEnd?.Invoke(this, new PlayerBufferingEventArgs { IsSeeking = false });
+        if (!_firstFrameRaisedThisPlay)
+        {
+            _firstFrameRaisedThisPlay = true;
+            OnFirstFrame?.Invoke(this, new PlayerFirstFrameEventArgs { AtUtc = DateTimeOffset.UtcNow });
+        }
+    }
+
+    private void HandleError(string code, string message)
+    {
+        OnError?.Invoke(this, new PlayerErrorEventArgs { Code = code, Message = message });
+    }
+
+    /// <summary>
+    /// 帧回调上报（10Hz 节流，方案书 v76）：渲染线程高频回调按 100ms 拍合并，
+    /// 订阅方（壳层埋点）拿到的节拍即采样点；TimeSpan 判断免锁（单渲染线程顺序回调）。
+    /// vc74 P3⑧：释放后渲染线程在途回调即弃。
+    /// </summary>
+    internal void HandleFrameAboutToBeRendered()
+    {
+        if (_released) return;
+        var now = DateTimeOffset.UtcNow;
+        if (_lastTickRaised != default && now - _lastTickRaised < TimeSpan.FromMilliseconds(100)) return;
+        _lastTickRaised = now;
+        OnFrameTick?.Invoke(this, new PlayerFrameTickEventArgs { AtUtc = now });
+    }
+    private DateTimeOffset _lastTickRaised;
+
+    /// <summary>帧元数据监听桥：Media3 渲染线程回调 → 契约 OnFrameTick。</summary>
+    private sealed class FrameTickForwarder : Java.Lang.Object, AndroidX.Media3.ExoPlayer.Video.IVideoFrameMetadataListener
+    {
+        private readonly ExoPlayerPlayer _owner;
+        public FrameTickForwarder(ExoPlayerPlayer owner) : base() => _owner = owner;
+
+        public void OnVideoFrameAboutToBeRendered(long presentationTimeUs, long eventTimeMs,
+            AndroidX.Media3.Common.Format? format, Android.Media.MediaFormat? mediaFormat)
+            => _owner.HandleFrameAboutToBeRendered();
+    }
+
+    /// <summary>
+    /// 内核诊断监听桥（埋点补充 2026-11-15）：Media3 AnalyticsListener 白名单回调 → Reporter 落运行台账。
+    /// 覆盖面（#10 白屏只出声 / #9 卡帧的最直接证据链）：
+    /// - [解码] 视频/音频解码器报错（codec error）；
+    /// - [解码] 视频丢帧累计（OnDroppedVideoFrames，偶发不记、成批才记，控量）；
+    /// - [解码] 视频/音频渲染器停用（OnVideoDisabled/OnAudioDisabled，带解码器计数终账）；
+    /// - [解码] 音频欠载（OnAudioUnderrun，「只出声卡顿」证据）；
+    /// - [带宽] 估速变化（节流：估速较上次记账值倍变或距上次 ≥60s 才记，防刷屏）。
+    /// 回调签名按 1.11.1 绑定程序集反射核对（AnalyticsListenerEventTime/DecoderCounters 属性名 DroppedBufferCount 等）。
+    /// </summary>
+    private sealed class DiagAnalyticsForwarder : Java.Lang.Object, AndroidX.Media3.ExoPlayer.Analytics.IAnalyticsListener
+    {
+        private readonly ExoPlayerPlayer _owner;
+        public DiagAnalyticsForwarder(ExoPlayerPlayer owner) : base() => _owner = owner;
+
+        private long _lastBwLogMs = -1;
+        private long _lastBwBitrate = -1;
+        private int _droppedAccum; // vc71：丢帧 10 秒累积落账（≥5 帧过滤会吞掉慢解的零星丢帧，vc70「零丢帧行」盲区）
+        private long _lastDropLogMs = -1;
+
+        private string Ch() => _owner.CurrentChannelName ?? _owner.CurrentChannelKey ?? "?";
+
+        private void Report(string message) => ExoPlayerPlayer.Reporter?.Invoke(message);
+
+        // vc74 P3⑧：释放旗——Dispose 摘听→Release 与内核/渲染线程在途回调有窗口，
+        // 各回调入口查旗收窄窗口（查旗到执行间非原子，vc75 定案：诊断账噪声由
+        // Reporter 有界队列兜底、故障递进由会话 _active/状态守卫兜底，不再向已释放会话层递进）。
+        private bool Alive => !_owner._released;
+
+        public void OnVideoCodecError(AndroidX.Media3.ExoPlayer.Analytics.AnalyticsListenerEventTime? eventTime,
+            Java.Lang.Exception? videoCodecError)
+        {
+            if (!Alive) return;
+            Report($"[解码] 视频解码器报错（{Ch()}）：{videoCodecError?.Message}");
+            _owner.HandleVideoFault($"视频解码器报错：{videoCodecError?.Message}"); // vc66：只出声守卫快速递进信号
+        }
+
+        public void OnAudioCodecError(AndroidX.Media3.ExoPlayer.Analytics.AnalyticsListenerEventTime? eventTime,
+            Exception audioCodecError)
+        {
+            if (!Alive) return;
+            Report($"[解码] 音频解码器报错（{Ch()}）：{audioCodecError?.Message}");
+        }
+
+        public void OnDroppedVideoFrames(AndroidX.Media3.ExoPlayer.Analytics.AnalyticsListenerEventTime? eventTime,
+            int droppedFrames, long elapsedMs)
+        {
+            if (!Alive) return;
+            // vc71：不再按单次 ≥5 帧过滤（慢解瓶颈每账期只丢 1~2 帧会被吞，2.0.13 真机复发旧病时证据缺位）。
+            // 改 10 秒累积窗口落账：攒到的帧全量上报，解码慢无处可藏。
+            _droppedAccum += Math.Max(0, droppedFrames);
+            var now = Android.OS.SystemClock.ElapsedRealtime();
+            if (_lastDropLogMs >= 0 && now - _lastDropLogMs < 10_000) return;
+            FlushDroppedAccum(true); // 10s 窗到点整账出
+            _lastDropLogMs = now;
+        }
+
+        public void OnVideoDisabled(AndroidX.Media3.ExoPlayer.Analytics.AnalyticsListenerEventTime? eventTime,
+            AndroidX.Media3.ExoPlayer.DecoderCounters? decoderCounters)
+        {
+            if (!Alive) return;
+            // vc73 审查清零 P2：解码器停用即尾巴出账——最后一批丢帧若之后不再有丢帧事件，
+            // 10 秒窗账会滞留到下一台/下一次出账才出现，证据错台错线；停用是账期终点，立即落账。
+            FlushDroppedAccum(false);
+            if (decoderCounters is null) return;
+            Report($"[解码] 视频渲染器停用（{Ch()}）：缓冲丢帧 {decoderCounters.DroppedBufferCount}"
+                + $" · 跳至关键帧 {decoderCounters.DroppedToKeyframeCount} · 丢输入帧 {decoderCounters.DroppedInputBufferCount}");
+        }
+
+        /// <summary>丢帧账出账（vc73 审查清零 P2 提取共用）：攒到帧>0 即上报后清零。
+        /// windowFull=true 为 10 秒窗到点整账；false 为解码器停用的尾账补出（窗未满，防滞留错台）。</summary>
+        private void FlushDroppedAccum(bool windowFull)
+        {
+            if (_droppedAccum > 0)
+                Report($"[解码] 视频丢帧累计 {_droppedAccum} 帧（{Ch()}，>0 即解码跟不上或渲染欠载，慢帧证据，"
+                    + (windowFull ? "10s 窗整账）" : "10s 窗未满停用补出尾账）"));
+            _droppedAccum = 0;
+        }
+
+        public void OnAudioUnderrun(AndroidX.Media3.ExoPlayer.Analytics.AnalyticsListenerEventTime? eventTime,
+            int bufferSize, long bufferSizeMs, long elapsedSinceLastFeedMs)
+        {
+            if (!Alive) return;
+            Report($"[解码] 音频欠载 {elapsedSinceLastFeedMs}ms（{Ch()}，buffer {bufferSize}B/{bufferSizeMs}ms，只出声卡顿证据）");
+        }
+
+        public void OnBandwidthEstimate(AndroidX.Media3.ExoPlayer.Analytics.AnalyticsListenerEventTime? eventTime,
+            int totalLoadTimeMs, long totalBytesLoaded, long bitrateEstimate)
+        {
+            if (!Alive) return;
+            var now = Android.OS.SystemClock.ElapsedRealtime();
+            bool bigMove = _lastBwBitrate > 0
+                && (bitrateEstimate >= _lastBwBitrate * 2 || bitrateEstimate <= _lastBwBitrate / 2);
+            bool intervalDue = now - _lastBwLogMs >= 60_000;
+            if (_lastBwLogMs >= 0 && !bigMove && !intervalDue) return;
+            _lastBwLogMs = now;
+            _lastBwBitrate = bitrateEstimate;
+            Report($"[带宽] 估速 {bitrateEstimate / 1000} kbps（{Ch()}，累计 {totalBytesLoaded / 1024}KB/{totalLoadTimeMs}ms）"); // vc67 修：原 /8/1000 实为 kB/s 标 kbps，差 8 倍口径
+        }
+    }
+
+    /// <summary>HLS 判据（vc73 审查清零 P2 修）：按 URI 路径判断，不再对整 URL 做子串匹配——
+    /// query 带 ".m3u8" 的非 HLS 地址（如带 .m3u8 参数的防盗链签名）此前会被误设 HLS MIME。
+    /// 参数收 nullable：不同版本安卓 binding 对 Uri.Parse 可空注解不一致（云闸 11-16 实锤），
+    /// 收 nullable + 空安全判定，两侧编译口径都过。</summary>
+    private static bool IsHls(Android.Net.Uri? uri) =>
+        (uri?.Path ?? "").EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 内核事件桥：实现 Media3 Player.Listener 绑定接口（IPlayerListener，全默认方法，
+    /// 只重写契约需要的两个回调；OnPlaybackStateChanged 映射 Buffering/Ready/Ended 三态，
+    /// Ended 视同卡流上报（R2-72 发现即改），其余内核态按契约未定义语义不映射）。
+    /// </summary>
+    private sealed class Forwarder : Java.Lang.Object, AndroidX.Media3.Common.IPlayerListener
+    {
+        private readonly ExoPlayerPlayer _owner;
+
+        public Forwarder(ExoPlayerPlayer owner) : base() => _owner = owner;
+
+        public void OnPlaybackStateChanged(int playbackState)
+        {
+            if (_owner._released) return; // vc74 P3⑧：释放后在途回调即弃
+            switch (playbackState)
+            {
+                case AndroidX.Media3.Common.BasePlayer.InterfaceConsts.StateBuffering:
+                    _owner.HandleBufferingStarted();
+                    break;
+                case AndroidX.Media3.Common.BasePlayer.InterfaceConsts.StateReady:
+                    _owner.HandleReady();
+                    break;
+                case AndroidX.Media3.Common.BasePlayer.InterfaceConsts.StateEnded:
+                    // R2-72 发现即改：直播流被服务端掐断时内核进 ENDED，此前未映射——
+                    // 无错误回调、无卡流事件，状态机停在 Playing，画面冻结且看门狗/备源自救永不触发（冻画黑洞）。
+                    // 直播语义 ENDED=流断：视同卡流上报，交会话层卡流路径（NotifyStalled→Reconnecting→超时切备源）。
+                    // 用户主动 Stop 不产生 ENDED（ExoPlayer stop 保持状态）； stray 事件由 NotifyStalled 的 Playing 守卫挡住。
+                    _owner.HandleBufferingStarted();
+                    break;
+            }
+        }
+
+        public void OnPlayerError(AndroidX.Media3.Common.PlaybackException? error)
+        {
+            if (_owner._released) return; // vc74 P3⑧：释放后在途回调即弃
+            var code = error?.ErrorCodeName ?? "UNKNOWN";
+            // 真机诊断口径（11-15 老板镜）：诊断页只看到「player error」查不到因，
+            // 补内核原始码+根因链，一键清理页可见（ErrorCodeName/Cause 链全落）。
+            var cause = error?.Cause?.Message;
+            var message = error?.Message is { } m
+                ? (cause is { } c && c != m ? $"{m} | cause={c}" : m)
+                : "unknown playback error";
+            _owner.HandleError(code, message);
+        }
+    }
+}

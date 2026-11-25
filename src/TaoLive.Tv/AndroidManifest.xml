@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.taolive.tv"
+    android:versionCode="85"
+    android:versionName="1.0">
+  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- 开机自启 receiver 由 BootReceiver 特性自动注册（照 vc53 双保险口径）；2.0 无 WarmupService，只拉主界面 -->
+  <!-- 电视口径照搬 vc55：明文直播源放行 + 电视设备兼容声明 + 桌面横幅 + 全屏主题 -->
+  <uses-feature android:name="android.software.leanback" android:required="false" />
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+  <application android:label="TaoLive" android:icon="@mipmap/ic_launcher"
+               android:banner="@drawable/tv_banner"
+               android:theme="@style/TaoLiveTheme"
+               android:usesCleartextTraffic="true">
+    <!-- 主入口 Activity 不在清单声明（vc53 口径）：MainLauncher 特性已在壳层注册，
+         清单再声明一次=两个启动器入口=桌面出两个图标（真机 11-15 老板镜实锤） -->
+  </application>
+</manifest>

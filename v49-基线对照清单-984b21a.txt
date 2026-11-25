@@ -1,0 +1,29 @@
+v49 出包基线对照 · 2026-11-15 05:45:02 UTC
+区间：fe74c72 → HEAD
+
+状态   base hash    head hash    文件
+M        134a35d      fd655c6      src/TaoLive.Catalog/ChannelWarmup.cs
+D        f79f15e      (删除)     src/TaoLive.Catalog/PublicListDiscover.cs
+D        5a254ad      (删除)     src/TaoLive.Foundation/JitterSwitchPolicy.cs
+A        (新增)     428ba96      src/TaoLive.Foundation/PersistencePolicy.cs
+M        d662ed9      6f3a4b0      src/TaoLive.Foundation/SourceProfileStore.cs
+D        f5e971c      (删除)     src/TaoLive.Model/ProgramEntry.cs
+A        (新增)     17a4d02      src/TaoLive.Session/CommandReplay.cs
+A        (新增)     50900ad      src/TaoLive.Session/DocChainGuard.cs
+D        50ca407      (删除)     src/TaoLive.Session/RemoteResilience.cs
+M        bf3bec7      2c9128e      src/TaoLive.Session/SelfHeal.cs
+M        669c6d1      3576c1e      src/TaoLive.Session/SourceHealthStore.cs
+M        3f18380      cd04d64      src/TaoLive.Session/SourceScoreStore.cs
+M        e1ce9e4      c60a317      src/TaoLive.Session/TaoLive.Session.csproj
+A        (新增)     3a84fd5      src/TaoLive.Tests/DocChainGuardTests.cs
+A        (新增)     3b06ec1      src/TaoLive.Tests/ReplayTests.cs
+M        f0bbe0f      525f015      src/TaoLive.Tests/W8FeatureTests.cs
+A        (新增)     ba86b79      src/TaoLive.Tv/Assets/NOTICE.txt
+M        bd11e01      2b883eb      src/TaoLive.Tv/MainActivity.cs
+M        3ea1417      daa6470      src/TaoLive.Tv/SettingsUi.cs
+A        (新增)     eb68615      tools/README.md
+A        (新增)     cf360d5      tools/verify_feature_gate.sh
+A        (新增)     5b5c8b1      tools/verify_release_baseline.sh
+A        (新增)     313a173      tools/verify_release_pkg.sh
+
+统计：23 个文件变更；HEAD=984b21a 工作树干净。

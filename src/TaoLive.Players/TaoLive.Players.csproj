@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- 内核换向（老板 2026-11-15 03:37 令）：直接上 ExoPlayer（Media3），不采用 LibVLC 打底 -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../TaoLive.Model/TaoLive.Model.csproj" />
+    <ProjectReference Include="../TaoLive.Foundation/TaoLive.Foundation.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer" Version="1.11.1" />
+    <PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer.Hls" Version="1.11.1" />
+    <PackageReference Include="Xamarin.AndroidX.Media3.DataSource" Version="1.11.1" />
+  </ItemGroup>
+</Project>

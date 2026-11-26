@@ -1,0 +1,5 @@
+v45 包名/版本核验 · 2026-11-26 11:03:46 UTC
+APK：src/TaoLive.Tv/bin/Release/net10.0-android36.0/publish/com.taolive.tv-Signed.apk
+包名：com.taolive.tv（期望 com.taolive.tv）
+versionCode：93（期望 93）
+versionName：1.8（期望 1.8）

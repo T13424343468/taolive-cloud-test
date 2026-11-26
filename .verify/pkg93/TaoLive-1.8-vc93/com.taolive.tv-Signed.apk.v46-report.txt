@@ -1,0 +1,4 @@
+[v46] 通过：信息行不在 / 标签 TaoLive 纯英文 / 横幅随包。报告：src/TaoLive.Tv/bin/Release/net10.0-android36.0/publish/com.taolive.tv-Signed.apk.v46-report.txt
+��禁词（屏幕信息行 信息行（ 现帧率 原帧率）
+② 应用标签：TaoLive（期望逐字 TaoLive，纯英文）
+③ 电视横幅：application-banner 可见性=是

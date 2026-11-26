@@ -281,7 +281,14 @@ public class ChannelPrecheck
                     bool ok;
                     try { ok = await BackgroundLane.RunAsync(() => _probe(ch), ct).ConfigureAwait(false); } // 画面平稳优先令：过全局单车道（首帧门控+播放中≥10s 间隔+全局串行）
                     catch (OperationCanceledException) { return; } // 车道取消（停预检）原样收场，不记探测失败
-                    catch { ok = false; }
+                    catch (Exception ex)
+                    {
+                        // vc93 审查清零 P2：代码 bug（探测器内部异常）与网络探测失败分开记账——
+                        // 此前一律静默记 ok=false 死账，「绿点变红但查无因」。ok 仍按 false 走业务连续性，
+                        // 但落一条「探测代码错误」账带异常类型与消息，bug 可查可修。
+                        ok = false;
+                        SessionTrace.Emit($"[预检] 探测代码错误（{ch.Name ?? ch.Id}）：{ex.GetType().Name}：{ex.Message}");
+                    }
                     WriteSourceResult(ch, ok, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     anyOk |= ok;
                     if (_intervalMs > 0)

@@ -139,15 +139,90 @@ public sealed class TicketResolver
                 _cache.Remove(kv.Key); // 作废旧票（ResolveAsync 首查即落缓存，重取无需再清）
                 break;
             }
+            // vc93 真机实锤（2026-11-26 崩溃日志页：取票成功→内核 4xx→反查未命中×N）：
+            // 内核 4xx 的失败 URL 常是子清单/分片，与缓存票不同名——全等反查必未命中，
+            // 坏票轮换形同虚设，会话层自救每线一次后 5 分钟内反复复用同一张坏票（连不上不出画循环主因）。
+            // 放宽：同主机且同目录（path 末段前一致）即视为同票；多票同域时无法归属（换错台风险）不认，交会话自救。
+            if (channelKey is null)
+            {
+                foreach (var kv in _cache)
+                {
+                    if (!SameTicketScope(kv.Value.Url, failingUrl)) continue;
+                    var sep = kv.Key.IndexOf('|');
+                    if (sep <= 0) continue;
+                    if (IsAmbiguousScope(kv.Value.Url, failingUrl)) break; // 同域多票：宁缺勿错
+                    channelKey = kv.Key[..sep];
+                    endpointUrl = kv.Key[(sep + 1)..];
+                    _cache.Remove(kv.Key);
+                    break;
+                }
+            }
         }
         if (channelKey is null || endpointUrl is null)
         {
             Reporter?.Invoke("[坏票轮换] 播放内核 4xx，票据缓存反查未命中，交会话层自救");
             return null;
         }
+        // vc93 频控（真机 2026-11-26 崩溃日志页实锤：新票秒被 4xx，内核逐分片重开→每秒 1-2 次取票风暴，
+        // 越打越进风控）。同端点 60 秒窗内换票超 4 次即熔断：不再打取票口，交会话层既有退避自救
+        //（自愈 1/6 档 5s 节奏起步），让源端冷却。窗口滑过自动恢复。
+        var reissueKey = $"{channelKey}|{endpointUrl}";
+        var nowMs = Environment.TickCount64;
+        lock (_reissueGate)
+        {
+            if (_reissueTimes.TryGetValue(reissueKey, out var times))
+            {
+                times.RemoveAll(t => nowMs - t >= ReissueWindowMs); // 只清窗外旧账，窗内保留
+                if (times.Count >= ReissueMaxPerWindow)
+                {
+                    Reporter?.Invoke($"[坏票轮换] {channelKey} 换票频控触发（{ReissueMaxPerWindow} 次/{ReissueWindowMs / 1000}s），冷却交会话退避");
+                    return null;
+                }
+                times.Add(nowMs);
+            }
+            else
+            {
+                _reissueTimes[reissueKey] = new List<long> { nowMs };
+            }
+        }
         Reporter?.Invoke($"[坏票轮换] {channelKey} 播放内核 4xx，反查票据缓存命中，换新票重开");
         var endpoint = new SourceEndpoint(endpointUrl, SourceKind.Web, 0);
         return await ResolveAsync(endpoint, channelKey, channelKey).ConfigureAwait(false);
+    }
+
+    /// <summary>vc93 换票频控窗：60 秒。</summary>
+    internal const long ReissueWindowMs = 60_000;
+    /// <summary>vc93 换票频控上限：同端点 60 秒内最多 4 次换票，超出熔断交会话退避。</summary>
+    internal const int ReissueMaxPerWindow = 4;
+    private readonly object _reissueGate = new();
+    private readonly Dictionary<string, List<long>> _reissueTimes = new();
+
+    /// <summary>
+    /// vc93 同票域判定：失败 URL 与缓存票同主机且同目录（path 末段之前一致，query 不参与——
+    /// 票据签名在 query，子清单/分片与母清单同目录是各源通行口径）。跨主机/跨目录/根目录不认（宁缺勿错）。
+    /// </summary>
+    internal static bool SameTicketScope(string ticketUrl, string failingUrl)
+    {
+        if (!Uri.TryCreate(ticketUrl, UriKind.Absolute, out var a)
+            || !Uri.TryCreate(failingUrl, UriKind.Absolute, out var b)) return false;
+        if (!string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)) return false;
+        var pa = a.AbsolutePath;
+        var pb = b.AbsolutePath;
+        var da = pa[..(pa.LastIndexOf('/') + 1)];
+        var db = pb[..(pb.LastIndexOf('/') + 1)];
+        return da.Length > 1 && string.Equals(da, db, StringComparison.Ordinal); // 根目录（"/"）过宽不认
+    }
+
+    /// <summary>vc93 同域多票消歧：除候选票外，缓存中还有其他票落在失败 URL 的同票域内，
+    /// 则无法断定 4xx 归属哪张票（换错台风险），判未命中交会话自救。</summary>
+    private bool IsAmbiguousScope(string candidateTicketUrl, string failingUrl)
+    {
+        foreach (var other in _cache.Values)
+        {
+            if (string.Equals(other.Url, candidateTicketUrl, StringComparison.Ordinal)) continue;
+            if (SameTicketScope(other.Url, failingUrl)) return true;
+        }
+        return false;
     }
 
     // ---- 央视频：cKey 取票（iretcode=0 → playurl；缓存+403 冷却走 YspTicketService） ----

@@ -448,14 +448,21 @@ public partial class MainActivity
         });
     }
 
-    /// <summary>挂起补跑轮询：每 30s 查一次，停播即补跑；仍播继续挂。</summary>
-    private void ScheduleSubRecheck() =>
-        new Handler(Looper.MainLooper!).PostDelayed(() =>
+    /// <summary>挂起补跑轮询：每 30s 查一次，停播即补跑；仍播继续挂。
+    /// vc93 审查清零 P2：复用单一主线程 Handler——此前每轮 new Handler 链式自续，
+    /// 壳销毁后仅靠布尔守卫停链，消息队列里残留挂起的回调解引用旧壳（轻微泄漏面）。
+    /// 单例 Handler 挂主 Looper，链式自续只排队不新建；停链仍由 _subRefreshPending 守卫（口径不变）。</summary>
+    private static Handler? _subRecheckHandler;
+    private void ScheduleSubRecheck()
+    {
+        _subRecheckHandler ??= new Handler(Looper.MainLooper!);
+        _subRecheckHandler.PostDelayed(() =>
         {
             if (!_subRefreshPending) return;
             if (!IsPlaybackBusy()) KickSubscriptionRefresh(startup: _subStartupPendingRun);
             else ScheduleSubRecheck();
         }, SubBusyRecheckMs);
+    }
 
     // —— 显示大小（真机反馈批 #61 尺寸回抬令 2026-11-15 19:3x：中档定「肉眼最舒适」=基准 20sp，
     // 三档整体重定标：大=2/3(24sp)、中=5/9(20sp)、小=1/3(12sp)，默认中；覆盖 #14 的 ×2/3 压缩口径） ——

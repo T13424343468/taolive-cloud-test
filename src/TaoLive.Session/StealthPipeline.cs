@@ -193,6 +193,8 @@ public sealed class StealthPipeline
         Channel? channel;
         SourceEndpoint? target;
         int generation;
+        SourceEndpoint? pullTarget;
+        int pullGen;
         lock (this)
         {
             channel = _targetChannel;
@@ -248,6 +250,11 @@ public sealed class StealthPipeline
             // 防 15s 线振荡活锁（偷拉压低前台读数→永不判稳→偷拉又停→读数回升→循环）；
             // 刀六保温心跳：已校验通过且池满后，每 KeepWarmIntervalMs 续拉一片保鲜（连接不凉、
             // 池粮不过期——成功即刷新断供判据时钟），备援随时可秒切；心跳同吃让路闸，画面平稳优先令不变
+            // vc93 审查清零 P2：锁内只做决策与占位，PullAsync 挪到锁外起——锁内不做 IO（网络任务
+            // 可能在锁内同步起步段拖住泵拍）。锁外二次进锁校验代次未变且 _inFlight 仍空才落位；
+            // 变了（换向/收摊竞窗）即丢弃这发，代次防串既有口径，不引入双发窗口。
+            pullTarget = null;
+            pullGen = 0;
             bool gateOpen = _gateStockMs >= GatherGateMs && _allowFactor > 0
                 && (!BackgroundLane.Playing || BackgroundLane.WaterStable);
             long depthCap = Math.Min((long)(MaxPoolDepthMs * _allowFactor), (long)MaxPoolDepthMs);
@@ -256,14 +263,27 @@ public sealed class StealthPipeline
             if (gateOpen && _inFlight is null && (poolNotFull || keepWarmDue))
             {
                 _inFlightGen = generation;
-                var pullTarget = target;
+                pullTarget = target;
+                pullGen = generation;
                 _lastKeepWarmAtMs = now; // 心跳节流基准：含常规攒粮发包（池满后首跳按此时钟顺延）
-                _inFlight = _loader.PullAsync(pullTarget.Url, CancellationToken.None)
-                    .ContinueWith(t =>
-                    {
-                        try { return t.Status == TaskStatus.RanToCompletion ? t.Result : null; }
-                        catch { return (byte[]?)null; }
-                    }, TaskContinuationOptions.ExecuteSynchronously);
+            }
+        }
+        if (pullTarget is not null)
+        {
+            var flight = _loader.PullAsync(pullTarget.Url, CancellationToken.None)
+                .ContinueWith(t =>
+                {
+                    try { return t.Status == TaskStatus.RanToCompletion ? t.Result : null; }
+                    catch { return (byte[]?)null; }
+                }, TaskContinuationOptions.ExecuteSynchronously);
+            lock (this)
+            {
+                // 二次进锁落位：代次未变且 _inFlight 仍空才认账；变了即丢弃（换向竞窗），不双发
+                if (_generation == pullGen && _inFlight is null)
+                {
+                    _inFlight = flight;
+                }
+                // 代次已变或已被占位：丢弃本发（flight 自行完成即弃，装载器侧无共享态）
             }
         }
     }

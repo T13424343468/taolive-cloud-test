@@ -152,7 +152,9 @@ public sealed class RacingDataSourceFactory : Java.Lang.Object, AndroidX.Media3.
     /// 进程级单份，壳层 once-block 接 TicketResolver.ReissueAsync；未接线=不启用（既有契约不变）。</summary>
     public static Func<string, Task<string?>>? TicketReissuer;
 
-    /// <summary>一片换票封顶（vc87）：同一分片最多换 2 次新票，仍拒即原样上抛——防死票无限重开烧线。</summary>
+    /// <summary>一片换票封顶（vc87）：同一分片最多换 2 次新票，仍拒即原样上抛——防死票无限重开烧线。
+    /// vc93 核实结论：频控熔断后票据缓存项已移除，后续 ReissueAsync 在反查阶段即返回 null、零网络调用；
+    /// 内核单分片重开受本封顶 2 次约束；会话退避自救兜底——无紧密空转，不改行为。</summary>
     public const int TicketReissueMaxPerOpen = 2;
 
     public AndroidX.Media3.DataSource.IDataSource CreateDataSource() =>

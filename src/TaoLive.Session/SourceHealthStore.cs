@@ -143,9 +143,11 @@ public class SourceHealthStore
             File.WriteAllText(tmp, json);
             File.Move(tmp, _path, overwrite: true); // 原子替换一步到位（v28：消除 Delete→Move 之间文件不存在的读空窗口）
         }
-        catch
+        catch (Exception ex)
         {
-            // 落盘失败静默：下轮脏标记再试，绝不影响播放
+            // vc93 审查清零 P2：落盘失败不再静默——落一条台账（带异常消息）可查可修；
+            // 下轮脏标记再试，绝不抛出、不改落盘策略、不影响播放。
+            SessionTrace.Emit($"[健康账] 落盘失败：{ex.Message}");
         }
     }
 }

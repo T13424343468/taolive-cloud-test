@@ -355,13 +355,17 @@ public sealed class PlaybackSessionManager
         return victims.Count;
     }
 
-    /// <summary>看门狗泵：由壳层定时器周期调用，仅作用于当前会话；顺带跑预防性介入（老板令 #24）、回主源迟滞判据与热备攒流超时账。</summary>
+    /// <summary>看门狗泵：由壳层定时器周期调用，作用于当前会话与热备会话；顺带跑预防性介入（老板令 #24）、回主源迟滞判据与热备攒流超时账。
+    /// vc93 审查清零 P1：热备会话也泵 CheckWatchdog——此前只泵 Current，热备 Failed 后排定的自愈慢轮永不执行，
+    /// 用户在窗内热切接管会接住一个 Failed 黑屏会话。热备只泵看门狗（自愈/卡流自救），不掺当前台专属动作
+    /// （预防性介入/偷拉/竞速回填）；热备泵异常 try-catch 包裹，不拖垮当前台泵。</summary>
     public void Tick()
     {
         var current = Current;
         if (current is null)
         {
             lock (_returnGate) _returnStableSession = null;
+            PumpStandbyWatchdog();
             TryStandbyTimeout();
             return;
         }
@@ -372,7 +376,21 @@ public sealed class PlaybackSessionManager
         PumpAlignOutcome(current);
         PumpRaceProbe(current);
         Arbiter?.SweepPending();
+        PumpStandbyWatchdog();
         TryStandbyTimeout();
+    }
+
+    /// <summary>vc93 审查清零 P1：热备会话看门狗泵——只跑 CheckWatchdog（含 Failed 自愈慢轮），
+    /// 异常包裹不拖垮当前台泵；无热备为空操作。</summary>
+    private void PumpStandbyWatchdog()
+    {
+        var standby = Standby;
+        if (standby is null) return;
+        try { standby.CheckWatchdog(); }
+        catch (Exception ex)
+        {
+            SessionTrace.Emit($"[热备] 看门狗泵异常忽略：{ex.Message}");
+        }
     }
 
     /// <summary>

@@ -56,3 +56,4 @@
 - 出包三道闸：v45 ✓ v46 ✓ v49（a40d889→c7ef13b）✓
 - 交付包：.verify/pkg92/TaoLive-1.7-vc92.zip（SHA-256 10d70dfaa89b8b74217caea3afc918615cda2d0a6a0252cd6fc78ef32af40c21）
 - 云测：build-apk 45782386520 / emulator 45782392592 / cloud-real-device 45782397589（2026-11-26 16:20 发起）
+- 更正（2026-11-26 16:44）：首发包误用 Debug 测试档（10.7MB 无预编译），已重出 Release 档（APK 22,169,067 字节，SHA-256 6ab58825…8a6e，与 vc91 同口径）；三闸重过，交付包 artifact v4

@@ -74,8 +74,8 @@ public class CoverageSprintC1
         return (mgr, players, clock);
     }
 
-    /// <summary>建管理器并保留会话引用（状态断言用）。</summary>
-    private static (PlaybackSessionManager mgr, List<SprintPlayer> players, MonoClock mono, List<PlaybackSession> sessions)
+    /// <summary>建管理器并保留会话引用（状态断言用）。clock=会话内 FixedClock（自愈/看门狗时间泵走它）。</summary>
+    private static (PlaybackSessionManager mgr, List<SprintPlayer> players, MonoClock mono, List<PlaybackSession> sessions, FixedClock clock)
         MakeManagerWithSessions(bool hotStandby = true, MonoClock? mono = null, Func<Channel, bool>? primaryAlive = null)
     {
         var clock = mono ?? new MonoClock();
@@ -87,7 +87,7 @@ public class CoverageSprintC1
             hotStandbyEnabled: hotStandby,
             primaryAliveConfirmed: primaryAlive,
             monotonicMs: clock.Now);
-        return (mgr, players, clock, sessions);
+        return (mgr, players, clock, sessions, fixedClock);
     }
 
     // ---- 属性接线：FallbackSourceProvider / QueueOrderer 向既有与后建会话同挂 ----
@@ -192,6 +192,48 @@ public class CoverageSprintC1
         Assert.Equal(before, players.Count);
         Assert.Equal(PlaybackState.Buffering, sb!.State);
         Assert.Contains("Pause", players[0].Log); // 备台静音攒流（vc68 漏音修）
+    }
+
+    // ---- vc93 审查清零 P1：热备会话看门狗泵（Failed 自愈慢轮经管理器 Tick 驱动） ----
+
+    [Fact]
+    public void Standby_failed_session_self_heals_via_manager_tick()
+    {
+        var (mgr, players, _, sessions, clock) = MakeManagerWithSessions();
+        mgr.SwitchTo(MakeChannel("cctv1", "https://s/a.m3u8"));
+        var standby = mgr.PrepareStandby(MakeChannel("cctv2", "https://s/b.m3u8"));
+        Assert.NotNull(standby);
+        Assert.Same(standby, mgr.Standby);
+
+        // 热备备源耗尽进 Failed（单端点台一次报错即耗尽），排定自愈慢轮（首档 5 秒）
+        var standbyPlayer = players[1];
+        standbyPlayer.RaiseError("NET-1");
+        Assert.Equal(PlaybackState.Failed, standby!.State);
+
+        // 未到点：Tick 泵不触发自愈
+        clock.Advance(TimeSpan.FromSeconds(1));
+        mgr.Tick();
+        Assert.Equal(PlaybackState.Failed, standby.State);
+
+        // 首档 5 秒到点：经管理器 Tick 驱动热备自愈慢轮——Failed → Buffering 从头慢轮重试
+        clock.Advance(TimeSpan.FromSeconds(5));
+        mgr.Tick();
+        Assert.Equal(PlaybackState.Buffering, standby.State);
+        Assert.Contains("Play:https://s/b.m3u8", string.Join(";", standbyPlayer.Log)); // 从头慢轮重放队首
+    }
+
+    [Fact]
+    public void Standby_watchdog_pump_exception_does_not_break_current_tick()
+    {
+        var (mgr, players, _, _, clock) = MakeManagerWithSessions();
+        mgr.SwitchTo(MakeChannel("cctv1", "https://s/a.m3u8"));
+        mgr.PrepareStandby(MakeChannel("cctv2", "https://s/b.m3u8"));
+
+        // 热备内核抛错：热备泵异常被包裹，当前台看门狗照常泵完不炸
+        players[1].RaiseError("BOOM"); // 桩内核事件正常路径；异常包裹路径由 PumpStandbyWatchdog try-catch 兜住
+        clock.Advance(TimeSpan.FromSeconds(1));
+        mgr.Tick(); // 不抛即过：热备泵异常不拖垮当前台泵
+        Assert.Equal(PlaybackState.Buffering, mgr.Current!.State);
     }
 
     // ---- SwitchTo：无效台、热切接管、冷切 ----
@@ -335,7 +377,7 @@ public class CoverageSprintC1
     public void Tick_without_current_is_safe_and_times_out_standby()
     {
         var mono = new MonoClock { Ms = 0 };
-        var (mgr, players, _, sessions) = MakeManagerWithSessions(mono: mono);
+        var (mgr, players, _, sessions, _) = MakeManagerWithSessions(mono: mono);
 
         mgr.Tick(); // 无当前台：不抛、清回主源账
         Assert.Null(mgr.Current);

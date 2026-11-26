@@ -147,12 +147,16 @@ public sealed class ExoPlayerPlayer : IPlayer
         catch { /* 内存探测失败按低配保守（BufferPolicy 未知内存=30s） */ }
         int watermarkMs = BufferPolicy.MaxWatermarkSeconds(totalMem) * 1000;
         int startupGateMs = (int)PrefetchCurve.StartupThreshold.TotalMilliseconds;
+        // vc93 第 6 刀（老板 2026-11-26 拍板接线）：首帧出画门槛按库存档分档——
+        // SilentRefetch（默认档）=1 秒出画（先出画后补库存，首帧不慢）；StartFull（回退档）=7 秒（出就流畅）。
+        // 卡后重入门槛仍 StartupThreshold 12 秒不动；首帧永远取库存中最老画面，门槛只管何时出画。
+        int firstFrameGateMs = BufferInventory.FirstFrameOpenMs(BufferInventory.Default);
         // 步进式 builder（消 CS8602 可空链，同构造器口径）：绑定 fluent 链挂在可空返回上会报空解引用
         var loadBuilder = new AndroidX.Media3.ExoPlayer.DefaultLoadControl.Builder();
-        // vc66 提速令：首帧门槛与重入门槛分家——首起播 5 秒即出画（快字当头），卡后重入仍 12 秒（出就得流畅，#12 意图保留）
+        // vc66 提速令：首帧门槛与重入门槛分家——卡后重入仍 12 秒（出就得流畅，#12 意图保留）
         loadBuilder.SetBufferDurationsMs(
             watermarkMs, watermarkMs,
-            (int)PrefetchCurve.FirstFrameGate.TotalMilliseconds,
+            firstFrameGateMs,
             startupGateMs);
         return loadBuilder.Build()!;
     }

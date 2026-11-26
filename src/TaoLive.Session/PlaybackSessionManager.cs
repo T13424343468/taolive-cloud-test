@@ -458,6 +458,8 @@ public sealed class PlaybackSessionManager
 
     /// <summary>握手竞速泵（vc85 六项优化①）：自救回合（Failed 态）对队列前 3 路并发握手，
     /// 先成者回填队列头（下拍起播/换线按新序取路）；探测结果喂实测账（竞速喂健康账口径）。
+    /// 刀一（老板 2026-11-25 九件套定稿）：候选改传端点本体——Web 取票口端点由探针直接换票探通
+    /// （票落进程级缓存，赢家起播取票零等待），选源竞速与取流两次串行网络合成一次。
     /// 单飞旗防同回合连发；全败不动序（串行盲等旧口径兜底）。</summary>
     private void PumpRaceProbe(PlaybackSession current)
     {
@@ -466,11 +468,11 @@ public sealed class PlaybackSessionManager
         var channel = current.CurrentChannel;
         if (channel is null) return;
         var candidates = Enumerable.Range(0, Math.Min(3, current.LineCount))
-            .Select(i => current.PeekQueueEndpoint(i)?.Url).Where(u => !string.IsNullOrEmpty(u)).Cast<string>().ToList();
+            .Select(i => current.PeekQueueEndpoint(i)).Where(ep => ep is { IsValid: true }).Cast<SourceEndpoint>().ToList();
         if (candidates.Count < 2) return;
         _raceInFlight = true;
         var episodeFailover = current.FailoverCount;
-        _ = RaceProber.RaceAsync(candidates).ContinueWith(t =>
+        _ = RaceProber.RaceAsync(channel, candidates).ContinueWith(t =>
         {
             try
             {

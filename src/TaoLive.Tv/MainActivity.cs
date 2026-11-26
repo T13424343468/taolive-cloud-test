@@ -418,7 +418,10 @@ public partial class MainActivity : Activity
         _manager.Arbiter = new SwitchArbiter();
         _manager.HealthLine = new LinkHealthLine();
         _manager.SegmentLoader = new HttpSegmentLoader();
-        _manager.RaceProber = new HttpHandshakeProber();
+        // 刀一（老板 2026-11-25 九件套定稿）：竞速与取票合成一次——Web 取票口端点由探针直接换票探通
+        // （票落进程级 5 分钟缓存，赢家起播取票零等待），直连端点照旧握手赛马
+        _manager.RaceProber = new TicketFusedProber(new HttpHandshakeProber(),
+            (ch, ep) => resolver.ResolveAsync(ep, ch.Id, ch.Name));
         _manager.MainDispatcher = action => _main.Post(action);
         // #74 源队列健康排序（2026-11-15 老板令）+ 健康度排序升级（蓝本 v2.1）：合成两本账打分——
         // 探活账 Dead 沉底（原口径保留）；实测账微卡降权、盲区（天然贴边）降权、最近实测成功提权；

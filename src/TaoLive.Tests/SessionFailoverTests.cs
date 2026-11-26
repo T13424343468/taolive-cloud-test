@@ -758,3 +758,49 @@ public class SessionManagerTests
         Assert.All(events, e => Assert.Same(session, e.Session));
     }
 }
+
+/// <summary>
+/// 刀一（老板 2026-11-25 九件套定稿）：竞速与取票合成一次——Web 取票口端点以「换票成功」为探活判据
+/// （票落进程级缓存，赢家起播取票零等待），直连端点照旧握手赛马。
+/// </summary>
+public class TicketFusedProberTests
+{
+    private static readonly DateTimeOffset T0 = DateTimeOffset.Parse("2026-11-15T00:00:00Z");
+
+    private static (Channel Ch, SourceEndpoint Web, SourceEndpoint Direct) MakeCandidates()
+    {
+        var web = new SourceEndpoint("https://api.example/cctv1", SourceKind.Web, 10);
+        var direct = new SourceEndpoint("http://127.0.0.1:1/direct.m3u8", SourceKind.PureIp, 9); // 拒绝连接：快败不拖测
+        var ch = new Channel("cctv1", "频道-cctv1", "测试", new List<SourceEndpoint> { web, direct });
+        return (ch, web, direct);
+    }
+
+    [Fact]
+    public void Web_resolve_success_wins_race()
+    {
+        var (ch, web, _) = MakeCandidates();
+        SourceEndpoint? resolved = null;
+        var prober = new TicketFusedProber(new HttpHandshakeProber(), (c, ep) =>
+        {
+            resolved = ep;
+            return Task.FromResult<string?>("https://cdn.example/winner.m3u8");
+        });
+
+        int winner = prober.RaceAsync(ch, ch.Sources).GetAwaiter().GetResult();
+
+        Assert.Equal(0, winner); // Web 端点换票成功即赢（取票即探通，合成一次）
+        Assert.Same(web, resolved);
+    }
+
+    [Fact]
+    public void All_fail_returns_negative()
+    {
+        var (ch, _, _) = MakeCandidates();
+        var prober = new TicketFusedProber(new HttpHandshakeProber(),
+            (c, ep) => Task.FromResult<string?>(null)); // Web 换票失败
+
+        int winner = prober.RaceAsync(ch, ch.Sources).GetAwaiter().GetResult();
+
+        Assert.Equal(-1, winner); // Web 换票失败 + 直连拒绝连接：全败不动序
+    }
+}

@@ -30,20 +30,24 @@ public static class FallbackSourceRegistry
         // B 组修正（老板 2026-11-13 14:07 令「全收」）：hljws/hljws.m3u8 为 404 式样错，改官方 own 流
         // （与 Batch2 重复项合并回此处置顶；探活 11-13 午 LIVE）
         new("黑龙江卫视", "https://idclive.hljtv.com:4430/live/hljws_own.m3u8"),
-        new("内蒙古卫视", "https://play1-qk.nmtv.cn/live/nmgws/nmgws.m3u8"),
-        new("新疆卫视", "http://218.84.12.186:8001/hls/1/index.m3u8"),
+        // 探源 2026-11-26 实测死路降观察档（probe20261126/probe_ledger.tsv，账本 idx 3-8 等）；
+        // 各台活源在 Batch4 gmxw 双端 / Batch5 tsfile _1 顶前，观察档仅作同族备线垫底。
+        new("内蒙古卫视", "https://play1-qk.nmtv.cn/live/nmgws/nmgws.m3u8", ObservationRank: true),   // nmtv 2026-11-26 DEAD（gmxw id60 活）
+        new("新疆卫视", "http://218.84.12.186:8001/hls/1/index.m3u8", ObservationRank: true),         // 2026-11-26 DEAD（gmxw id65 活）
         // B 组修正：gmxw 45 路缺 /hls/ 段为死路，补正为 /hls/45/（与 Batch2 重复项合并回此处置顶）
         new("深圳卫视", "http://gmxw.7766.org:808/hls/45/index.m3u8"),
         // B 组修正：gmxw 40 路缺 /hls/ 段为死路，直接替换为 183.11 纯 IP 端（域名端在 Batch4）
         new("安徽卫视", "http://183.11.239.36:808/hls/40/index.m3u8"),
-        new("东南卫视", "http://live.zohi.tv/zb.m3u8"),
-        // 辽宁：原路（9901 直拼）404，124 端阵容无此台（0121 404）——暂无替换源，原路保留占位待真机侧验
-        new("辽宁卫视", "http://61.136.172.236:9901/live/lnws.m3u8"),
+        // 东南：zohi 2026-11-26 DEAD（连接拒）；候选 117.169.124.37:6610 同日实测连接拒不收录——零活台待换（bfgd 备线亦 OBS）
+        new("东南卫视", "http://live.zohi.tv/zb.m3u8", ObservationRank: true),
+        // 辽宁：原路（9901 直拼）2026-11-26 DEAD；候选 lnhlslive.hongshiyun.com 同日实测域名已停放不收录——零活台待换
+        new("辽宁卫视", "http://61.136.172.236:9901/live/lnws.m3u8", ObservationRank: true),
         // vc45 第五批·C 组零活救活：江西原路（9901 直拼）404 判死，直替换为 tsfile-124 0138_1
         new("江西卫视", "http://124.165.251.82:85/tsfile/live/0138_1.m3u8?key=txiptv&playlive=1&authid=0"),
-        new("山西卫视", "http://119.39.9.8:9901/live/shanxiws.m3u8"),
-        new("西藏卫视", "http://112.27.5.218:9901/live/xzws.m3u8"),
-        new("宁夏卫视", "http://120.76.248.139/live/nxws.m3u8"),
+        new("山西卫视", "http://119.39.9.8:9901/live/shanxiws.m3u8", ObservationRank: true),   // 2026-11-26 DEAD（gmxw id59 活）
+        new("西藏卫视", "http://112.27.5.218:9901/live/xzws.m3u8", ObservationRank: true),     // 2026-11-26 DEAD（gmxw id64 活）
+        // 宁夏：2026-11-26 DEAD；候选 ott.js.chinamobile.com（IP/域名双路）同日实测超时不收录——零活台待换
+        new("宁夏卫视", "http://120.76.248.139/live/nxws.m3u8", ObservationRank: true),
         // vc45 第五批·C 组救活：CGTN西语原路（官方 liveali）404 判死，直替换为官方阿里端
         // （2022-08 票据 token 至今活，两级清单+分片全链过，C 组报告 11-13 15:2x；若失效按 CGTN 法语/阿语同族另取）
         new("CGTN西班牙语", "https://espanol-liveali.cgtn.com/hls/LSveOGBaBw41Ea7ukkVAUdKQ220802LSTexu6xAuFH8VZNBLE1ZNEa220802cd.m3u8"),
@@ -62,8 +66,8 @@ public static class FallbackSourceRegistry
         new("CCTV6电影", "http://74.91.26.218:82/live/cctv6hd.m3u8", ObservationRank: true),
         new("CCTV3综艺", "http://74.91.26.218:82/live/cctv3hd.m3u8", ObservationRank: true),
         new("CCTV8电视剧", "http://74.91.26.218:82/live/cctv8hd.m3u8", ObservationRank: true),
-        new("CCTV4中文国际", "https://dash2.antik.sk/cctv4/index.m3u8"),
-        new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8"),
+        new("CCTV4中文国际", "https://dash2.antik.sk/cctv4/index.m3u8", ObservationRank: true),        // 2026-11-26 DEAD（tsfile 0004_1 活）
+        new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8", ObservationRank: true), // 2026-11-26 DEAD（tsfile 0013_1 活）
     };
 
     // ---- 卫视大盘摸排第二批（老板 2026-11-12 23:0x 令「新增的十个源一并收录」）----
@@ -77,13 +81,13 @@ public static class FallbackSourceRegistry
     private static readonly FallbackEntry[] SatellitesBatch2 =
     {
         new("浙江卫视", "http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8"), // cztv-ali 浙江官方蓝天频道，同域双活
-        new("东方卫视", "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8"),               // bestv 百视通
+        new("东方卫视", "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8", ObservationRank: true),       // bestv 百视通 2026-11-26 DEAD（tsfile 0107_1 活）
         new("黑龙江卫视", "http://120.76.248.139/live/bfgd/4200000095.m3u8", ObservationRank: true),              // bfgd（观察档，共 token）
         new("深圳卫视", "http://120.76.248.139/live/bfgd/4200000100.m3u8", ObservationRank: true),                // bfgd（观察档，共 token）
         new("东南卫视", "http://120.76.248.139/live/bfgd/4200000483.m3u8", ObservationRank: true),                // bfgd（观察档，共 token）
-        new("广东卫视", "http://120.76.248.139/live/bfgd/4200000092.m3u8"),                // bfgd（单发重测过）
-        new("北京卫视", "http://120.76.248.139/live/bfgd/4200000083.m3u8"),                // bfgd（单发重测过）
-        new("湖北卫视", "http://120.76.248.139/live/bfgd/4200000102.m3u8"),                // bfgd（单发重测过）
+        new("广东卫视", "http://120.76.248.139/live/bfgd/4200000092.m3u8", ObservationRank: true),                // bfgd 2026-11-26 DEAD（gmxw id80/tsfile 0125_1 活）
+        new("北京卫视", "http://120.76.248.139/live/bfgd/4200000083.m3u8", ObservationRank: true),                // bfgd 2026-11-26 DEAD（tsfile 0122_1 活）
+        new("湖北卫视", "http://120.76.248.139/live/bfgd/4200000102.m3u8", ObservationRank: true),                // bfgd 2026-11-26 DEAD（gmxw id46/tsfile 0132_1 活）
         // 黑龙江官方 own 流与深圳 gmxw /hls/45 已在 Satellites 修正置顶，此处重复项合并（B 组 14:07 令）
     };
 
@@ -154,8 +158,10 @@ public static class FallbackSourceRegistry
     //       0019 疑 CCTV17/0118 疑山西/0136 疑陕西/0139 疑河南按映射收录，身份待真机画面/EPG 确认（待真机验证清单已列）。
     // 共族单点警示：全部 39 路同一端点（124.165.251.82:85）——②评分按共族降权；真机可达性随真机验收。
     private const string TsfileKey = "?key=txiptv&playlive=1&authid=0";
+    // 探源 2026-11-26 实锤修复：Ts() 原拼 {no}.m3u8，实际文件为 {no}_1.m3u8——不带 _1 的全部返回 WAF HTML
+    // （等效死路）；带 _1 的 27/27 全链 REAL（probe20261126/tsfile_verdicts_1126.txt）。补 _1 救活全批 27 路。
     private static FallbackEntry Ts(string channelName, string no) =>
-        new(channelName, $"http://124.165.251.82:85/tsfile/live/{no}.m3u8{TsfileKey}");
+        new(channelName, $"http://124.165.251.82:85/tsfile/live/{no}_1.m3u8{TsfileKey}");
 
     private static readonly FallbackEntry[] Batch5 =
     {

@@ -298,6 +298,8 @@ public partial class MainActivity
         // 收口批④开关合流：预热与预检两个开关管同一条车道必出一个死开关——只留本开关，
         // 预热（开机全量预热+换台邻台预取）随预检同起同停，不再单设开关。
         AddRow($"预检握手：{(_precheckEnabled ? "开" : "关")}（预热同起同停）", TogglePrecheck, "#F7F5EE");
+        // 内置订阅（老板 2026-11-26 拍板「只做内置订阅」）：开关默认关；长按=立即刷新合集
+        AddRow($"源订阅：{(_subEnabled ? "开" : "关")}（自动收录公开源）", ToggleSubscription, "#F7F5EE", RefreshSubscriptionNow);
         AddRow($"显示大小：{DisplaySizeLabel()}", CycleDisplaySize, "#F7F5EE");
         AddRow("运行统计", ShowRunStatsPanel, "#C9D6E2");
         AddRow("崩溃日志", ShowCrashLog, "#C9D6E2");
@@ -374,6 +376,47 @@ public partial class MainActivity
         else StopPrecheckLoop();
         RefreshSettingsRows();
         ShowToast(_precheckEnabled ? "预检握手：开" : "预检握手：关");
+    }
+
+    // —— 内置订阅源（老板 2026-11-26 拍板「只做内置订阅」）：拉公开免费合集→按台名匹配→查重→试活→入库垫底 ——
+
+    private static bool _subEnabled = false; // 源订阅开关（默认关；与偏好 sub_enabled 同步）
+
+    private void ToggleSubscription()
+    {
+        _subEnabled = !_subEnabled;
+        _prefs.Edit()?.PutBoolean("sub_enabled", _subEnabled)?.Apply();
+        if (_subEnabled) KickSubscriptionRefresh(startup: false);
+        RefreshSettingsRows();
+        ShowToast(_subEnabled ? "源订阅：开" : "源订阅：关");
+    }
+
+    private void RefreshSubscriptionNow()
+    {
+        if (!_subEnabled) { ShowToast("先开启源订阅"); return; }
+        KickSubscriptionRefresh(startup: false);
+    }
+
+    /// <summary>后台拉合集并试活入库（启动静默/手动提示结果）；线程池跑，不占主线程。</summary>
+    private void KickSubscriptionRefresh(bool startup)
+    {
+        var names = _channels.Select(c => c.Name).ToList();
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                var added = SubscriptionSourceStore.Shared
+                    .RefreshAsync(names, TaoLive.Catalog.TicketResolver.ClientUserAgent).GetAwaiter().GetResult();
+                RunOnUiThread(() =>
+                {
+                    if (!startup) ShowToast(added > 0 ? $"源订阅：新收录 {added} 路" : "源订阅：无新增可用源");
+                });
+            }
+            catch (Exception ex)
+            {
+                RunOnUiThread(() => { if (!startup) ShowToast($"源订阅刷新失败：{ex.Message}"); });
+            }
+        });
     }
 
     // —— 显示大小（真机反馈批 #61 尺寸回抬令 2026-11-15 19:3x：中档定「肉眼最舒适」=基准 20sp，

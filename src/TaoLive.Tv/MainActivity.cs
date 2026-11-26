@@ -149,6 +149,11 @@ public partial class MainActivity : Activity
         // 收口批④开关合流：预热与预检共车道只留预检开关，预热（开机全量预热+换台邻台预取+开机默认台焐热）
         // 一律随 _precheckEnabled 同起同停——两个开关管同一条车道必出一个死开关（方案书收口批④原文）。
         _precheckEnabled = _prefs.GetBoolean("precheck_enabled", true);
+        // 内置订阅源库（老板 2026-11-26 拍板「只做内置订阅」）：载入落盘档案；开关默认关，开了才拉合集
+        SubscriptionSourceStore.Shared.Load(FilesDir!.AbsolutePath);
+        SubscriptionSourceStore.Reporter = msg => Android.Util.Log.Info("TaoLive", msg);
+        _subEnabled = _prefs.GetBoolean("sub_enabled", false);
+        if (_subEnabled) KickSubscriptionRefresh(startup: true);
         AdvancedTuning.Apply(
             _prefs.GetInt("adv_fail_gate", AdvancedTuning.DefaultFailGate),
             _prefs.GetInt("adv_reprobe_min", 5) * 60_000L,

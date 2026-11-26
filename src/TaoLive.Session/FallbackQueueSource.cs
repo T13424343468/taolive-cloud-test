@@ -15,22 +15,33 @@ public static class FallbackQueueSource
     /// <summary>备援候选健康提示（轻排序依据，只读账不写账）：Alive=近账可用；CheckedAtMs=核验时间（Unix 毫秒）。</summary>
     public sealed record FallbackHealthHint(bool Alive, long CheckedAtMs);
 
-    /// <summary>本频道在内置表的全部备援候选（按纪律序+健康账轻排序）；无登记返回空表。
-    /// healthOf：候选端点健康账查询（可空注入，空=退化为纯注册表纪律序，行为不倒退）。</summary>
+    /// <summary>本频道在内置表的全部备援候选（按纪律序+健康账轻排序）+ 订阅收录源末位追加；两者皆无返回空表。
+    /// 订阅源（内置订阅库，老板 2026-11-26 拍板）恒垫在内置表观察档之后（权重 2），只作兜底备线。
+    /// healthOf：候选端点健康账查询（可空注入，空=退化为纯注册表纪律序，行为不倒退）。
+    /// subscriptionStore：订阅库注入（可空，空=进程单例 Shared；测试注入独立实例防串扰）。</summary>
     public static IReadOnlyList<SourceEndpoint> FromRegistry(
-        Channel channel, Func<SourceEndpoint, FallbackHealthHint?>? healthOf = null)
+        Channel channel, Func<SourceEndpoint, FallbackHealthHint?>? healthOf = null,
+        SubscriptionSourceStore? subscriptionStore = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        if (!FallbackSourceRegistry.Has(channel.Name))
+        var subEntries = (subscriptionStore ?? SubscriptionSourceStore.Shared).GetAll(channel.Name);
+        if (!FallbackSourceRegistry.Has(channel.Name) && subEntries.Count == 0)
         {
             return Array.Empty<SourceEndpoint>();
         }
-        var endpoints = FallbackSourceRegistry.GetAll(channel.Name)
-            .Select(e => new SourceEndpoint(
-                e.Url,
-                IsIpLiteral(e.Url) ? SourceKind.PureIp : SourceKind.Cdn,
-                e.ObservationRank ? 1 : 0))
-            .ToList();
+        var endpoints = FallbackSourceRegistry.Has(channel.Name)
+            ? FallbackSourceRegistry.GetAll(channel.Name)
+                .Select(e => new SourceEndpoint(
+                    e.Url,
+                    IsIpLiteral(e.Url) ? SourceKind.PureIp : SourceKind.Cdn,
+                    e.ObservationRank ? 1 : 0))
+                .ToList()
+            : new List<SourceEndpoint>();
+        // 订阅收录源末位追加（权重 2 恒垫底）：收录时已全链试活，运行时健康账轻排序照常生效
+        endpoints.AddRange(subEntries.Select(s => new SourceEndpoint(
+            s.Url,
+            IsIpLiteral(s.Url) ? SourceKind.PureIp : SourceKind.Cdn,
+            2)));
         if (healthOf is null) return endpoints;
         // 稳定轻排序：活源（账新者优先，越旧权重越低）垫到队首，其余保持注册表纪律序（索引稳定序）。
         return endpoints

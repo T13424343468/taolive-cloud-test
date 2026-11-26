@@ -37,9 +37,12 @@ public static class CrashNet
     /// <summary>记录一条异常（异常对象版）。主线程只入队，磁盘 IO 交给后台批量拍。</summary>
     public static void Record(Exception ex) => Record(ex.ToString());
 
-    /// <summary>记录一条异常（文本版）。主线程只入队，磁盘 IO 交给后台批量拍。</summary>
+    /// <summary>记录一条异常（文本版）。主线程只入队，磁盘 IO 交给后台批量拍。
+    /// vc95 诊断：同步镜像一条到系统日志（Log.Info，tag=taolive）——云端测试 logcat 直出，
+    /// 台账文件拉取时机受限时（Case A 拉到空账）链路卡点仍可从 logcat 取证。</summary>
     public static void Record(string text)
     {
+        try { Android.Util.Log.Info("taolive", text.Length > 512 ? text[..512] : text); } catch { }
         try { Enqueue($"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {text}\n\n"); }
         catch { }
     }

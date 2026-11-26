@@ -1,0 +1,8 @@
+PACKAGE VERSION: TaoLive 87/1.2 (2026-11-17, commit fe1ccaa)
+TaoLive TV 1.2 vc86 — 蓝本 v2.5 全量（七项+六项优化④⑤，版本锚 87/1.2）
+- versionCode=87 / versionName=1.2 / label=TaoLive
+- 云端构建 run 44000990531 (headSha=fe1ccaa) success
+- 本轮修复：统一验证 3 真缺陷（慢连宽限预算闸 / 重复 Transition 抛错 / 宽限判定次序）
+  + 放行闸 / 水位判稳 / 慢连提示 / 预检对齐；全测 235/235 绿，Tv 0 警 0 错
+- 包体特征锚核验：badging versionCode='87' versionName='1.2'（aapt 亲验）
+- sha256 见 sha256.txt；先验哈希再安装

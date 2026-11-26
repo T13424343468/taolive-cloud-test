@@ -25,17 +25,25 @@ public sealed class SubscriptionSourceStore
     private static readonly Lazy<SubscriptionSourceStore> _shared = new(() => new SubscriptionSourceStore());
     public static SubscriptionSourceStore Shared => _shared.Value;
 
-    /// <summary>内置订阅源（公开免费合集）：vbskycn/iptv 社区维护中文合集（IPv4+IPv6 双份，2026-11-26 实测可达、
-    /// 卫视台名中文口径与目录一致；iptv-org cn 全英文台名对不上号不收，fanmingming 沙箱侧不可达不收）。</summary>
+    /// <summary>内置订阅源（公开免费合集，老板 2026-11-26 令「要 100 覆盖」扩编）：
+    /// vbskycn/iptv 中文合集（卫视中文口径与目录一致）+ suxuang/myIPTV 大合集（2026-11-26 实测 942 台，
+    /// 补齐 CCTV 主力/北京湖北深圳安徽辽宁卫视等 vbskycn 缺口；iptv-org cn 全英文台名对不上号不收，
+    /// fanmingming 沙箱侧不可达不收）。</summary>
     public static readonly string[] Feeds =
     {
         "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
         "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv6.m3u",
+        "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv4.m3u",
     };
 
-    /// <summary>收录上限：单台最多 4 路（防单台刷屏），全库最多 300 条（防合集爆炸拖慢换源遍历）。</summary>
+    /// <summary>收录上限：单台最多 4 路（防单台刷屏），全库最多 300 条（防合集爆炸拖慢换源遍历）；
+    /// 新收录频道（目录外主流台，老板 2026-11-26 令「最好还能有新收录」）最多 40 个、单台 2 路。</summary>
     public const int MaxPerChannel = 4;
     public const int MaxTotal = 300;
+    public const int MaxNewChannels = 40;
+    public const int MaxPerNewChannel = 2;
+    /// <summary>单轮刷新试活预算（防大合集拖长刷新；目录匹配优先，新收录候选殿后）。</summary>
+    public const int MaxProbeCandidates = 260;
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
@@ -89,10 +97,13 @@ public sealed class SubscriptionSourceStore
         lock (_gate) { return _byName.Values.Any(l => l.Any(e => string.Equals(e.Url, url, StringComparison.Ordinal))); }
     }
 
-    /// <summary>试活通过的条目入库：查重（内置表+本库）、按台封顶、全库封顶；返回新增条数。</summary>
-    public int Ingest(IEnumerable<(string Name, string Url, string Ua)> probed, long nowMs)
+    /// <summary>试活通过的条目入库：查重（内置表+本库）、按台封顶、全库封顶；knownKeys 之外的台名按
+    /// 新收录口径（MaxNewChannels/MaxPerNewChannel）限额。返回新增条数。</summary>
+    public int Ingest(IEnumerable<(string Name, string Url, string Ua)> probed, long nowMs,
+        IEnumerable<string>? knownKeys = null)
     {
         var added = 0;
+        var known = knownKeys as ICollection<string> ?? null;
         lock (_gate)
         {
             foreach (var (name, url, ua) in probed)
@@ -100,10 +111,15 @@ public sealed class SubscriptionSourceStore
                 if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(url)) continue;
                 if (FallbackSourceRegistry.ContainsUrl(url)) continue; // 内置表已收录，免双探
                 var key = NormalizeName(name);
+                var isNew = known is not null && !known.Contains(key);
+                if (isNew && !_byName.ContainsKey(key)
+                    && _byName.Count(kv => known is null || !known.Contains(kv.Key)) >= MaxNewChannels)
+                    continue; // 新收录台数封顶（已有台的补路不受此限）
                 if (_byName.Values.Sum(l => l.Count) >= MaxTotal) break;
                 if (!_byName.TryGetValue(key, out var list)) { list = new List<SubEntry>(); _byName[key] = list; }
                 if (list.Any(e => string.Equals(e.Url, url, StringComparison.Ordinal))) continue;
-                if (list.Count >= MaxPerChannel) continue;
+                var perCap = isNew ? Math.Min(MaxPerNewChannel, MaxPerChannel) : MaxPerChannel;
+                if (list.Count >= perCap) continue;
                 list.Add(new SubEntry(name, url, ua, nowMs, Alive: true));
                 added++;
             }
@@ -137,15 +153,23 @@ public sealed class SubscriptionSourceStore
         return result;
     }
 
-    /// <summary>全量刷新：拉合集 → 按已知台名过滤 → 查重 → 并发试活（上限 2）→ 入库。返回新增条数。
+    /// <summary>全量刷新：拉合集 → 按已知台名（含 CCTV 基础名别名）过滤 + 目录外主流台新收录 → 查重 →
+    /// 并发试活（上限 2，目录匹配优先、新收录殿后，总量受 MaxProbeCandidates 约束）→ 入库。返回新增条数。
     /// 老板令 2026-11-26「拉源避开播放」：abortWhenBusy 注入播放态查询（真=播放/热备在跑），
     /// 每条试活前先问闸，忙即停手不再发新请求（已发出的收尾、已过闸的照常入库），拉源流量绝不与播放抢道。</summary>
     public async Task<int> RefreshAsync(
         IEnumerable<string> knownChannelNames, string ua, CancellationToken ct = default,
         Func<bool>? abortWhenBusy = null)
     {
-        var known = new HashSet<string>(knownChannelNames.Select(NormalizeName), StringComparer.Ordinal);
+        var knownByName = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var n in knownChannelNames)
+        {
+            if (string.IsNullOrEmpty(n)) continue;
+            knownByName.TryAdd(NormalizeName(n), n);
+        }
+        var alias = BuildAliasMap(knownByName.Keys);
         var candidates = new List<(string Name, string Url, string Ua)>();
+        var newCandidates = new List<(string Name, string Url, string Ua)>();
         foreach (var feed in Feeds)
         {
             if (abortWhenBusy?.Invoke() == true) break; // 播放开始，立即停手
@@ -153,15 +177,32 @@ public sealed class SubscriptionSourceStore
             string text;
             try { text = await Http.GetStringAsync(feed, ct).ConfigureAwait(false); }
             catch (Exception ex) { Reporter?.Invoke($"[源订阅] 合集拉取失败跳过：{feed} → {ex.Message}"); continue; }
-            candidates.AddRange(ParseM3U(text)
-                .Where(p => known.Contains(NormalizeName(p.Name)))
-                .Where(p => !FallbackSourceRegistry.ContainsUrl(p.Url) && !ContainsUrl(p.Url))
-                .Select(p => (p.Name, p.Url, ua)));
+            foreach (var p in ParseM3U(text))
+            {
+                if (FallbackSourceRegistry.ContainsUrl(p.Url) || ContainsUrl(p.Url)) continue;
+                var key = NormalizeName(p.Name);
+                if (knownByName.TryGetValue(key, out var canonical))
+                {
+                    candidates.Add((canonical, p.Url, ua)); // 目录口径台名入库，展示与消费一致
+                }
+                else if (alias.TryGetValue(key, out var aliasName))
+                {
+                    candidates.Add((aliasName, p.Url, ua)); // CCTV-1/CCTV1 → CCTV1综合 等别名归位
+                }
+                else if (IsMainstreamNewChannel(p.Name))
+                {
+                    newCandidates.Add((p.Name, p.Url, ua)); // 目录外主流台（卫视/CCTV/CGTN 口径）新收录
+                }
+            }
         }
+        // 试活预算：目录匹配优先吃满，剩余额度给新收录（防大合集拖长刷新）
+        var budgeted = candidates.Count >= MaxProbeCandidates
+            ? candidates.Take(MaxProbeCandidates)
+            : candidates.Concat(newCandidates.Take(Math.Max(0, MaxProbeCandidates - candidates.Count)));
         // 并发试活（上限 2，轻量不抢道）：清单 EXTM3U + 分片 TS 魔数双闸；每条前过播放闸
         var alive = new ConcurrentBag<(string, string, string)>();
         using var gate = new SemaphoreSlim(2);
-        var tasks = candidates.Select(async c =>
+        var tasks = budgeted.Select(async c =>
         {
             try
             {
@@ -174,7 +215,7 @@ public sealed class SubscriptionSourceStore
             finally { gate.Release(); }
         });
         await Task.WhenAll(tasks).ConfigureAwait(false);
-        return Ingest(alive, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        return Ingest(alive, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), knownByName.Keys);
     }
 
     /// <summary>试活单路：清单须 EXTM3U，首个分片首字节须 TS 魔数 0x47。</summary>
@@ -209,7 +250,55 @@ public sealed class SubscriptionSourceStore
 
     /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
     public static string NormalizeName(string name) =>
-        (name ?? "").Replace(" ", "").Replace("　", "");
+        (name ?? "").Replace(" ", "").Replace("　", "").Replace("-", "").Replace("－", "");
+
+    /// <summary>CCTV 基础名别名表：目录台名 CCTV1综合 → 基础名 CCTV1；合集侧 CCTV-1/CCTV1 归位到目录台名。
+    /// 同一基础名对应多个目录台名（如 CCTV16奥林匹克 与 CCTV16 4K）时该别名歧义弃用，只认全名。</summary>
+    public static Dictionary<string, string> BuildAliasMap(IEnumerable<string> knownNames)
+    {
+        var alias = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var name in knownNames)
+        {
+            var key = NormalizeName(name);
+            var m = System.Text.RegularExpressions.Regex.Match(key, @"^CCTV(\d{1,2}\+?)");
+            if (!m.Success) continue;
+            var baseName = "CCTV" + m.Groups[1].Value; // 基础名：CCTV1 / CCTV5+ / CCTV13
+            var rest = key[m.Length..];
+            if (rest.Length == 0) continue; // 目录台名本身就是基础名，无需别名
+            if (alias.TryGetValue(baseName, out var exist))
+            {
+                if (exist != key) alias[baseName] = ""; // 歧义：多台共用基础名，弃用
+            }
+            else alias[baseName] = key;
+        }
+        return alias.Where(kv => kv.Value.Length > 0)
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+    }
+
+    /// <summary>目录外新收录口径（老板 2026-11-26 令「最好还能有新收录」）：只收主流台防县市级杂烩刷屏——
+    /// 省级卫视（≤6 字「××卫视」）、CCTV 数字频道、CGTN 系。其余陌生台一律不收。</summary>
+    public static bool IsMainstreamNewChannel(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var n = NormalizeName(name);
+        if (n.Length <= 6 && n.EndsWith("卫视", StringComparison.Ordinal)) return true;
+        if (System.Text.RegularExpressions.Regex.IsMatch(n, @"^CCTV\d{1,2}\+?$")) return true;
+        if (n.StartsWith("CGTN", StringComparison.Ordinal) && n.Length <= 12) return true;
+        return false;
+    }
+
+    /// <summary>目录外新收录频道（有活路的）：返回（台名, 条目组），供壳层并入频道列表（自有源类，接在表尾）。</summary>
+    public IReadOnlyList<(string Name, IReadOnlyList<SubEntry> Entries)> GetNewChannels(
+        IEnumerable<string> knownNames)
+    {
+        var known = new HashSet<string>(knownNames.Select(NormalizeName), StringComparer.Ordinal);
+        lock (_gate)
+        {
+            return _byName.Where(kv => kv.Value.Count > 0 && !known.Contains(kv.Key))
+                .Select(kv => (Name: kv.Value[0].Name, Entries: (IReadOnlyList<SubEntry>)kv.Value.ToArray()))
+                .ToList();
+        }
+    }
 
     private void AddLocked(string key, SubEntry e)
     {

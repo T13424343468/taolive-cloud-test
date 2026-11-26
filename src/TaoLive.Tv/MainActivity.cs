@@ -37,7 +37,7 @@ public partial class MainActivity : Activity
 {
     private IServiceProvider _services = default!;
     private PlaybackSessionManager _manager = default!;
-    private readonly IReadOnlyList<Channel> _channels = ChannelTable.Build();
+    private IReadOnlyList<Channel> _channels = ChannelTable.Build(); // 订阅新收录频道并入后整体替换（表尾追加，编号顺延不变号）
 
     private FrameLayout _root = default!;
     private LinearLayout _listPage = default!;
@@ -516,6 +516,7 @@ public partial class MainActivity : Activity
         BuildRoot();
         SetContentView(_root);
         ShowList();
+        MergeSubscriptionChannels(silent: true); // 启动并入落盘档案里的订阅新收录频道（_precheck/_list 此刻均已就绪）
 
         // #15 原地换皮：会话跨壳存活（换显示尺寸 Recreate 到此）——回播放页对准当前台即可，
         // 不重进不重取流（重进=「切尺寸重连」实锤复发）；进程首启无会话才走开机链路（#17：收藏第一个）
@@ -2165,6 +2166,31 @@ public partial class MainActivity : Activity
         }
     }
 
+    /// <summary>订阅新收录频道并入频道列表（老板 2026-11-26 令「最好还能有新收录」）：
+    /// 目录外主流台（省级卫视/CCTV/CGTN，IsMainstreamNewChannel 口径，订阅库已限额）接在表尾，编号顺延不变号；
+    /// 列表已建则原适配器换表重建行（ItemClick 接线不动）。返回本次并入的新频道数。</summary>
+    private int MergeSubscriptionChannels(bool silent)
+    {
+        var extra = SubscriptionSourceStore.Shared.GetNewChannels(_channels.Select(c => c.Name));
+        if (extra.Count == 0) return 0;
+        var merged = new List<Channel>(_channels);
+        int number = merged.Max(c => c.Number);
+        foreach (var (name, entries) in extra)
+        {
+            number++;
+            merged.Add(new Channel($"sub_{name}", name, "自有源", entries.Select(e => new SourceEndpoint(
+                e.Url,
+                Uri.TryCreate(e.Url, UriKind.Absolute, out var u) && u.HostNameType == UriHostNameType.IPv4
+                    ? SourceKind.PureIp : SourceKind.Cdn, 1)).ToList())
+            { UserAgent = entries[0].Ua, Number = number });
+        }
+        _channels = merged;
+        if (_list?.Adapter is ChannelListAdapter adapter) adapter.ReplaceChannels(_channels);
+        ApplyListWidth(_channels);
+        if (!silent) ShowToast($"源订阅：新收录频道 {extra.Count} 个");
+        return extra.Count;
+    }
+
     /// <summary>列表宽度恒定（vc65 老板令 2026-11-15：列表页每次打开宽度都一样，「地方台」页签不换行）。
     /// 根因（#72 口径的副作用）：宽度按当前页签 adapter.Rows 贴内容估——打开所在页签/收藏不同，面板就漂移；
     /// 面板窄于页签行自然宽时最后签被挤换行。修法：估宽改按<b>全表</b>最长频道行（含收藏星位），恒定公式不随页签/收藏变；
@@ -2306,8 +2332,8 @@ public partial class MainActivity : Activity
 
     private sealed class ChannelListAdapter : BaseAdapter
     {
-        private readonly Context _ctx;
-        private readonly IReadOnlyList<Channel> _channels;
+        private Context _ctx;
+        private IReadOnlyList<Channel> _channels;
         private readonly Func<Channel, ChannelHealth> _markOf; // ④健康点：只读账（预检 MarkOf 三态）
         private readonly Func<string?> _currentId;
         private HashSet<string> _favorites;
@@ -2413,6 +2439,14 @@ public partial class MainActivity : Activity
             _tab = tab ?? _tab;
             if (favoriteOrder != null) _favOrder = favoriteOrder;
             _rows = BuildRows(_channels, favorites, _tab, _markOf, _favOrder);
+            NotifyDataSetChanged();
+        }
+
+        /// <summary>订阅新收录频道并入后整体换表（订阅并入批）：重建行并刷新，ItemClick 等接线保持原适配器实例不动。</summary>
+        public void ReplaceChannels(IReadOnlyList<Channel> channels)
+        {
+            _channels = channels;
+            _rows = BuildRows(channels, _favorites, _tab, _markOf, _favOrder);
             NotifyDataSetChanged();
         }
 

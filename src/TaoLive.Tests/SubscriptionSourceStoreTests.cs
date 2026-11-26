@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using TaoLive.Foundation;
 using TaoLive.Model;
 using TaoLive.Session;
@@ -148,5 +148,85 @@ public class SubscriptionSourceStoreTests : IDisposable
         // 两库皆无 → 空表（行为不倒退）
         Assert.Empty(FallbackQueueSource.FromRegistry(
             new Channel("none", "两库皆无台", "测试", new List<SourceEndpoint>()), subscriptionStore: _store));
+    }
+
+    // ---- 新收录扩编（老板 2026-11-26 令「要 100 覆盖，最好还能有新收录」）：归一、别名、口径、限额、并入 ----
+
+    [Fact]
+    public void NormalizeName_strips_spaces_and_dashes()
+    {
+        Assert.Equal("CCTV1综合", SubscriptionSourceStore.NormalizeName("CCTV-1 综合"));
+        Assert.Equal("北京卫视", SubscriptionSourceStore.NormalizeName("北京 卫视"));
+        Assert.Equal("北京卫视", SubscriptionSourceStore.NormalizeName("北京　卫视")); // 全角空格
+        Assert.Equal("北京卫视", SubscriptionSourceStore.NormalizeName("北京－卫视")); // 全角横杠
+        Assert.Equal("", SubscriptionSourceStore.NormalizeName(null!));
+    }
+
+    [Fact]
+    public void BuildAliasMaps_cctv_base_names_and_drops_ambiguous()
+    {
+        var alias = SubscriptionSourceStore.BuildAliasMap(new[]
+        {
+            "CCTV1综合", "CCTV2财经", "CCTV4中文国际", "CCTV4K超高清", "CCTV5+体育赛事",
+        });
+        Assert.Equal("CCTV1综合", alias["CCTV1"]);   // CCTV-1/CCTV1 → CCTV1综合
+        Assert.Equal("CCTV2财经", alias["CCTV2"]);
+        Assert.Equal("CCTV5+体育赛事", alias["CCTV5+"]);
+        Assert.False(alias.ContainsKey("CCTV4"));    // CCTV4中文国际 与 CCTV4K超高清 共用基础名 → 歧义弃用
+        Assert.False(SubscriptionSourceStore.BuildAliasMap(new[] { "湖南卫视" }).ContainsKey("湖南"));
+    }
+
+    [Fact]
+    public void IsMainstreamNewChannel_gates_to_satellite_cctv_cgtn()
+    {
+        Assert.True(SubscriptionSourceStore.IsMainstreamNewChannel("北京卫视"));
+        Assert.True(SubscriptionSourceStore.IsMainstreamNewChannel("CCTV5+"));
+        Assert.True(SubscriptionSourceStore.IsMainstreamNewChannel("CGTN纪录"));
+        Assert.False(SubscriptionSourceStore.IsMainstreamNewChannel("CCTV4K超高清")); // CCTV 前缀但非数字频道
+        Assert.False(SubscriptionSourceStore.IsMainstreamNewChannel("某某县新闻综合"));
+        Assert.False(SubscriptionSourceStore.IsMainstreamNewChannel(""));
+    }
+
+    [Fact]
+    public void Ingest_caps_new_channels_and_per_new_channel()
+    {
+        _store.Load(_dir);
+        var now = 1L;
+        // 目录外新台：单台最多 MaxPerNewChannel 路
+        var per = Enumerable.Range(1, SubscriptionSourceStore.MaxPerNewChannel + 1)
+            .Select(i => ("新收录台", $"http://10.5.{i}.0/live.m3u8", "")).ToList();
+        Assert.Equal(SubscriptionSourceStore.MaxPerNewChannel, _store.Ingest(per, now, new[] { "已知台" }));
+        // 新收录台数封顶 MaxNewChannels：已有台补路不受限
+        var batch = Enumerable.Range(0, SubscriptionSourceStore.MaxNewChannels)
+            .Select(i => ($"卫视{i}", $"http://10.6.{i / 256}.{i % 256}/live.m3u8", "")).ToList();
+        Assert.Equal(SubscriptionSourceStore.MaxNewChannels - 1, _store.Ingest(batch, now, new[] { "已知台" }));
+        Assert.Equal(1, _store.Ingest(new List<(string, string, string)>
+        {
+            ("已知台", "http://10.7.7.7/known.m3u8", ""), // 目录内台补路：不受新收录限额
+        }, now, new[] { "已知台" }));
+        // 第 MaxNewChannels+1 个新台被拒
+        Assert.Equal(0, _store.Ingest(new List<(string, string, string)>
+        {
+            ("超限卫视", "http://10.8.8.8/live.m3u8", ""),
+        }, now, new[] { "已知台" }));
+    }
+
+    [Fact]
+    public void GetNewChannels_returns_unknown_channels_only()
+    {
+        _store.Load(_dir);
+        _store.Ingest(new List<(string, string, string)>
+        {
+            ("目录内台", "http://10.9.1.1/a.m3u8", ""),
+            ("新收录卫视", "http://10.9.1.2/b.m3u8", "UA-1"),
+            ("新收录卫视", "http://10.9.1.3/c.m3u8", ""),
+        }, 1L, new[] { "目录内台" });
+        var fresh = _store.GetNewChannels(new[] { "目录内台" });
+        Assert.Single(fresh);
+        Assert.Equal("新收录卫视", fresh[0].Name);
+        Assert.Equal(2, fresh[0].Entries.Count);
+        Assert.Equal("UA-1", fresh[0].Entries[0].Ua);
+        // 目录名吃满后无新台可报
+        Assert.Empty(_store.GetNewChannels(new[] { "目录内台", "新收录卫视" }));
     }
 }

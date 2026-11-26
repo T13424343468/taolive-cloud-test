@@ -1,0 +1,59 @@
+idx	level	name	url	_playlist	_segbytes	_tsmagic	_codec	_frame	verdict	min	hand
+1	NORM	湖南卫视	http://124.165.251.82:85/tsfile/live/0128_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5004748	yes	h264,aac,	ok	REAL	min: 1920	
+2	NORM	黑龙江卫视	https://idclive.hljtv.com:4430/live/hljws_own.m3u8	ok	4940640	yes	aac,h264,	ok	REAL	min: 	hljtv
+3	NORM	内蒙古卫视	https://play1-qk.nmtv.cn/live/nmgws/nmgws.m3u8	no	0	no		no	DEAD		nmtv
+4	NORM	新疆卫视	http://218.84.12.186:8001/hls/1/index.m3u8	no	0	no		no	DEAD		gmxw
+5	NORM	深圳卫视	http://gmxw.7766.org:808/hls/45/index.m3u8	ok	3865921	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+6	NORM	安徽卫视	http://183.11.239.36:808/hls/40/index.m3u8	ok	5134369	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+7	东南卫视	http://live.zohi.tv/zb.m3u8		no	0	no		no	DEAD		
+8	NORM	辽宁卫视	http://61.136.172.236:9901/live/lnws.m3u8	no	0	no		no	DEAD		
+9	NORM	江西卫视	http://124.165.251.82:85/tsfile/live/0138_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5004748	yes	h264,aac,	ok	REAL	min: 1920	
+10	NORM	山西卫视	http://119.39.9.8:9901/live/shanxiws.m3u8	no	0	no		no	DEAD		gmxw
+11	NORM	西藏卫视	http://112.27.5.218:9901/live/xzws.m3u8	no	0	no		no	DEAD		gmxw
+12	NORM	宁夏卫视	http://120.76.248.139/live/nxws.m3u8	no	0	no		no	DEAD		
+13	RM	CGTN西班牙语	https://espanol-liveali.cgtn.com/hls/LSveOGBaBw41Ea7ukkVAUdKQ220802LSTexu6xAuFH8VZNBLE1ZNEa220802cd.m3u8	ok	3159904	yes	h264,aac,	ok	REAL	min: 1920	
+14	NORM	钱江都市	https://ali-m-l.cztv.com/channels/lantian/channel002/1080p.m3u8	ok	1719260	yes	h264,aac,	ok	REAL	min: 1920	cztv
+15	NORM	教科影视	https://ali-m-l.cztv.com/channels/lantian/channel004/1080p.m3u8	ok	1642368	yes	h264,aac,	ok	REAL	min: 1920	cztv
+16	OBS	CCTV2财经	http://74.91.26.218:82/live/cctv2hd.m3u8	no	0	no		no	DEAD		
+17	OBS	CCTV6电影	http://74.91.26.218:82/live/cctv6hd.m3u8	no	0	no		no	DEAD		
+18	OBS	CCTV3综艺	http://74.91.26.218:82/live/cctv3hd.m3u8	no	0	no		no	DEAD		
+19		CCTV8电视剧	http://74.91.26.218:82/live/cctv8hd.m3u8	no	0	no		no	DEAD		
+20	NORM	CCTV4中文国际	https://dash2.antik.sk/cctv4/index.m3u8	no	0	no		no	DEAD		antik
+21	NORM	CCTV13新闻	https://ali-m-l.cztv.com/lantian/channel21/index.m3u8	no	0	no		no	DEAD		cztv
+22	NORM	浙江卫视	http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8	ok	2039048	yes	h264,aac,	ok	REAL	min: 1920	cztv
+23	NORM	东方卫视	http://bp-resource-dfl.bestv.cn/148/3/video.m3u8	ok	471	no		no	DEAD		bestv
+24	OBS	黑龙江卫视	http://120.76.248.139/live/bfgd/4200000095.m3u8	ok	0	no		no	DEAD		hljtv
+25	BS	深圳卫视	http://120.76.248.139/live/bfgd/4200000100.m3u8	ok	6591656	yes	h264,ac3,	ok	REAL	min: 1920	gmxw
+26	OBS	东南卫视	http://120.76.248.139/live/bfgd/4200000483.m3u8	ok	0	no		no	DEAD		zohi
+27	NORM	广东卫视	http://120.76.248.139/live/bfgd/4200000092.m3u8	ok	0	no		no	DEAD		gmxw
+28	NORM	北京卫视	http://120.76.248.139/live/bfgd/4200000083.m3u8	ok	0	no		no	DEAD		
+29	NORM	湖北卫视	http://120.76.248.139/live/bfgd/4200000102.m3u8	ok	0	no		no	DEAD		gmxw
+30	NORM	CCTV1综合	http://124.165.251.82:85/tsfile/live/0001_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5550888	yes	h264,aac,	ok	REAL	min: 1920	
+31	M	CCTV2财经	http://124.165.251.82:85/tsfile/live/0002_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5154880	yes	h264,aac,	ok	REAL	min: 1920	
+32	NORM	CCTV3综艺	http://124.165.251.82:85/tsfile/live/0003_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5003432	yes	h264,aac,	ok	REAL	min: 1920	
+33	NORM	CCTV5体育	http://124.165.251.82:85/tsfile/live/0005_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5004748	yes	h264,aac,	ok	REAL	min: 1920	
+34	NORM	CCTV6电影	http://124.165.251.82:85/tsfile/live/0006_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5004748	yes	h264,aac,	ok	REAL	min: 1920	
+35	NORM	CCTV8电视剧	http://124.165.251.82:85/tsfile/live/0008_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5007380	yes	h264,aac,	ok	REAL	min: 1920	
+36	NORM	CCTV5体育	http://gmxw.7766.org:808/hls/93/index.m3u8	ok	4057057	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+37	M	湖北卫视	http://183.11.239.36:808/hls/46/index.m3u8	ok	2693041	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+38	NORM	湖北卫视	http://gmxw.7766.org:808/hls/46/index.m3u8	ok	3832617	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+39	NORM	广东卫视	http://183.11.239.36:808/hls/80/index.m3u8	ok	2677113	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+40	NORM	广东卫视	http://gmxw.7766.org:808/hls/80/index.m3u8	ok	3586457	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+41	OBS	江苏卫视	http://107.150.60.122/live/jswshd.m3u8	no	0	no		no	DEAD		jstv
+42	NORM	CCTV12社会与法	http://124.165.251.82:85/tsfile/live/0012_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5069232	yes	h264,aac,	ok	REAL	min: 1920	
+43	RM	CCTV12社会与法	http://gmxw.7766.org:808/hls/30/index.m3u8	ok	1644248	yes	h264,mp2,	ok	REAL	min: 720	gmxw
+44	NORM	CCTV4中文国际	http://124.165.251.82:85/tsfile/live/0004_1.m3u8?key=txiptv&playlive=1&authid=0	ok	5020540	yes	h264,aac,	ok	REAL	min: 1920	antik
+45	NORM	CCTV13新闻	http://124.165.251.82:85/tsfile/live/0013_1.m3u8?key=txiptv&playlive=1&authid=0	ok	1896356	yes	h264,aac,	ok	REAL	min: 720	cztv
+46	NORM	山西卫视	http://183.11.239.36:808/hls/59/index.m3u8	ok	1638984	yes	h264,mp2,	ok	REAL	min: 720	gmxw
+47	NORM	山西卫视	http://gmxw.7766.org:808/hls/59/index.m3u8	ok	1638984	yes	h264,mp2,	ok	REAL	min: 720	gmxw
+48	NORM	内蒙古卫视	http://183.11.239.36:808/hls/60/index.m3u8	ok	1678652	yes	h264,mp2,	ok	REAL	min: 720	nmtv
+49	�蒙古卫视	http://gmxw.7766.org:808/hls/60/index.m3u8		no	0	no		no	DEAD		
+50	NORM	新疆卫视	http://183.11.239.36:808/hls/65/index.m3u8	ok	1691060	yes	h264,mp2,	ok	REAL	min: 720	gmxw
+51	NORM	新疆卫视	http://gmxw.7766.org:808/hls/65/index.m3u8	ok	1691060	yes	h264,mp2,	ok	REAL	min: 720	gmxw
+52	NORM	西藏卫视	http://183.11.239.36:808/hls/64/index.m3u8	ok	1693880	yes	h264,mp2,	ok	REAL	min: 720	gmxw
+53	NORM	安徽卫视	http://gmxw.7766.org:808/hls/40/index.m3u8	ok	3514057	yes	h264,mp2,	ok	REAL	min: 1920	gmxw
+54	OBS	CCTV1综合	http://74.91.26.218:82/cctv1/index.m3u8	no	0	no		no	DEAD		
+55	CCTV5体育	http://74.91.26.218:82/live/cctv5hd.m3u8		no	0	no		no	DEAD		
+56	OBS	CCTV12社会与法	http://124.165.251.82:85/cctv12/index.m3u8	no	0	no		no	DEAD		
+57	NORM	钱江都市	https://ali-xwl.cztv.com/live/channel021080Plxw.m3u8	ok	2090184	yes	aac,h264,	ok	REAL	min: 	cztv
+PROBE_ALL_DONE 14:07:41

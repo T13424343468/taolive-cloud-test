@@ -1,0 +1,7 @@
+PACKAGE VERSION: TaoLive 85/1.0 (2026-11-17, commit d5f9b1c)
+TaoLive TV 1.0 vc85 — 蓝本 v2.5 全量（七项+六项优化④⑤）
+- versionCode=85 / versionName=1.0 / label=TaoLive
+- 云端构建 run 43988378820 (headSha=d5f9b1c) success
+- 沙箱全测 9 轮死循环全 0（234/234）
+- 特征锚核验：正在换信号/信号中断/实时水位/画面时刻 在包内
+- sha256 见 sha256.txt；先验哈希再安装

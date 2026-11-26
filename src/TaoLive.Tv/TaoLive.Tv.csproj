@@ -9,7 +9,7 @@
     <!-- 版本锚：AndroidManifest 字面量是唯一事实源（坑24），csproj 与 manifest 同步递增 -->
     <ApplicationId>com.taolive.tv</ApplicationId>
     <!-- 版本序号必须 ≥ vc55 的 55，否则真机覆盖安装被系统判降级（老板真机 2026-11-15 双图标反馈根因之一） -->
-    <ApplicationVersion>91</ApplicationVersion>
+    <ApplicationVersion>92</ApplicationVersion>
     <ApplicationDisplayVersion>1.6</ApplicationDisplayVersion>
     <AndroidApplication>true</AndroidApplication>
     <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>

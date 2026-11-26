@@ -428,7 +428,10 @@ public partial class MainActivity
                         abortWhenBusy: () => Shell?.IsPlaybackBusy() ?? true).GetAwaiter().GetResult();
                 RunOnUiThread(() =>
                 {
-                    if (!startup && added > 0) ShowToast($"源订阅：新收录 {added} 路");
+                    // 订阅新收录频道并入列表（目录外主流台，表尾追加）；并入数>0 才提示（startup 静默不弹）
+                    var newChannels = MergeSubscriptionChannels(silent: startup);
+                    if (!startup && newChannels > 0) ShowToast($"源订阅：新收录频道 {newChannels} 个");
+                    else if (!startup && added > 0) ShowToast($"源订阅：新收录 {added} 路");
                 });
                 // 刷新途中播放开始了（拉源中途让道）：挂起待停播补跑，保证收录完整
                 if (IsPlaybackBusy() && !_subRefreshPending)

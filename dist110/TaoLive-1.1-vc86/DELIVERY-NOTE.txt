@@ -1,0 +1,7 @@
+PACKAGE VERSION: TaoLive 86/1.1 (2026-11-17, commit 35d223e)
+TaoLive TV 1.1 vc86 — 蓝本 v2.5 全量（七项+六项优化④⑤，版本锚 86/1.1）
+- versionCode=86 / versionName=1.1 / label=TaoLive
+- 云端构建 run 43990120168 (headSha=35d223e) success
+- 本地统一验证：Tv 编译 0警0错（清产物全量重编，坑24）；全测绿
+- 特征锚核验：正在换信号/信号中断/实时水位/画面时刻 在包内（UTF-16）
+- sha256 见 sha256.txt；先验哈希再安装

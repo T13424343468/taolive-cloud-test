@@ -1,0 +1,7 @@
+M	src/TaoLive.Foundation/PrefetchCurve.cs
+M	src/TaoLive.Session/PlaybackSession.cs
+M	src/TaoLive.Tests/SessionFailoverTests.cs
+M	src/TaoLive.Tv/AndroidManifest.xml
+M	src/TaoLive.Tv/MainActivity.cs
+M	src/TaoLive.Tv/SettingsUi.cs
+M	src/TaoLive.Tv/TaoLive.Tv.csproj

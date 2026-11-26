@@ -1070,6 +1070,11 @@ public partial class MainActivity : Activity
 
     private async Task<bool> ProbeChannelCoreAsync(Channel ch)
     {
+        // 热备保温（老板 2026-11-25 九件套定稿·Top4-B）：探活首通后不急着收工，把同台备援取票口的票
+        // 顺手焐热（ResolveAsync 自落 5 分钟缓存）——真断流切备援时票已在手，省一次完整换票来回。
+        // 封顶 2 张备援票：够断流切换零等待，不把探活轮变成取票风暴；缓存命中轮零网络（5 分钟内复用）。
+        var ok = false;
+        var warmed = 0;
         foreach (var ep in ch.Sources)
         {
             if (!ep.IsValid) continue;
@@ -1078,12 +1083,18 @@ public partial class MainActivity : Activity
                 if (ep.Kind == SourceKind.Web)
                 {
                     var url = await _resolver.ResolveAsync(ep, ch.Id, ch.Name).ConfigureAwait(false);
-                    if (!string.IsNullOrEmpty(url)) return true;
+                    if (!string.IsNullOrEmpty(url))
+                    {
+                        if (!ok) { ok = true; continue; } // 首通：继续走剩余备援焐票
+                        if (++warmed >= 2) break;         // 备援票封顶，焐够即收
+                        continue;
+                    }
                     // 探活失败明细（埋点补充 2026-11-15）：此前单源失败静默落下一源，全断才判死——补失败源与原因明细
-                    CrashNet.Record($"[探活] {ch.Name} 取票口失败（{HostOf(ep)}，返回空）");
+                    if (!ok) CrashNet.Record($"[探活] {ch.Name} 取票口失败（{HostOf(ep)}，返回空）");
                 }
                 else
                 {
+                    if (ok) break; // 已有通路：直连无票可焐，不再多连（保温只对取票口端点）
                     using var req = new HttpRequestMessage(HttpMethod.Get, ep.Url);
                     req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 8191);
                     using var res = await PrecheckHttp.SendAsync(req).ConfigureAwait(false);
@@ -1103,7 +1114,8 @@ public partial class MainActivity : Activity
                         }
                         else
                         {
-                            return true;
+                            ok = true; // 首通：继续走剩余取票口备援焐票
+                            continue;
                         }
                     }
                     CrashNet.Record($"[探活] {ch.Name} 直连探活 HTTP {(int)res.StatusCode}（{HostOf(ep)}）");
@@ -1111,10 +1123,10 @@ public partial class MainActivity : Activity
             }
             catch (Exception ex)
             {
-                CrashNet.Record($"[探活] {ch.Name} 源探活异常（{HostOf(ep)}）：{ex.Message}"); // 单源失败落下一源；全断才判死
+                if (!ok) CrashNet.Record($"[探活] {ch.Name} 源探活异常（{HostOf(ep)}）：{ex.Message}"); // 单源失败落下一源；全断才判死
             }
         }
-        return false;
+        return ok;
     }
 
     /// <summary>台账端点主机（埋点补充 2026-11-15）：URL 原文太长不进台账，只记主机；解析失败记原串截尾。</summary>

@@ -160,6 +160,14 @@ jobs:
           else
             echo "NO_TAOLIVE_CRASH_RECORD"
           fi
+          # 真机反馈批（老板 2026-11-26「卡死闪退」）：ANR 单列盘点，卡死与闪退分开判，不混口径
+          if grep -E "anr" evidence/dropbox.txt | grep -q "com.taolive.tv"; then
+            echo "ANR_IN_DROPBOX"; grep -B2 -A8 "anr" evidence/dropbox.txt | grep "com.taolive.tv" | head -10; exit 1
+          else
+            echo "NO_TAOLIVE_ANR_RECORD"
+          fi
+          adb shell "dumpsys activity processes 2>/dev/null | grep -i -A2 anr | head -20" > evidence/caseB_anr.txt 2>/dev/null || true
+          adb shell "ls /data/anr/ 2>/dev/null" > evidence/caseB_anr_dir.txt 2>/dev/null || echo "ANR_DIR_UNREADABLE"
       - name: Case C 断网→静止态（NetGuard 连败口径）
         run: |
           adb shell svc wifi disable || true
@@ -220,6 +228,23 @@ jobs:
           done
           adb shell screencap -p /sdcard/caseG_soak_end.png && adb pull /sdcard/caseG_soak_end.png evidence/ || true
           echo "SOAK_${SOAK_MIN}MIN_ALIVE"
+      - name: Case H 全台连不上扫描（真机反馈批：连不上不出画逐台盘点）
+        run: |
+          # 死台清单：预检台账里连不上/无信号的台逐行落证据，可算口径=死台数与台名清单
+          adb shell cat /data/data/com.taolive.tv/files/taolive_crash.log > evidence/ledger_precheck.txt 2>/dev/null || echo "LEDGER_UNREADABLE"
+          grep -iE "连不上|无信号|死|失败|cooldown|版权" evidence/ledger_precheck.txt | tail -60 > evidence/caseH_dead_channels.txt || true
+          echo "死台线索行数: $(wc -l < evidence/caseH_dead_channels.txt)" || true
+          # 央视主力台逐台换台实测（1/2/5/6/8/9/13）：每台起播后 8 秒验活体+截图，连不上逐台记录不中断
+          for N in 1 2 5 6 8 9 13; do
+            adb shell input keyevent KEYCODE_DPAD_UP >/dev/null 2>&1 || true
+            sleep 1
+            for D in $(echo $N | fold -w1); do adb shell "input keyevent KEYCODE_$D" >/dev/null 2>&1 || true; sleep 0.4; done
+            sleep 8
+            ALIVE=$(adb shell "dumpsys activity activities | grep -ci taolive" || echo 0)
+            if [ "$ALIVE" = "0" ]; then echo "dial_$N: ACTIVITY_LOST(疑似闪退)"; else echo "dial_$N: alive"; fi
+            adb shell screencap -p /sdcard/caseH_ch$N.png && adb pull /sdcard/caseH_ch$N.png evidence/ || true
+          done
+          echo "CASE_H_SWEEP_DONE"
       - name: 三硬指标台账抽取（可算字段与不可算字段分列，不伪装）
         run: |
           python3 - <<'EOF' > evidence/hard_metrics.txt || true

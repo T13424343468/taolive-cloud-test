@@ -42,6 +42,32 @@ public class ChannelPrefetcher
         if (idx - 1 >= 0) await PrefetchChannelAsync(orderedChannels[idx - 1]).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 刀三（老板 2026-11-25 九件套定稿）：预取圈扩到「最近看过的台」——直接消费观看时长账本快照
+    /// （WatchTimeLedger.Snapshot 降序台账，纯本地已记账，不建第二本账），跳过当前台与邻台已覆盖者，
+    /// 取前 take 个在目录中找得到的台逐台预取（同一车道纪律：逐台自过 BackgroundLane Standard 档）。
+    /// 账本无记录/全被覆盖=空转不发包。
+    /// </summary>
+    public async Task PrefetchRecentAsync(Channel current, IReadOnlyList<Channel> orderedChannels,
+        IEnumerable<(string EpgKey, long TotalMs)> recentLedger, int take = 2)
+    {
+        if (current is null || orderedChannels is null || orderedChannels.Count == 0) return;
+        var covered = new HashSet<string>(StringComparer.Ordinal) { current.EpgKey };
+        int idx = IndexOf(orderedChannels, current);
+        if (idx + 1 < orderedChannels.Count) covered.Add(orderedChannels[idx + 1].EpgKey);
+        if (idx - 1 >= 0) covered.Add(orderedChannels[idx - 1].EpgKey);
+        int taken = 0;
+        foreach (var (epgKey, _) in recentLedger)
+        {
+            if (taken >= take) break;
+            if (string.IsNullOrEmpty(epgKey) || !covered.Add(epgKey)) continue; // 已覆盖（当前台/邻台/已取）跳过
+            var ch = orderedChannels.FirstOrDefault(c => string.Equals(c.EpgKey, epgKey, StringComparison.Ordinal));
+            if (ch is null) continue; // 账本里的台已不在目录（下架/换表）：跳过不发包
+            await PrefetchChannelAsync(ch).ConfigureAwait(false);
+            taken++;
+        }
+    }
+
     /// <summary>单台预取：DNS 预解析 → 取票，全程过车道 Standard 档（全局串行+首帧门控+间隔让路）。</summary>
     public async Task PrefetchChannelAsync(Channel channel)
     {

@@ -340,3 +340,64 @@ public class HotSwitchTests
         Assert.DoesNotContain("Stop", players[1].Log);
     }
 }
+
+/// <summary>
+/// 刀三（老板 2026-11-25 九件套定稿）：预取圈扩到「最近看过的台」——直接消费观看时长账本快照，
+/// 跳过当前台与邻台已覆盖者，账本里的台不在目录则跳过不发包。
+/// </summary>
+public class PrefetchRecentTests
+{
+    private static Channel MakeCh(string id)
+    {
+        var ch = new Channel(id, $"频道-{id}", "测试", new List<SourceEndpoint> { new($"https://s/{id}.m3u8", SourceKind.Cdn, 10) });
+        ch.EpgKey = id; // 账本按 EpgKey 对账（构造器不赋值，测试显式给）
+        return ch;
+    }
+
+    private static List<Channel> MakeCatalog(params string[] ids) => ids.Select(MakeCh).ToList();
+
+    [Fact]
+    public async Task Recent_ledger_extends_circle_beyond_neighbors()
+    {
+        var prefetched = new List<Channel>();
+        var prefetcher = new ChannelPrefetcher(ch => { prefetched.Add(ch); return Task.FromResult<ResolvedStream?>(new ResolvedStream { Channel = ch }); });
+        var catalog = MakeCatalog("cctv1", "cctv2", "cctv3", "cctv4", "cctv5");
+        var current = catalog[2]; // cctv3：邻台=cctv2/cctv4
+
+        // 账本快照：cctv5 看最多、cctv1 次之（都不是邻台）
+        var ledger = new List<(string, long)> { ("cctv5", 900_000), ("cctv1", 300_000) };
+        await prefetcher.PrefetchRecentAsync(current, catalog, ledger);
+
+        Assert.Equal(new[] { "cctv5", "cctv1" }, prefetched.Select(c => c.Id).ToList());
+    }
+
+    [Fact]
+    public async Task Neighbors_and_current_are_skipped()
+    {
+        var prefetched = new List<Channel>();
+        var prefetcher = new ChannelPrefetcher(ch => { prefetched.Add(ch); return Task.FromResult<ResolvedStream?>(new ResolvedStream { Channel = ch }); });
+        var catalog = MakeCatalog("cctv1", "cctv2", "cctv3", "cctv4");
+        var current = catalog[1]; // cctv2：邻台=cctv1/cctv3
+
+        // 账本：邻台 cctv1 与当前台 cctv2 都该被跳过；cctv4 在目录内照取
+        var ledger = new List<(string, long)> { ("cctv1", 900_000), ("cctv2", 800_000), ("cctv4", 100_000) };
+        await prefetcher.PrefetchRecentAsync(current, catalog, ledger);
+
+        Assert.Equal(new[] { "cctv4" }, prefetched.Select(c => c.Id).ToList());
+    }
+
+    [Fact]
+    public async Task Ledger_entries_missing_from_catalog_are_skipped()
+    {
+        var prefetched = new List<Channel>();
+        var prefetcher = new ChannelPrefetcher(ch => { prefetched.Add(ch); return Task.FromResult<ResolvedStream?>(new ResolvedStream { Channel = ch }); });
+        var catalog = MakeCatalog("cctv1", "cctv2", "cctv3");
+        var current = catalog[0]; // cctv1：邻台=cctv2
+
+        // cctv9 已不在目录（下架/换表）：跳过不发包，cctv3 照取
+        var ledger = new List<(string, long)> { ("cctv9", 900_000), ("cctv3", 100_000) };
+        await prefetcher.PrefetchRecentAsync(current, catalog, ledger);
+
+        Assert.Equal(new[] { "cctv3" }, prefetched.Select(c => c.Id).ToList());
+    }
+}

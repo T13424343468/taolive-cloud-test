@@ -85,6 +85,9 @@ public partial class MainActivity : Activity
     private ChannelPrecheck _precheck = default!;
     private QualityHealthStore _qualityBook = default!; // 实测账（vc85 两本账之二）：排序合成与微卡/盲区记账同源
     private TicketResolver _resolver = default!;
+    private WatchTimeLedger _watchLedger = default!;         // 观看时长账本（刀三）：进程级实例，每壳接回
+    private long? _watchSinceMs;                             // 在看起算点（TickCount64）：Playing 起算，封账即记
+    private string? _watchEpgKey;                            // 在看台 EpgKey（账本一格一台）
     private System.Threading.CancellationTokenSource? _precheckCts;
 
     // ---- 真机反馈批#15：显示大小换档原地换皮 —— 服务图/会话/内核进程级常驻，Recreate 不再断流 ----
@@ -93,6 +96,7 @@ public partial class MainActivity : Activity
     // 内核回调统一经静态壳引用（Shell）路由到当前实例。当前台、热备、健康账全都不动，画面不闪不断。
     private static IServiceProvider? _processServices;
     private static TicketResolver? _processResolver;
+    private static WatchTimeLedger? _processWatchLedger; // 观看时长账本（刀三）：进程级一本账，跨 Recreate 存活
     private static int _prefetchSeq;                        // 邻台预取代数：换台即换代（进程级：预取任务可能跨 Recreate 存活）
     private static Channel? _prefetchPending;               // 邻台预取待办台：换台即换代换台，Work 执行时读最新（快速连切只取最后一代）
     internal static MainActivity? Shell;                    // 进程级壳引用：内核/会话回调统一指向当前实例
@@ -158,6 +162,9 @@ public partial class MainActivity : Activity
         // 真机反馈批#15：进程级壳引用先立（内核/会话回调经它路由到当前实例）
         Shell = this;
         _resolver = _processResolver ??= new TicketResolver(); // 取票缓存进程级共享，Recreate 不丢
+        // 观看时长账本（刀三）：进程级一本账跨 Recreate 存活；挂账即载入历史账（损坏按零账，画像不挡播放）
+        _watchLedger = _processWatchLedger ??= new WatchTimeLedger(FilesDir!.AbsolutePath);
+        _watchLedger.Load();
         var resolver = _resolver;
         // vc69 坏票不自焚：会话层报 HTTP 状态错（坏票）时作废该端点票据缓存，原地换新票重试一次
         TaoLive.Session.PlaybackSession.TicketCacheInvalidator = (channelId, endpoint) =>
@@ -307,7 +314,14 @@ public partial class MainActivity : Activity
                     int seq = System.Threading.Volatile.Read(ref _prefetchSeq);
                     await Task.Delay(TimeSpan.FromSeconds(15));
                     if (seq != System.Threading.Volatile.Read(ref _prefetchSeq)) return; // 已换台：旧代预取作废
-                    if (target is not null) await prefetcher.PrefetchNeighborsAsync(target, channels);
+                    if (target is not null)
+                    {
+                        await prefetcher.PrefetchNeighborsAsync(target, channels);
+                        // 刀三（老板 2026-11-25 九件套定稿）：预取圈扩到「最近看过的台」——直接消费观看时长
+                        // 账本快照（进程级一本账，读静态引用不钉壳）；邻台已覆盖者自动跳过
+                        if (_processWatchLedger is { } ledger)
+                            await prefetcher.PrefetchRecentAsync(target, channels, ledger.Snapshot());
+                    }
                 }
                 catch { /* 预取失败不影响播放 */ }
             },
@@ -465,12 +479,42 @@ public partial class MainActivity : Activity
         }
     }
 
+    /// <summary>观看时长记账（刀三，账本口径=画面真实可见期间）：出画起算，同台续账不重开；
+    /// 封账在换台/失败终态/退壳。纯本地零网络，账本自带节流落盘。</summary>
+    private void WatchArm(Channel ch)
+    {
+        if (_watchEpgKey == ch.EpgKey && _watchSinceMs is not null) return; // 同台续账（重灌回 Playing 不重开）
+        WatchSeal();
+        _watchEpgKey = ch.EpgKey;
+        _watchSinceMs = System.Environment.TickCount64;
+    }
+
+    /// <summary>封账：把当前观看段记进账本（非正段不入账，账本自拒脏数据）。</summary>
+    private void WatchSeal()
+    {
+        if (_watchSinceMs is { } since && _watchEpgKey is { } epg)
+        {
+            var delta = System.Environment.TickCount64 - since;
+            if (delta > 0) _watchLedger.Record(epg, delta, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        }
+        _watchSinceMs = null;
+        _watchEpgKey = null;
+    }
+
     /// <summary>
-    /// 会话状态回调（#15 自 OnCreate 巨型 lambda 迁入实例方法；订阅在 once-block 内经 Shell 路由到当前壳）：
     /// failover 转接器摘旧挂新防双收，事件体读本壳界面状态（遮罩/空态/健康账回写）。
     /// </summary>
     private void HandleSessionStateChanged(SessionStateEventArgs e)
     {
+        // 观看时长记账（刀三）：前台会话出画=起算（首帧后真实观看口径），封账在换台/失败终态/退壳
+        if (e.Session == _manager.Current && e.State == PlaybackState.Playing && e.Session.CurrentChannel is { } playingCh)
+        {
+            WatchArm(playingCh);
+        }
+        else if (e.State == PlaybackState.Failed)
+        {
+            WatchSeal(); // 失败终态：观看段封账（账本口径=真实观看时长，空态不计）
+        }
         // 逐次换源打点：所有会话（含热备）均落运行日志（自诊断/崩溃日志统计口径）
         // #15：转接器进程级唯一（静态字段首次赋值后恒等），对每个会话 -=/+= 幂等——换壳不双收
         _failoverRelay ??= (s, e2) => Shell?.OnSessionFailover(s, e2);
@@ -677,6 +721,8 @@ public partial class MainActivity : Activity
     protected override void OnDestroy()
     {
         // 生命周期收尾（闪退镜黄⑦⑧⑨ 11-15）：停看门狗泵、清数字提交回调、停预检循环
+        WatchSeal(); // 观看时长记账（刀三）：退壳封账
+        _watchLedger.FlushNow(); // 立落（退出关键点口径）：有脏必落盘，防进程先死文件没写完
         _watchdogStopped = true;
         _main.RemoveCallbacks(_digitCommit!);
         _digitCommit?.Dispose();
@@ -1127,6 +1173,7 @@ public partial class MainActivity : Activity
     private void SwitchToCurrent()
     {
         var ch = _channels[_currentIndex];
+        WatchSeal(); // 观看时长记账（刀三）：换台即封上一段账（账本口径=真实观看时长）
         _lastVideoFrameAtMs = System.Environment.TickCount64; // #75：换台即续账，防旧台陈帧误触只出声兜底
         _stallRebuildCount = 0;
         // 频道上下文由内核 Play 自取（每会话独享内核，双实例不共用上下文）

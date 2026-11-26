@@ -776,7 +776,7 @@ public class TicketFusedProberTests
     }
 
     [Fact]
-    public void Web_resolve_success_wins_race()
+    public async Task Web_resolve_success_wins_race()
     {
         var (ch, web, _) = MakeCandidates();
         SourceEndpoint? resolved = null;
@@ -786,20 +786,20 @@ public class TicketFusedProberTests
             return Task.FromResult<string?>("https://cdn.example/winner.m3u8");
         });
 
-        int winner = prober.RaceAsync(ch, ch.Sources).GetAwaiter().GetResult();
+        int winner = await prober.RaceAsync(ch, ch.Sources);
 
         Assert.Equal(0, winner); // Web 端点换票成功即赢（取票即探通，合成一次）
         Assert.Same(web, resolved);
     }
 
     [Fact]
-    public void All_fail_returns_negative()
+    public async Task All_fail_returns_negative()
     {
         var (ch, _, _) = MakeCandidates();
         var prober = new TicketFusedProber(new HttpHandshakeProber(),
             (c, ep) => Task.FromResult<string?>(null)); // Web 换票失败
 
-        int winner = prober.RaceAsync(ch, ch.Sources).GetAwaiter().GetResult();
+        int winner = await prober.RaceAsync(ch, ch.Sources);
 
         Assert.Equal(-1, winner); // Web 换票失败 + 直连拒绝连接：全败不动序
     }

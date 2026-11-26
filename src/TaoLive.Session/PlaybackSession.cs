@@ -129,9 +129,11 @@ public sealed class PlaybackSession
     /// ①内核连接超时：Media3 默认连接超时 8 秒，窗≤8 秒时内核的报错快刀永远没机会先出手，全被 3 秒误杀
     /// （vc66/vc67/vc68 三次真机同款死局，台账在案：判死窗必须>门槛，慢热源要有证明时间）；
     /// ②冷连接全程：解析+连服+握手+取清单+取首段，老盒子实测可到 13-16 秒出画基线（vc66 实锤）。
-    /// 取 12 秒：内核报错快刀（8 秒）能先出手、冷连接有证明时间、仍&lt;慢灌窗（21 秒）不与 #74 提速意图对着干；
+    /// 刀二（老板 2026-11-25 九件套定稿）：12 秒收 8 秒（PrefetchCurve.OpenTimeout）——死源黑屏再少等 4 秒。
+    /// 收窗前提=流时钟查活续期一起动（vc67 机制在案）：3 秒内缓冲有增长即放宽到慢灌窗（21 秒），
+    /// 8 秒只咬零进度真死源；慢而通另有原地宽限重试（进度闸+预算封顶）双保险，慢热源不误杀。
     /// 真死快刀不走此账——内核报错信号直判不变。</summary>
-    public static TimeSpan DefaultOpenTimeout { get; } = PrefetchCurve.StartupThreshold;
+    public static TimeSpan DefaultOpenTimeout { get; } = PrefetchCurve.OpenTimeout;
 
     /// <summary>本会话的起播超时阈值，测试可调。</summary>
     public TimeSpan OpenTimeout { get; set; } = DefaultOpenTimeout;

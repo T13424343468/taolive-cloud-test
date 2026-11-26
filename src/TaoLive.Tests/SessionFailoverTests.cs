@@ -146,19 +146,20 @@ public class SessionFailoverTests
     [Fact]
     public void Watchdog_dead_source_cut_at_derived_window_not_three_seconds()
     {
-        // vc68 三轮根修（真机实锤 3004ms≥3000ms·0ms 存货·四线全灭）：判死窗=重入门槛 12 秒，
-        // 盖过内核 Media3 默认连接超时 8 秒——冷连接慢热源不再整 3 秒被处决；
-        // 真死快刀走内核报错信号直判，不依赖此窗（vc66/vc67/vc68 门槛动窗不跟的复发模式就此封死）。
+        // vc68 三轮根修（真机实锤 3004ms≥3000ms·0ms 存货·四线全灭）：判死窗盖过内核 Media3 默认连接超时 8 秒——
+        // 冷连接慢热源不再整 3 秒被处决；真死快刀走内核报错信号直判，不依赖此窗。
+        // 刀二（老板 2026-11-25 九件套定稿）：判死窗 12 秒收 8 秒，流时钟查活续期（3 秒内有增长放宽慢灌窗）
+        // 一起动——零进度真死 8 秒到点即切，慢灌源由续期让路不受收窗影响。
         var clock = new FixedClock(T0);
         var player = new LoggingPlayer(); // BufferedMs 恒 0：零增长
         var session = new PlaybackSession(player, clock);
         var ch = MakeChannel("cctv1", "https://s/a.m3u8", "https://s/b.m3u8");
         session.ChangeChannel(ch);
 
-        clock.Advance(TimeSpan.FromSeconds(11));
-        Assert.False(session.CheckWatchdog()); // 11 秒不切（旧 3 秒窗这里已经误杀慢热源）
+        clock.Advance(TimeSpan.FromSeconds(7));
+        Assert.False(session.CheckWatchdog()); // 7 秒不切（旧 3 秒窗这里已经误杀慢热源）
         clock.Advance(TimeSpan.FromSeconds(1));
-        Assert.True(session.CheckWatchdog()); // 满 12 秒判死窗到点：零进度不进宽限（vc87 进度闸），直接切线
+        Assert.True(session.CheckWatchdog()); // 满 8 秒判死窗到点：零进度不进宽限（vc87 进度闸），直接切线
         Assert.Equal("https://s/b.m3u8", session.CurrentEndpoint?.Url);
         clock.Advance(TimeSpan.FromSeconds(12));
         Assert.True(session.CheckWatchdog()); // 第二路同样零进度真死 → 全耗尽
@@ -170,16 +171,16 @@ public class SessionFailoverTests
     {
         // vc66/vc67/vc68 三次同款死局的防复发闸：门槛动，窗必须跟着动——推导式+不变量断言双保险。
         Assert.True(PlaybackSession.DefaultOpenTimeout > PrefetchCurve.FirstFrameGate,
-            "判死窗必须>首帧门槛：窗≤门槛起播必被误杀（vc89 门槛 7 秒，判死窗 12 秒仍盖住）");
+            "判死窗必须>首帧门槛：窗≤门槛起播必被误杀（刀二判死窗 8 秒仍盖住门槛 7 秒）");
         Assert.True(PlaybackSession.DefaultOpenTimeout >= TimeSpan.FromSeconds(8),
-            "判死窗必须盖过内核 Media3 默认连接超时 8 秒，报错快刀才有机会先出手（vc68 真机实锤）");
+            "判死窗必须盖过内核 Media3 默认连接超时 8 秒（vc68 真机实锤；刀二收 8 秒=同值赛跑，零进度真死殊途同归都走换源）");
         Assert.True(PlaybackSession.SlowStartWindow > PlaybackSession.DefaultOpenTimeout,
-            "慢灌窗必须>判死窗：慢热源要有证明时间");
+            "慢灌窗必须>判死窗：慢热源要有证明时间（查活续期放宽到 21 秒，8 秒兜底只咬零进度）");
         Assert.True(PlaybackSession.SlowRecoveryWindow > PlaybackSession.SlowStartWindow,
             "重灌窗必须>慢灌窗：重灌要满 12 秒媒体，比首帧更久");
         Assert.Equal(PrefetchCurve.FirstFrameGate.TotalMilliseconds * 3,
             PlaybackSession.SlowStartWindow.TotalMilliseconds); // vc89：门槛 7s×3=21s 口径平移（原 3s×7 同值），三窗次序不打架
-        Assert.Equal(PrefetchCurve.StartupThreshold, PlaybackSession.DefaultOpenTimeout);
+        Assert.Equal(PrefetchCurve.OpenTimeout, PlaybackSession.DefaultOpenTimeout); // 刀二：12 秒收 8 秒（老板 2026-11-25 九件套定稿）
     }
 
     [Fact]

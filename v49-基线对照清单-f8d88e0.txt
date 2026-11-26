@@ -1,0 +1,19 @@
+v49 出包基线对照 · 2026-11-26 12:17:10 UTC
+区间：404eb03 → HEAD
+
+状态   base hash    head hash    文件
+M        e1c2c10      c4d8929      src/TaoLive.Foundation/IPlayer.cs
+A        (新增)     ee4bb52      src/TaoLive.Foundation/ParallelPrefetch.cs
+M        887d997      26e7ef3      src/TaoLive.Players/ExoPlayerPlayer.cs
+A        (新增)     c3df679      src/TaoLive.Players/ParallelPrefetchDataSource.cs
+M        04b8f27      5262e21      src/TaoLive.Players/RacingHttpDataSource.cs
+M        2ccab95      e21de44      src/TaoLive.Session/PlaybackSession.cs
+M        ec386df      fb7c59e      src/TaoLive.Session/PlaybackSessionManager.cs
+M        ee740fb      4d74720      src/TaoLive.Tests/CoverageSprintC1.cs
+M        b0b4e41      afc260f      src/TaoLive.Tests/SessionTests.cs
+A        (新增)     402402a      src/TaoLive.Tests/Vc94ParallelWaterTests.cs
+M        0de506d      7448482      src/TaoLive.Tv/AndroidManifest.xml
+M        699514b      bdabee2      src/TaoLive.Tv/TaoLive.Tv.csproj
+A        (新增)     (删除)     "v49-\345\237\272\347\272\277\345\257\271\347\205\247\346\270\205\345\215\225-c6c5f4f.txt"
+
+统计：13 个文件变更；HEAD=f8d88e0 工作树干净。

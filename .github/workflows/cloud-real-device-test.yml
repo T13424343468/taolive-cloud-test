@@ -106,7 +106,7 @@ jobs:
           grep -q '^hw.cpu.ncore=' "$CFG" && sed -i 's|^hw.cpu.ncore=.*|hw.cpu.ncore=4|' "$CFG" || echo 'hw.cpu.ncore=4' >> "$CFG"
           grep -q '^hw.ramSize=' "$CFG" && sed -i 's|^hw.ramSize=.*|hw.ramSize=3072|' "$CFG" || echo 'hw.ramSize=3072' >> "$CFG"
           EMU=$ANDROID_HOME/emulator/emulator
-          "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot -no-accel -gpu swiftshader_indirect -memory 3072 -show-kernel > emulator.log 2>&1 &
+          ANDROID_I_WANT_MY_TCG=yes "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot -accel off -gpu swiftshader_indirect -memory 3072 -show-kernel > emulator.log 2>&1 &
           EMUPID=$!
           sleep 45
           kill -0 $EMUPID 2>/dev/null || { echo "EMULATOR_DIED_AT_START"; cat emulator.log; exit 1; }

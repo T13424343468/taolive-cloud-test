@@ -137,14 +137,18 @@ public sealed class SubscriptionSourceStore
         return result;
     }
 
-    /// <summary>全量刷新：拉合集 → 按已知台名过滤 → 查重 → 并发试活（上限 4）→ 入库。返回新增条数。</summary>
+    /// <summary>全量刷新：拉合集 → 按已知台名过滤 → 查重 → 并发试活（上限 2）→ 入库。返回新增条数。
+    /// 老板令 2026-11-26「拉源避开播放」：abortWhenBusy 注入播放态查询（真=播放/热备在跑），
+    /// 每条试活前先问闸，忙即停手不再发新请求（已发出的收尾、已过闸的照常入库），拉源流量绝不与播放抢道。</summary>
     public async Task<int> RefreshAsync(
-        IEnumerable<string> knownChannelNames, string ua, CancellationToken ct = default)
+        IEnumerable<string> knownChannelNames, string ua, CancellationToken ct = default,
+        Func<bool>? abortWhenBusy = null)
     {
         var known = new HashSet<string>(knownChannelNames.Select(NormalizeName), StringComparer.Ordinal);
         var candidates = new List<(string Name, string Url, string Ua)>();
         foreach (var feed in Feeds)
         {
+            if (abortWhenBusy?.Invoke() == true) break; // 播放开始，立即停手
             ct.ThrowIfCancellationRequested();
             string text;
             try { text = await Http.GetStringAsync(feed, ct).ConfigureAwait(false); }
@@ -154,14 +158,15 @@ public sealed class SubscriptionSourceStore
                 .Where(p => !FallbackSourceRegistry.ContainsUrl(p.Url) && !ContainsUrl(p.Url))
                 .Select(p => (p.Name, p.Url, ua)));
         }
-        // 并发试活（上限 4）：清单 EXTM3U + 分片 TS 魔数双闸
+        // 并发试活（上限 2，轻量不抢道）：清单 EXTM3U + 分片 TS 魔数双闸；每条前过播放闸
         var alive = new ConcurrentBag<(string, string, string)>();
-        using var gate = new SemaphoreSlim(4);
+        using var gate = new SemaphoreSlim(2);
         var tasks = candidates.Select(async c =>
         {
             try
             {
                 await gate.WaitAsync(ct).ConfigureAwait(false);
+                if (abortWhenBusy?.Invoke() == true) return; // 播放开始，未试的直接放弃
                 if (await ProbeAsync(c.Item2, c.Item3, ct).ConfigureAwait(false)) alive.Add(c);
             }
             catch (OperationCanceledException) { }
@@ -190,7 +195,7 @@ public sealed class SubscriptionSourceStore
                 seg = new Uri(new Uri(url), seg).ToString();
             using var segReq = new HttpRequestMessage(HttpMethod.Get, seg);
             if (!string.IsNullOrEmpty(ua)) segReq.Headers.UserAgent.ParseAdd(ua);
-            segReq.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 524287);
+            segReq.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 65535);
             using var segRes = await Http.SendAsync(segReq, ct).ConfigureAwait(false);
             if (!segRes.IsSuccessStatusCode) return false;
             var buf = new byte[1];

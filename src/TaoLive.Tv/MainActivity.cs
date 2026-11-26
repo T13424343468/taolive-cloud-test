@@ -153,7 +153,10 @@ public partial class MainActivity : Activity
         SubscriptionSourceStore.Shared.Load(FilesDir!.AbsolutePath);
         SubscriptionSourceStore.Reporter = msg => Android.Util.Log.Info("TaoLive", msg);
         _subEnabled = _prefs.GetBoolean("sub_enabled", false);
-        if (_subEnabled) KickSubscriptionRefresh(startup: true);
+        // 启动错峰（老板令「拉源避开播放」）：开机先让预热/断点回看跑稳，90s 后再拉源；届时若在播照旧挂起
+        if (_subEnabled)
+            new Handler(Looper.MainLooper!).PostDelayed(
+                () => { if (_subEnabled) KickSubscriptionRefresh(startup: true); }, SubStartupDelayMs);
         AdvancedTuning.Apply(
             _prefs.GetInt("adv_fail_gate", AdvancedTuning.DefaultFailGate),
             _prefs.GetInt("adv_reprobe_min", 5) * 60_000L,

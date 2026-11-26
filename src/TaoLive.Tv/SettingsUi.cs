@@ -379,8 +379,14 @@ public partial class MainActivity
     }
 
     // —— 内置订阅源（老板 2026-11-26 拍板「只做内置订阅」）：拉公开免费合集→按台名匹配→查重→试活→入库垫底 ——
+    // 老板令 2026-11-26「拉源避开播放，不能影响播放」：播放/热备在跑一律暂缓，挂起待停播自动补跑；
+    // 试活并发≤2、单次取样≤64KB，拉源流量绝不与播放抢道。
 
     private static bool _subEnabled = false; // 源订阅开关（默认关；与偏好 sub_enabled 同步）
+    private static bool _subRefreshPending = false; // 播放中挂起的刷新（停播后自动补跑）
+    private static bool _subStartupPendingRun; // 启动延迟的首跑标记（补跑时静默不弹提示）
+    private const long SubBusyRecheckMs = 30_000; // 挂起补跑轮询节拍
+    private const long SubStartupDelayMs = 90_000; // 启动错峰：开机先让预热/回看跑稳，再拉源
 
     private void ToggleSubscription()
     {
@@ -397,20 +403,40 @@ public partial class MainActivity
         KickSubscriptionRefresh(startup: false);
     }
 
-    /// <summary>后台拉合集并试活入库（启动静默/手动提示结果）；线程池跑，不占主线程。</summary>
+    /// <summary>播放/热备是否在跑（拉源避让判据：任一在跑即让道）。</summary>
+    private bool IsPlaybackBusy() => _manager?.Current is not null || _manager?.Standby is not null;
+
+    /// <summary>后台拉合集并试活入库；播放中挂起待停播补跑（startup 静默不弹提示）。线程池跑，不占主线程。</summary>
     private void KickSubscriptionRefresh(bool startup)
     {
+        if (IsPlaybackBusy())
+        {
+            _subRefreshPending = true;
+            _subStartupPendingRun = startup;
+            ScheduleSubRecheck();
+            if (!startup) ShowToast("播放中暂缓拉源，停止播放后自动续跑");
+            return;
+        }
+        _subRefreshPending = false;
         var names = _channels.Select(c => c.Name).ToList();
         ThreadPool.QueueUserWorkItem(_ =>
         {
             try
             {
                 var added = SubscriptionSourceStore.Shared
-                    .RefreshAsync(names, TaoLive.Catalog.TicketResolver.ClientUserAgent).GetAwaiter().GetResult();
+                    .RefreshAsync(names, TaoLive.Catalog.TicketResolver.ClientUserAgent,
+                        abortWhenBusy: () => Shell?.IsPlaybackBusy() ?? true).GetAwaiter().GetResult();
                 RunOnUiThread(() =>
                 {
-                    if (!startup) ShowToast(added > 0 ? $"源订阅：新收录 {added} 路" : "源订阅：无新增可用源");
+                    if (!startup && added > 0) ShowToast($"源订阅：新收录 {added} 路");
                 });
+                // 刷新途中播放开始了（拉源中途让道）：挂起待停播补跑，保证收录完整
+                if (IsPlaybackBusy() && !_subRefreshPending)
+                {
+                    _subRefreshPending = true;
+                    _subStartupPendingRun = startup;
+                    ScheduleSubRecheck();
+                }
             }
             catch (Exception ex)
             {
@@ -418,6 +444,15 @@ public partial class MainActivity
             }
         });
     }
+
+    /// <summary>挂起补跑轮询：每 30s 查一次，停播即补跑；仍播继续挂。</summary>
+    private void ScheduleSubRecheck() =>
+        new Handler(Looper.MainLooper!).PostDelayed(() =>
+        {
+            if (!_subRefreshPending) return;
+            if (!IsPlaybackBusy()) KickSubscriptionRefresh(startup: _subStartupPendingRun);
+            else ScheduleSubRecheck();
+        }, SubBusyRecheckMs);
 
     // —— 显示大小（真机反馈批 #61 尺寸回抬令 2026-11-15 19:3x：中档定「肉眼最舒适」=基准 20sp，
     // 三档整体重定标：大=2/3(24sp)、中=5/9(20sp)、小=1/3(12sp)，默认中；覆盖 #14 的 ×2/3 压缩口径） ——

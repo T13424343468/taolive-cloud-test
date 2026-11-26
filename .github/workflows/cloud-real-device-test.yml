@@ -74,8 +74,8 @@ jobs:
           AAPT2=$(find $ANDROID_HOME -name aapt2 | head -1)
           [ -n "$AAPT2" ] || { echo "AAPT2_MISSING"; exit 1; }
           $AAPT2 dump badging TaoLive.apk | grep -E "^package" | head -1
-          $AAPT2 dump badging TaoLive.apk | grep -q "versionCode='94'" || { echo "VERSION_ANCHOR_MISMATCH"; exit 1; }
-          $AAPT2 dump badging TaoLive.apk | grep -q "versionName='1.9'" || { echo "VERSION_ANCHOR_MISMATCH"; exit 1; }
+          $AAPT2 dump badging TaoLive.apk | grep -q "versionCode='95'" || { echo "VERSION_ANCHOR_MISMATCH"; exit 1; }
+          $AAPT2 dump badging TaoLive.apk | grep -q "versionName='1.10'" || { echo "VERSION_ANCHOR_MISMATCH"; exit 1; }
       - name: Install SDK for emulator
         run: |
           ANDROID_HOME=$RUNNER_TEMP/android-sdk

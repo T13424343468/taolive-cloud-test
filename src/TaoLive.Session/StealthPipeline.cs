@@ -77,7 +77,9 @@ public sealed class HttpSegmentLoader : ISegmentLoader
 /// - 池深自钳：目标深度=min(<see cref="MaxPoolDepthMs"/>, 资源闸余量注入)，池满即停；
 /// - 清单冻结：偷拉中超过 2×切片周期无更新 → <see cref="SupplyFrozen"/>（该源断供记档）；
 /// - 重取清单：连败 <see cref="RetakeListAfterConsecutiveFails"/> 次 → <see cref="RetakeListNeeded"/>；
-/// - 单管道：Retarget 换向即作废在途（代次防串）；Tick 同步泵（回调 ExecuteSynchronously，测试确定）。
+/// - 单管道：Retarget 换向即作废在途（代次防串）；Tick 同步泵（回调 ExecuteSynchronously，测试确定）；
+/// - 保温心跳（刀六）：校验通过（首次成功拉片）且池满后，每 <see cref="KeepWarmIntervalMs"/> 续拉一片
+///   保鲜——连接不凉、池粮不过期，热备校验流升级秒切备胎；心跳同吃让路闸。
 /// </summary>
 public sealed class StealthPipeline
 {
@@ -93,6 +95,13 @@ public sealed class StealthPipeline
     /// <summary>偷拉连败几次判清单需重取。</summary>
     public const int RetakeListAfterConsecutiveFails = 2;
 
+    /// <summary>
+    /// 保温心跳间隔（毫秒，=切片周期）：池满且已校验通过后，按此时隔续拉一片保鲜——
+    /// 刀六（老板 2026-11-25 九件套定稿）：热备校验流升级秒切备胎，校验通过（首次成功拉片）后
+    /// 连接不凉、池粮不过期（心跳成功即刷新断供判据时钟），备援随时可秒切。
+    /// </summary>
+    public const int KeepWarmIntervalMs = SegmentPeriodMs;
+
     private readonly ISegmentLoader _loader;
     private readonly Func<long> _monoMs;
 
@@ -107,6 +116,8 @@ public sealed class StealthPipeline
     private bool _frozenAnnounced;
     private long _gateStockMs = GatherGateMs;
     private double _allowFactor = 1.0;
+    private bool _validated;                 // 刀六：首次成功拉片=源校验通过，此后池满转保温心跳
+    private long _lastKeepWarmAtMs = long.MinValue; // 最近一次发包（含心跳）时刻：心跳节流基准
 
     /// <summary>偷拉成功一片：参数=（目标台，目标端点，拉完池深）。喂实测账（源头实测可拉）。</summary>
     public event Action<Channel, SourceEndpoint, long>? SegmentPulled;
@@ -157,6 +168,8 @@ public sealed class StealthPipeline
             _pooledMs = 0;
             _consecutiveFails = 0;
             _frozenAnnounced = false;
+            _validated = false;              // 刀六：换向即重新验源，保温心跳随旧目标一并作废
+            _lastKeepWarmAtMs = long.MinValue;
             _lastSupplyAtMs = endpoint is null ? long.MinValue : _monoMs();
         }
     }
@@ -214,6 +227,7 @@ public sealed class StealthPipeline
                         _pooledMs = Math.Min(MaxPoolDepthMs, _pooledMs + SegmentPeriodMs);
                         _lastSupplyAtMs = now;
                         _consecutiveFails = 0;
+                        _validated = true; // 刀六：首次成功拉片=源校验通过，池满后转保温心跳
                         if (_frozenAnnounced) _frozenAnnounced = false;
                         SessionTrace.Emit($"[偷拉] {channel.Name ?? channel.Id} 成功拉片，池深 {_pooledMs / 1000}s");
                         SegmentPulled?.Invoke(channel, target, _pooledMs);
@@ -229,16 +243,21 @@ public sealed class StealthPipeline
                     }
                 }
             }
-            // 起下一发：闸门全开（前台水位足 + 余量因子非零）且池未满才偷；
+            // 起下一发：闸门全开（前台水位足 + 余量因子非零）才偷；池未满照常攒粮；
             // vc86 F3 让路闸（放行口径同尺）：前台画面在播但水位未稳时偷拉暂停——判稳窗不抽水，
-            // 防 15s 线振荡活锁（偷拉压低前台读数→永不判稳→偷拉又停→读数回升→循环）
+            // 防 15s 线振荡活锁（偷拉压低前台读数→永不判稳→偷拉又停→读数回升→循环）；
+            // 刀六保温心跳：已校验通过且池满后，每 KeepWarmIntervalMs 续拉一片保鲜（连接不凉、
+            // 池粮不过期——成功即刷新断供判据时钟），备援随时可秒切；心跳同吃让路闸，画面平稳优先令不变
             bool gateOpen = _gateStockMs >= GatherGateMs && _allowFactor > 0
                 && (!BackgroundLane.Playing || BackgroundLane.WaterStable);
             long depthCap = Math.Min((long)(MaxPoolDepthMs * _allowFactor), (long)MaxPoolDepthMs);
-            if (gateOpen && _inFlight is null && _pooledMs + SegmentPeriodMs <= depthCap)
+            bool poolNotFull = _pooledMs + SegmentPeriodMs <= depthCap;
+            bool keepWarmDue = _validated && now - _lastKeepWarmAtMs >= KeepWarmIntervalMs;
+            if (gateOpen && _inFlight is null && (poolNotFull || keepWarmDue))
             {
                 _inFlightGen = generation;
                 var pullTarget = target;
+                _lastKeepWarmAtMs = now; // 心跳节流基准：含常规攒粮发包（池满后首跳按此时钟顺延）
                 _inFlight = _loader.PullAsync(pullTarget.Url, CancellationToken.None)
                     .ContinueWith(t =>
                     {

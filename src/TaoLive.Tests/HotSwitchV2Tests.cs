@@ -218,6 +218,74 @@ public class HotSwitchV2Tests
         Assert.Equal(0, pipe.PooledStockMs); // 旧在途不回新账（代次防串）
     }
 
+    // ---- 刀六·保温心跳（池满校验通过后续拉保鲜，秒切备胎） ----
+
+    /// <summary>攒满池到 15s 上限（成功拉片=校验通过），返回池满时的发包数。</summary>
+    private long FillPoolToCap(StealthPipeline pipe, ScriptedLoader loader, MutableClock clock, Channel ch)
+    {
+        pipe.Retarget(ch, ch.Sources[0]);
+        pipe.UpdateGates(StealthPipeline.GatherGateMs, 1.0);
+        for (int i = 0; i < 20 && pipe.PooledStockMs < StealthPipeline.MaxPoolDepthMs; i++)
+        {
+            pipe.Tick();
+            clock.Advance(1);
+        }
+        Assert.Equal(StealthPipeline.MaxPoolDepthMs, pipe.PooledStockMs);
+        return loader.Calls;
+    }
+
+    [Fact]
+    public void Pipeline_keepwarm_heartbeat_pulls_at_interval_after_pool_full()
+    {
+        var clock = new MutableClock();
+        var loader = new ScriptedLoader();
+        var pipe = new StealthPipeline(loader, clock.Get);
+        var ch = MakeChannel("c1", "https://s/a.m3u8");
+        long fullCalls = FillPoolToCap(pipe, loader, clock, ch);
+        pipe.Tick();
+        Assert.Equal(fullCalls, loader.Calls); // 池满即停（心跳未到期不发包）
+        clock.Advance(StealthPipeline.KeepWarmIntervalMs);
+        pipe.Tick();
+        Assert.Equal(fullCalls + 1, loader.Calls); // 心跳到期：续拉一片保鲜
+        pipe.Tick(); // 收割心跳
+        Assert.Equal(StealthPipeline.MaxPoolDepthMs, pipe.PooledStockMs); // 池深仍自钳，心跳不破上限
+    }
+
+    [Fact]
+    public void Pipeline_keepwarm_heartbeat_respects_gate()
+    {
+        var clock = new MutableClock();
+        var loader = new ScriptedLoader();
+        var pipe = new StealthPipeline(loader, clock.Get);
+        var ch = MakeChannel("c1", "https://s/a.m3u8");
+        long fullCalls = FillPoolToCap(pipe, loader, clock, ch);
+        pipe.UpdateGates(StealthPipeline.GatherGateMs - 1, 1.0); // 前台水位掉下让路线
+        clock.Advance(StealthPipeline.KeepWarmIntervalMs * 3);
+        pipe.Tick();
+        Assert.Equal(fullCalls, loader.Calls); // 让路闸关：心跳同停（画面平稳优先令）
+    }
+
+    [Fact]
+    public void Pipeline_keepwarm_heartbeat_refreshes_supply_clock_no_freeze()
+    {
+        var clock = new MutableClock();
+        var loader = new ScriptedLoader();
+        var pipe = new StealthPipeline(loader, clock.Get);
+        var ch = MakeChannel("c1", "https://s/a.m3u8");
+        int frozen = 0;
+        pipe.SupplyFrozen += _ => frozen++;
+        FillPoolToCap(pipe, loader, clock, ch);
+        // 心跳续命：每 KeepWarmIntervalMs 成功拉一片，断供判据时钟持续刷新（总跨度 3×周期 > 2×冻结线）
+        for (int i = 0; i < 3; i++)
+        {
+            clock.Advance(StealthPipeline.KeepWarmIntervalMs);
+            pipe.Tick(); // 发心跳
+            pipe.Tick(); // 收心跳
+        }
+        Assert.Equal(0, frozen); // 保鲜成功：池粮不过期，不判供
+        Assert.Equal(StealthPipeline.MaxPoolDepthMs, pipe.PooledStockMs);
+    }
+
     // ---- 链路健康线 ----
 
     [Fact]

@@ -27,7 +27,7 @@ public sealed class LinkHealthLine
     private readonly object _gate = new();
     private readonly Func<long> _monoMs;
     private double _dropRatePerSec;      // 水位掉速（毫秒水位 / 秒，正值=在掉）
-    private long _dropEmaAtMs;
+    private long _dropEmaAtMs = -1;     // -1=尚无首拍（0 是合法时钟值，不能当哨兵）
     private double _lastIntervalMs = -1; // 最近分片间隔（毫秒；-1=无账）
     private double _lastThroughputKbps;  // 最近下载吞吐（kbps；0=无账）
     private long _badFrameCount;         // 累计坏帧（喂账方累加，封顶换算）
@@ -47,7 +47,7 @@ public sealed class LinkHealthLine
             var now = _monoMs();
             // EMA 归并：新观察按时间差折半衰权（指数滑动，半衰窗内旧账仍有分量）
             var alpha = Math.Exp(-(now - _dropEmaAtMs) / DropEmaHalfLife.TotalMilliseconds * 0.693);
-            _dropRatePerSec = _dropEmaAtMs == 0 ? dropMsPerSec : alpha * _dropRatePerSec + (1 - alpha) * dropMsPerSec;
+            _dropRatePerSec = _dropEmaAtMs < 0 ? dropMsPerSec : alpha * _dropRatePerSec + (1 - alpha) * dropMsPerSec;
             _dropEmaAtMs = now;
         }
     }
@@ -85,7 +85,7 @@ public sealed class LinkHealthLine
             double interval = _lastIntervalMs < 0 ? 0 : Math.Clamp((_lastIntervalMs - 5000.0) / 5000.0, -1, 1);
             double throughput = _lastThroughputKbps <= 0 ? 0 : Math.Clamp((_lastThroughputKbps - 2000.0) / 2000.0, -1, 1);
             double bad = Math.Clamp(_badFrameCount / 10.0, 0, 1);
-            double margin = WeightDropRate * stock
+            double margin = -WeightDropRate * stock
                    + WeightInterval * (-interval)     // 间隔拉长（正值）= 负贡献
                    + WeightThroughput * throughput    // 吞吐富余 = 正贡献
                    - WeightBadFrames * bad;           // 坏帧 = 纯负项

@@ -359,6 +359,7 @@ public class PrefetchRecentTests
     [Fact]
     public async Task Recent_ledger_extends_circle_beyond_neighbors()
     {
+        LaneTestGuard.Open();
         var prefetched = new List<Channel>();
         var prefetcher = new ChannelPrefetcher(ch => { prefetched.Add(ch); return Task.FromResult<ResolvedStream?>(new ResolvedStream { Channel = ch }); });
         var catalog = MakeCatalog("cctv1", "cctv2", "cctv3", "cctv4", "cctv5");
@@ -374,6 +375,7 @@ public class PrefetchRecentTests
     [Fact]
     public async Task Neighbors_and_current_are_skipped()
     {
+        LaneTestGuard.Open();
         var prefetched = new List<Channel>();
         var prefetcher = new ChannelPrefetcher(ch => { prefetched.Add(ch); return Task.FromResult<ResolvedStream?>(new ResolvedStream { Channel = ch }); });
         var catalog = MakeCatalog("cctv1", "cctv2", "cctv3", "cctv4");
@@ -389,6 +391,7 @@ public class PrefetchRecentTests
     [Fact]
     public async Task Ledger_entries_missing_from_catalog_are_skipped()
     {
+        LaneTestGuard.Open();
         var prefetched = new List<Channel>();
         var prefetcher = new ChannelPrefetcher(ch => { prefetched.Add(ch); return Task.FromResult<ResolvedStream?>(new ResolvedStream { Channel = ch }); });
         var catalog = MakeCatalog("cctv1", "cctv2", "cctv3");

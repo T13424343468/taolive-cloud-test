@@ -64,7 +64,7 @@ public sealed class QualityHealthStore
             long windowStart = now - (long)MicrolagWindow.TotalMilliseconds;
             // 窗口内已有一次未坐实记录：本次进缓冲是窗内第 N 次试探；用 MicrolagLastMs 兼作窗口起点。
             // 达标即坐实并清窗口，未达标仅记最近时间（下一拍继续攒）。
-            if (e.MicrolagLastMs >= windowStart)
+            if (e.MicrolagLastMs > 0 && e.MicrolagLastMs >= windowStart) // 0=窗口已清/无账哨兵，不判在窗
             {
                 e.MicrolagLastMs = now; // 窗内再来一拍：滚动窗口按最近进缓冲续
             }

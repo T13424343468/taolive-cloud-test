@@ -81,6 +81,7 @@ public partial class MainActivity : Activity
 
     /// <summary>开机全表备货避让节拍（老板批 2026-11-16 第③条·避让）：先让预检探出默认台/收藏台首批绿点，备货再上路。</summary>
     private const int BootWarmAllGraceMs = 3 * 60 * 1000;
+    private const int BootWarmLastGraceMs = 2 * 1000; // 刀四：上次台开机预热延后（先让首帧/首批绿点落，共车道让路）
     // #15 改静态：进程级 once-block 里的换台预取闭包读它，不能钉在首个壳上
     private ChannelPrecheck _precheck = default!;
     private QualityHealthStore _qualityBook = default!; // 实测账（vc85 两本账之二）：排序合成与微卡/盲区记账同源
@@ -411,6 +412,50 @@ public partial class MainActivity : Activity
                 {
                     await System.Threading.Tasks.Task.Delay(BootWarmAllGraceMs).ConfigureAwait(false);
                     _scheduler?.TriggerNow("boot-warm-all");
+                }
+                catch { /* 触发失败不挡启动：壳重建重登再补 */ }
+            });
+            // 刀四（老板 2026-11-25 九件套定稿）：冷启动同口径——上次看的台开机即预热（DNS 预解析+取票预取），
+            // 用户回台起播少付一次取票时延；boot-warm-all（3 分钟全表备货）保留不动，本任务只焐热一台。
+            // #15 每壳重跑注册/触发幂等（同名覆盖、TriggerNow 空操作）；预热失败静默（进台走既有起播链路兜底）
+            _scheduler?.Register(new TaoLive.Scheduler.BackgroundScheduler.Job
+            {
+                Name = "boot-warm-last",
+                Interval = TimeSpan.FromHours(1),
+                OneShot = true,
+                Tier = TaoLive.Scheduler.BackgroundScheduler.ScheduleTier.Standard,
+                Work = async _ =>
+                {
+                    try
+                    {
+                        var lastId = _prefs.GetString("last_channel", null);
+                        if (string.IsNullOrEmpty(lastId)) return;
+                        var last = ChannelTable.Build().FirstOrDefault(c => string.Equals(c.Id, lastId, StringComparison.Ordinal));
+                        if (last is null) return;
+                        // DNS 预解析（首条流域名，IP 字面量免解析；失败静默——取流链路自带系统解析兜底），过车道让路播放
+                        var stream = last.Sources.FirstOrDefault()?.Url ?? last.EntryUrl;
+                        if (Uri.TryCreate(stream, UriKind.Absolute, out var u)
+                            && u.HostNameType != UriHostNameType.IPv4 && u.HostNameType != UriHostNameType.IPv6
+                            && u.Host.Length > 0)
+                        {
+                            await BackgroundLane.RunAsync(async () =>
+                            {
+                                try { await System.Net.Dns.GetHostAddressesAsync(u.Host).ConfigureAwait(false); }
+                                catch { /* 预解析失败不挡预热 */ }
+                            }).ConfigureAwait(false);
+                        }
+                        await new ChannelWarmer(resolver).WarmChannelAsync(last).ConfigureAwait(false); // 预取票（内部自过车道）
+                    }
+                    catch { /* 上次台预热失败不挡启动 */ }
+                },
+            });
+            // 短延迟（2 秒级）再触发：预热与起播共车道，先让首帧/首批绿点落，预热随后补
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    await System.Threading.Tasks.Task.Delay(BootWarmLastGraceMs).ConfigureAwait(false);
+                    _scheduler?.TriggerNow("boot-warm-last");
                 }
                 catch { /* 触发失败不挡启动：壳重建重登再补 */ }
             });

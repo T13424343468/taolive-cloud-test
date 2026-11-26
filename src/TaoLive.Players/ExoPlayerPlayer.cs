@@ -34,6 +34,11 @@ public sealed class ExoPlayerPlayer : IPlayer
     private readonly Android.Content.Context _context;
     private AndroidX.Media3.ExoPlayer.Video.PlaceholderSurface? _warmupSink; // vc66 哑面预热：攒流期焐热视频解码器
 
+    /// <summary>主刀·时间平移快启（2026-11-25 九件套）：起播定位的落后目标（毫秒）。
+    /// 挂 24 小时=任何直播清单窗口都会被内核自钳到窗口最深处（最老已播画面），
+    /// 窗口给多深就落后多深；超过 24h 的直播 DVR 窗口按不存在口径（真机源清单最长以小时计）。</summary>
+    private const long TimeShiftStartMs = 24 * 60 * 60 * 1000L;
+
     /// <summary>
     /// 取流注入点（2.0 W4 口径）：API 取票口端点播前经 resolver 换真实流（频道号+运行时取票），
     /// 直连端点原样放行。null=全部直连。解析失败按 OnError 交会话备源自救，契约不变。
@@ -237,23 +242,17 @@ public sealed class ExoPlayerPlayer : IPlayer
             if (!blindZone) // vc73 审查清零 P2：按路径判 HLS，query 带 .m3u8 的非 HLS 不再误设 MIME
             {
                 builder.SetMimeType(AndroidX.Media3.Common.MimeTypes.ApplicationM3u8);
-                // 落后边缘留水（老板 2026-11-16 22:5x 拍板「能多久之前就多久之前」）：
-                // 目标落后=进阶设置「播放落后」旋钮（默认 60 秒，5 秒一档），实际落后由源清单窗口自然封顶——
-                // 设定值大于源真实窗口取真实最大值、真实窗口更深取设定值（min 口径），窗口给多深就落后多深，
-                // 播放点前面常备存量，治「贴边播→存货只剩一片→4 秒循环到卡死再拿」。
-                // 起播门槛不变（5 秒即出画），仅起播定位与直播追赶目标后移，首帧速度不受影响。
-                // 设 0=贴边缘播（留水改动前口径），不挂 LiveConfiguration 原语义直出。
-                var lagMs = (long)TaoLive.Foundation.AdvancedTuning.LiveLagSec * 1000;
-                if (lagMs > 0)
-                {
-                    // Builder 起、属性补口（绑定缺 fluent 设定器，5 参构造弃用走不了）：
-                    // 目标落后=播放落后旋钮；min/max 留未设（内核按清单窗口自钳=min 口径），
-                    // 窗口给多深就落后多深。
-                    var liveConfig = new MediaItemLiveConfiguration.Builder().Build()
-                        ?? throw new InvalidOperationException("LiveConfiguration build returned null");
-                    liveConfig.TargetOffsetMs = lagMs;
-                    builder.SetLiveConfiguration(liveConfig);
-                }
+                // 主刀·时间平移快启（老板 2026-11-25 拍板九件套定稿口径）：首帧取播放窗口内最老已播画面——
+                // 起播定位挂超大落后目标，内核按清单窗口自钳到窗口最深处（窗口给多深就落后多深），
+                // 最老分片早已落盘可即取，首帧不必等直播边缘分片产出；起播后 1× 恒速，落后深度恒定
+                // （min/max 留未设=内核不做追边调速，「不追实时——保持恒定延迟稳定播」口径）。
+                // 口径变更注明：原「播放落后」旋钮的起播定位语义（2026-11-16 22:5x 拍板，含 0=贴边缘播档）
+                // 被本刀取代，HLS 一律挂时间平移定位；旋钮数值仅保留库存触发线联动（ProactiveInventoryFloor），
+                // 与 goal.md 主刀口径冲突处以 goal.md 为准。
+                var liveConfig = new MediaItemLiveConfiguration.Builder().Build()
+                    ?? throw new InvalidOperationException("LiveConfiguration build returned null");
+                liveConfig.TargetOffsetMs = TimeShiftStartMs;
+                builder.SetLiveConfiguration(liveConfig);
             }
             var mediaItem = builder.Build() ?? throw new InvalidOperationException("MediaItem build returned null");
             EnsureWarmVideoSink(); // vc66 哑面预热：无真面起播（热备攒流）也把视频解码器初始化到位，热切接管零解码器冷启

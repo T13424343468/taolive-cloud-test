@@ -1,4 +1,4 @@
-using TaoLive.Foundation;
+﻿using TaoLive.Foundation;
 using TaoLive.Model;
 using TaoLive.Session;
 using Xunit;

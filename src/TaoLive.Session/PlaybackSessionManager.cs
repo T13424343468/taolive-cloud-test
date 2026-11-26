@@ -70,6 +70,7 @@ public sealed class PlaybackSessionManager
     private long _stealthHealthLastMs = long.MinValue; // 链路健康线掉速观察上一拍
     private BitrateGovernor? _bitrateGovernor;      // 分片级码率自适应（六项优化④，健康线接线后懒建）
     private long? _lastBitrateCeiling;              // 上拍下发内核的码率上限（比对换档才下发，防抖）
+    private string? _governorChannelKey;            // 治理器所记频道（vc96 P3：换台即 Reset，旧台裕度账不跟人走）
     private long _stealthHealthLastStockMs;            // 同上（两拍差算掉速）
     private long? _alignEpisodeAtMs;                // 升档对齐切在途账（逃生口结果回账用；只记升往 0 路的对齐切）
     private bool _raceInFlight;                     // 握手竞速单飞旗（同一切换回合只赛一场）
@@ -265,6 +266,7 @@ public sealed class PlaybackSessionManager
             throw new ArgumentException($"Channel {channel.Id} has no valid sources", nameof(channel));
         }
         _onSwitchingChannel?.Invoke(channel); // 换台即触发邻台预取（ChannelPrefetcher，单车道让路口径）
+        _alignEpisodeAtMs = null; // vc96 第 18 轮：升档在途账只记本台——换台即作废，旧台升档 60s 窗不跟新台走（防新台 Failover 被误记逃生口失败）
 
         // 热切：热备就是目标台且已达 Playing（起播门槛线已过）→ 接管
         if (Current is { } cur
@@ -443,6 +445,15 @@ public sealed class PlaybackSessionManager
         pipe.UpdateGates(buffered, HealthLine.AllowFactor());
         // 分片级码率自适应（六项优化④）：健康裕度快照喂迟滞闸，换档才经 IPlayer 契约下发内核
         // （一细一粗与整路降档互补：整路管撑不撑得住，档内管带宽变薄）。LoggingPlayer 等 DIM 内核=无害空转。
+        // vc96 P3：换台检测——治理器裕度账只记本台，换台即 Reset 并作废上拍钳制（新台按新账重判）。
+        var channelKey = current.CurrentChannel?.Id;
+        if (_bitrateGovernor is { } gov && !string.Equals(channelKey, _governorChannelKey, StringComparison.Ordinal))
+        {
+            gov.Reset();
+            _lastBitrateCeiling = null; // 上拍钳制作废：新台首拍按 Reset 后档位（不钳）重新下发
+            HealthLine.Reset();        // vc96 第3轮：链路健康线观察账（坏帧/掉速/间隔/吞吐）只记本台，换台即清——旧账不跟去新台
+        }
+        _governorChannelKey = channelKey;
         _bitrateGovernor ??= new BitrateGovernor();
         var ceiling = _bitrateGovernor.Update(HealthLine.Margin(), nowMs);
         if (!Nullable.Equals(ceiling, _lastBitrateCeiling))
@@ -498,12 +509,12 @@ public sealed class PlaybackSessionManager
         var episodeFailover = current.FailoverCount;
         _ = RaceProber.RaceAsync(channel, candidates).ContinueWith(t =>
         {
+            _raceInFlight = false; // vc96 P3：自锁旗在 dispatcher 外收——未接 dispatcher 也不卡死单飞
             try
             {
                 int winner = t.Status == TaskStatus.RanToCompletion ? t.Result : -1;
                 MainDispatcher?.Invoke(() =>
                 {
-                    _raceInFlight = false;
                     // 回合防串：竞速期间会话已切走/换台/新一轮自救=作废，不追溯（自救队列快照化纪律）
                     if (winner < 0 || ReferenceEquals(Current, current) == false
                         || current.State != PlaybackState.Failed || current.FailoverCount != episodeFailover) return;
@@ -514,7 +525,7 @@ public sealed class PlaybackSessionManager
                     }
                 });
             }
-            catch { _raceInFlight = false; }
+            catch { /* 回合收尾异常不掀泵：单飞旗已收，下回合照常赛 */ }
         });
     }
 
@@ -677,7 +688,9 @@ public sealed class PlaybackSessionManager
             }
             // 升档失败入逃生口（vc85 ④）：对齐切回主源后 UpgradeFailWindow 内再断=升档失败，
             // 窗内满 3 次→主源休眠 60 分钟（与升档无关的断流由仲裁器账内自辨不冤枉）
-            if (Arbiter is { } arb && _alignEpisodeAtMs is { } started
+            // vc96 P3 补逃生口守卫：仅当前会话的断流才入账，后台会话断流不冤枉主源升档
+            if (ReferenceEquals(s, Current)
+                && Arbiter is { } arb && _alignEpisodeAtMs is { } started
                 && _monotonicMs() - started <= SwitchArbiter.UpgradeFailWindow.TotalMilliseconds)
             {
                 arb.ReportOutcome(false);
@@ -724,9 +737,12 @@ public sealed class PlaybackSessionManager
                 _returnStableSession = session;
                 _returnStableSinceMs = _monotonicMs();
             }
-            else if (_returnStableSession is { } armed
+            else if (ReferenceEquals(session, _returnStableSession)
                      && (state != PlaybackState.Playing || !ReferenceEquals(session, Current)))
             {
+                // vc96 第 18 轮：身份闸——只有武装会话自己离开 Playing 或失去前台才清窗；
+                // 此前任意会话的状态变化（热备攒流到 Playing、后台会话迁移）都会误清当前台稳定窗，
+                // 当前台不重新进 Playing 就再不起窗，回主源被静默瘫痪。
                 _returnStableSession = null;
             }
         }

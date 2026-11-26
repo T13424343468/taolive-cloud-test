@@ -65,20 +65,29 @@ public sealed class ExoPlayerPlayer : IPlayer
     /// </summary>
     private AndroidX.Media3.ExoPlayer.IExoPlayer BuildPlayer(Android.Content.Context context, bool blindZone)
     {
-        // vc94 并发拉流（激进版，老板 2026-11-26 拍板）：预取器随内核装配——水位探针=内核 BufferedMs 实读，
+        // vc94 并发拉流：预取器随内核装配——水位探针=内核 BufferedMs 实读，
         // 水位线=取满窗口（FillWindowMs 30s）；重建即换代清账（旧预取器退场，不串台）。
+        // vc96 试探版（老板拍板「试探性并发」）：默认单路起步、水位不涨才逐路升级、被拒即缩；
+        // 源脾气入持久化账 SourceTemperStore（FilesDir，重启不清零，下次调度直接按账定打法）。
         if (_prefetcher is { } oldPf)
         {
             oldPf.FetchRequested -= ParallelPrefetchDataSource.HandleFetchRequested;
             oldPf.Reset();
+            _prefetcher = null;
         }
-        var prefetcher = new ParallelPrefetcher(
-            watermarkMs: BufferInventory.FillWindowMs,
-            waterProbeMs: () => BufferedMs);
-        prefetcher.FetchRequested += ParallelPrefetchDataSource.HandleFetchRequested;
-        _prefetcher = prefetcher;
-        RacingDataSourceFactory.Prefetcher = prefetcher;
-        RacingDataSourceFactory.MinVariantBitrateObserver = OnMinVariantObserved;
+        ParallelPrefetcher? prefetcher = null;
+        if (ParallelPrefetcher.Enabled)
+        {
+            var temper = _temperStore ??= new SourceTemperStore(_context.FilesDir?.AbsolutePath ?? ".");
+            prefetcher = new ParallelPrefetcher(
+                watermarkMs: BufferInventory.FillWindowMs,
+                waterProbeMs: () => BufferedMs,
+                temper: temper);
+            prefetcher.FetchRequested += ParallelPrefetchDataSource.HandleFetchRequested;
+            _prefetcher = prefetcher;
+        }
+        // vc96 P2：预取器与低档观察改实例级工厂接线（随内核实例装配），不再写静态属性——
+        // 后建内核实例不再覆盖前者在用的接线（静态属性仅作未接线时的进程级兜底）。
 
         var playerBuilder = new AndroidX.Media3.ExoPlayer.ExoPlayerBuilder(context);
         // 已播保留档只进 TrackSelector（minDurationToRetainAfterDiscardMs，微卡修法①）：
@@ -87,7 +96,7 @@ public sealed class ExoPlayerPlayer : IPlayer
         // 六项优化⑤慢分片竞速：内核数据源整面包竞速壳——分片首字节慢出均值（×2，下限 1 秒）
         // 即对同源发第二请求赛跑先到先用；清单/快链路不赛。HTTP 头纪律与默认工厂原样不动。
         playerBuilder.SetMediaSourceFactory(new AndroidX.Media3.ExoPlayer.Source.DefaultMediaSourceFactory(
-            new RacingDataSourceFactory()));
+            new RacingDataSourceFactory(prefetcher, OnMinVariantObserved)));
         // #76 锁画质防抖（2026-11-15 老板令，治「放 1 秒卡半秒」循环）：默认 ABR 在估速贴档位线抖动时
         // 逐秒重选流——每次切换渲染器拆建一遍（真机「视频渲染器停用」实锤），画面停半秒再续。
         // 改黏性自适应：升档要缓冲满 30 秒、降档判据放宽到 60 秒、估速按折扣取档——宁稳勿抖，
@@ -118,27 +127,51 @@ public sealed class ExoPlayerPlayer : IPlayer
     private void EnsurePlayerMode(bool blindZone)
     {
         if ((_blindZone == blindZone && _builtGate == _gateMode) || _released) return;
+        var oldBlindZone = _blindZone; // vc96 P2：旧值先存，异常按旧值回滚（不再取反猜）
+        var oldBuiltGate = _builtGate;
+        var old = _player;
+        var oldPrefetcher = _prefetcher; // vc96 第2轮：回滚时预取器接线一并还原（旧内核工厂持旧预取器）
+        AndroidX.Media3.ExoPlayer.IExoPlayer? built = null;
         try
         {
-            var old = _player;
             _blindZone = blindZone;
             _builtGate = _gateMode;
-            _player = BuildPlayer(_context, blindZone);
+            built = BuildPlayer(_context, blindZone);
             if (_hasSurface)
             {
                 // 真面重挂（同 AttachSurface 还原口径）：盲区档重建后真面继续归壳层所有，仅转移挂接
                 var surface = Java.Lang.Object.GetObject<Android.Views.Surface>(_surfaceHandle, JniHandleOwnership.DoNotTransfer);
-                if (surface is not null) _player.SetVideoSurface(surface);
+                if (surface is not null) built.SetVideoSurface(surface);
             }
+            _player = built; // 新内核装配完整才换缝
             old.Release();
         }
         catch (Exception ex)
         {
             Reporter?.Invoke($"[内核] 盲区档切换失败退回原实例：{ex.Message}");
-            _blindZone = !_blindZone; // 回滚标记与实例一致
-            _builtGate = _gateMode == BufferInventory.Mode.StartFull
-                ? BufferInventory.Mode.SilentRefetch
-                : BufferInventory.Mode.StartFull; // 同口径回滚已建档标记
+            _blindZone = oldBlindZone;   // 回滚标记与实例一致（vc96 P2：按旧值回滚）
+            _builtGate = oldBuiltGate;
+            _player = old;
+            if (built is not null)
+            {
+                try { built.Release(); } catch { /* 新实例释放失败无害 */ } // 换新失败：释放新实例退回旧实例，防泄漏
+            }
+            // vc96 第2轮：BuildPlayer 可能已换代预取器（旧者退订+Reset、新者入账）——回滚即还原旧接线，
+            // 否则旧内核工厂持退订后的旧预取器，预取静默断链
+            var newPrefetcher = _prefetcher;
+            if (!ReferenceEquals(newPrefetcher, oldPrefetcher))
+            {
+                if (newPrefetcher is { } np)
+                {
+                    np.FetchRequested -= ParallelPrefetchDataSource.HandleFetchRequested;
+                    np.Reset();
+                }
+                if (oldPrefetcher is { } op)
+                {
+                    op.FetchRequested += ParallelPrefetchDataSource.HandleFetchRequested;
+                }
+                _prefetcher = oldPrefetcher;
+            }
         }
     }
 
@@ -146,6 +179,7 @@ public sealed class ExoPlayerPlayer : IPlayer
     private BufferInventory.Mode _gateMode = BufferInventory.Default; // vc94 深水档：当前起播库存档（热备=StartFull，冷切=默认）
     private BufferInventory.Mode _builtGate = BufferInventory.Default; // vc94 深水档：已建内核的库存档（不一致即重建）
     private ParallelPrefetcher? _prefetcher; // vc94 并发拉流：预取器随内核装配（重建换代清账）
+    private SourceTemperStore? _temperStore; // vc96 试探版：持久化源脾气账（随内核装配一次，跨重建复用）
 
     // —— vc94 低档起播账（老板 2026-11-26 拍板第 1 刀）——
     private const int LowGearPollMs = 500; // 升档轮询节拍
@@ -551,6 +585,7 @@ public sealed class ExoPlayerPlayer : IPlayer
 
     public void Dispose()
     {
+        if (_released) return; // vc96 P3：不可重入——重复 Dispose 不再二次 Release 内核
         _playGeneration++; // 释放后作废一切在途回调（闪退镜红②）
         _released = true;  // vc74 P3⑧：监听摘除→Release 与内核/渲染线程在途回调有窗口，回调桥入口查旗收窄窗口（vc75 定案：查旗到执行间非原子，Dispose 可在窗内完成——诊断噪声由 Reporter 有界队列与会话守卫兜底，口径是收窄非消除）
         ReleaseWarmupSink();
@@ -559,6 +594,22 @@ public sealed class ExoPlayerPlayer : IPlayer
         _player.ClearVideoFrameMetadataListener(null);
         _frameForwarder.Dispose();
         _player.Release();
+        // vc96 P2：清静态接线——静态属性若仍指向本实例的预取器/观察，置空防悬空引用
+        if (RacingDataSourceFactory.Prefetcher is { } pf && ReferenceEquals(pf, _prefetcher))
+        {
+            RacingDataSourceFactory.Prefetcher = null;
+        }
+        if (RacingDataSourceFactory.MinVariantBitrateObserver is { } obs
+            && ReferenceEquals(obs.Target, this))
+        {
+            RacingDataSourceFactory.MinVariantBitrateObserver = null;
+        }
+        if (_prefetcher is { } ownedPf)
+        {
+            ownedPf.FetchRequested -= ParallelPrefetchDataSource.HandleFetchRequested;
+            ownedPf.Reset();
+            _prefetcher = null;
+        }
     }
 
     private void HandleBufferingStarted()

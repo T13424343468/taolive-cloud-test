@@ -189,9 +189,10 @@ public static class FallbackSourceRegistry
     public static bool ContainsUrl(string url) =>
         Table.Any(e => string.Equals(e.Url, url, StringComparison.Ordinal));
 
-    /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格后精确匹配。</summary>
+    /// <summary>台名归一（与 ChannelPrecheck.NormalizeName 同口径）：去空格/全角空格/半全角连字符后精确匹配
+    /// （vc96 P3：三库统一，防「CCTV-1」与「CCTV1」归并不到一组）。</summary>
     private static string Normalize(string name) =>
-        (name ?? "").Replace(" ", "").Replace("　", "");
+        (name ?? "").Replace(" ", "").Replace("　", "").Replace("-", "").Replace("－", "");
 
     // vc43⑥ 生效性修复：Index 由「每台取首条」改「每台全量按序」——同台多家族候选（如央视六台的 74.91/tsfile/applive、
     // 湖北/广东的 bfgd/gmxw 双端）逐台按登记序保留，运行时按序取用，收录即可达（老板 11-13 令「有问题就改」）。

@@ -59,12 +59,26 @@ public sealed class BackgroundScheduler
         _pollMs = Math.Max(1, pollMs);
     }
 
-    /// <summary>登记（幂等）：同名不重复登记（防同一活排队两次）；运行中登记下轮生效。</summary>
+    /// <summary>登记（幂等）：同名不重复登记（防同一活排队两次）；重复登记沿用旧账本（节拍/进度不重置），
+    /// 仅换新工作委托；OneShot 已退役的重新登记=重新武装（vc96 P3）。运行中登记下轮生效。</summary>
     public void Register(Job job)
     {
         lock (_lock)
         {
-            _jobs[job.Name] = new JobState { Job = job };
+            if (_jobs.TryGetValue(job.Name, out var existing))
+            {
+                existing.Job = job; // 幂等沿用旧账本：LastRunMs/Done/Triggered 原样保留
+                if (existing.Done)  // OneShot 跑完退役后重登记：重新武装待触发
+                {
+                    existing.Done = false;
+                    existing.Triggered = false;
+                    existing.LastRunMs = null;
+                }
+            }
+            else
+            {
+                _jobs[job.Name] = new JobState { Job = job };
+            }
         }
     }
 
@@ -141,7 +155,7 @@ public sealed class BackgroundScheduler
             {
                 await _executor(run.Job.Tier, run.Job.Work, ct).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) { return; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; } // 停机才退循环（vc96 P3：活内自抛 OCE 不误杀调度）
             catch { /* 单路活失败不掀调度循环：下轮照常排班 */ }
             lock (_lock)
             {

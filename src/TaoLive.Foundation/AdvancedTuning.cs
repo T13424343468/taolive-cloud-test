@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Threading;
 
 namespace TaoLive.Foundation;
 
@@ -29,27 +30,69 @@ public static class AdvancedTuning
     public const int LiveLagSecMin = 0, LiveLagSecMax = 60; // 0=贴边播（改动前口径）；60=最多落后一分钟
     public const int FailoverCapMin = 1, FailoverCapMax = 10; // 蓝图 v2.5 全局钳制：下限 1 次/分钟，调不灭
 
+    // ---- 旋钮存储（vc96 P3：volatile-backed——UI 线程写、播放/调度线程读，防撕裂与缓存滞旧） ----
+    private static int _selfHealFailGate = DefaultFailGate;
+    private static long _selfHealReprobeMs = DefaultReprobeMs;
+    private static int _listCacheSec = DefaultListCacheSec;
+    private static long _retryBaseMs = DefaultRetryBaseMs;
+    private static long _retryMaxMs = DefaultRetryMaxMs;
+    private static int _failoverCapPerMin = DefaultFailoverCapPerMin;
+    private static int _prefetchWindowSec = DefaultPrefetchWindowSec;
+    private static int _liveLagSec = DefaultLiveLagSec;
+
     /// <summary>自愈门槛：连续起播失败几次才启动自救判别（低=自救快但易误伤，高=稳但自救慢）。</summary>
-    public static int SelfHealFailGate { get; private set; } = DefaultFailGate;
+    public static int SelfHealFailGate
+    {
+        get => Volatile.Read(ref _selfHealFailGate);
+        private set => Volatile.Write(ref _selfHealFailGate, value);
+    }
     /// <summary>自愈回探：自救启用后多久试一次能否回直连（低=回得快但探测勤，高=省流量回得慢）。</summary>
-    public static long SelfHealReprobeMs { get; private set; } = DefaultReprobeMs;
+    public static long SelfHealReprobeMs
+    {
+        get => Volatile.Read(ref _selfHealReprobeMs);
+        private set => Volatile.Write(ref _selfHealReprobeMs, value);
+    }
     /// <summary>清单缓存：频道清单/列表数据留手多久不重取（低=信息新但请求勤，高=省流量换台信息陈）。</summary>
-    public static int ListCacheSec { get; private set; } = DefaultListCacheSec;
+    public static int ListCacheSec
+    {
+        get => Volatile.Read(ref _listCacheSec);
+        private set => Volatile.Write(ref _listCacheSec, value);
+    }
     /// <summary>被拒重试起步：源服务器拒绝后退多远再试（这是跟风控博弈的分寸，急了挨打钝了恢复慢）。</summary>
-    public static long RetryBaseMs { get; private set; } = DefaultRetryBaseMs;
+    public static long RetryBaseMs
+    {
+        get => Volatile.Read(ref _retryBaseMs);
+        private set => Volatile.Write(ref _retryBaseMs, value);
+    }
     /// <summary>被拒重试封顶：指数退避最深退到几时（低=恢复探测勤，高=长退避省请求）。</summary>
-    public static long RetryMaxMs { get; private set; } = DefaultRetryMaxMs;
+    public static long RetryMaxMs
+    {
+        get => Volatile.Read(ref _retryMaxMs);
+        private set => Volatile.Write(ref _retryMaxMs, value);
+    }
     /// <summary>防快切闸（进阶调优第 7 旋钮，老板 2026-11-17 拍板接通）：滚动 60 秒窗内自动换源
     /// 封顶次数——到顶冻结转自愈慢轮，防连环快切烧线。吃闸的只有故障硬切，对齐软切豁免；
     /// 全局钳制下限 1 次/分钟（蓝图 v2.5：调不灭，坏调整只降为慢恢复）。</summary>
-    public static int FailoverCapPerMin { get; private set; } = DefaultFailoverCapPerMin;
+    public static int FailoverCapPerMin
+    {
+        get => Volatile.Read(ref _failoverCapPerMin);
+        private set => Volatile.Write(ref _failoverCapPerMin, value);
+    }
     /// <summary>预取库存时长（老板令 2026-11-15 三档位）：切片预取攒多深的库存（内核 LoadControl
     /// 水位上限），档位 30/45/60 秒；默认 60=vc60 固定口径。改档后新开的台生效，正在播的台保持原档。</summary>
-    public static int PrefetchWindowSec { get; private set; } = DefaultPrefetchWindowSec;
+    public static int PrefetchWindowSec
+    {
+        get => Volatile.Read(ref _prefetchWindowSec);
+        private set => Volatile.Write(ref _prefetchWindowSec, value);
+    }
     /// <summary>播放落后目标（老板令 2026-11-16「能多久之前就多久之前」）：起播与追赶落在直播边缘后面几秒，
     /// 实际落后由源清单窗口自然封顶——设定值大于源真实窗口取真实最大值，真实窗口更深取设定值（min 口径）；
     /// 0=贴边缘播（vc85 留水改动前口径）。改档后新开的台生效。</summary>
-    public static int LiveLagSec { get; private set; } = DefaultLiveLagSec;
+    public static int LiveLagSec
+    {
+        get => Volatile.Read(ref _liveLagSec);
+        private set => Volatile.Write(ref _liveLagSec, value);
+    }
 
     /// <summary>写入并钳制（UI 设置页与批量还原同一入口）。retryMax &lt; retryBase 时按 retryBase 收敛。</summary>
     public static void Apply(int failGate, long reprobeMs, int listCacheSec,

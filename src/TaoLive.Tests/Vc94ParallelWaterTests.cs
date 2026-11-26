@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using TaoLive.Foundation;
@@ -88,7 +88,7 @@ public class Vc94ParallelWaterTests
         Assert.True(StartupGear.ShouldLift(1, 20_001));
     }
 
-    // ---- ParallelPrefetcher ----
+    // ---- ParallelPrefetcher（vc96 试探版） ----
 
     private static readonly string FiveSegPlaylist = """
         #EXTM3U
@@ -104,110 +104,169 @@ public class Vc94ParallelWaterTests
         https://cdn.example.com/s5.ts
         """;
 
-    private static ParallelPrefetcher MakePrefetcher(long watermarkMs = 30_000, Func<long>? waterProbe = null, Func<long>? mono = null)
-        => new(watermarkMs, waterProbe, new TemperLedger(mono));
+    private static ParallelPrefetcher MakePrefetcher(long watermarkMs = 30_000, Func<long>? waterProbe = null,
+        SourceTemperStore? temper = null, Func<long>? mono = null)
+        => new(watermarkMs, waterProbe, temper, mono);
 
     [Fact]
-    public void Prefetcher_caps_concurrency_at_max_extra_connections()
+    public void Prefetcher_probing_starts_single_connection_no_prefetch()
     {
         var requested = new List<string>();
         var pf = MakePrefetcher();
         pf.FetchRequested += (_, r) => requested.Add(r.Url);
         Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
         pf.Pump();
-        Assert.Equal(ParallelPrefetcher.MaxExtraConnections, pf.ActiveFetches); // 封顶 2（总 3 含在播那路）
-        Assert.Equal(2, requested.Count);
-        // 在途未回报前不补发
-        pf.Pump();
-        Assert.Equal(2, requested.Count);
-    }
-
-    [Fact]
-    public void Prefetcher_stops_when_water_full()
-    {
-        var requested = new List<string>();
-        long water = 30_000; // ≥watermark：水满
-        var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water);
-        pf.FetchRequested += (_, r) => requested.Add(r.Url);
-        Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
-        pf.Pump();
-        Assert.Empty(requested); // 水满才撤：不发新
+        Assert.Empty(requested);      // vc96 试探版：默认单路，不预开任何并发
+        Assert.Equal(0, pf.ProbeLevel);
         Assert.Equal(0, pf.ActiveFetches);
-        // 水落下去再泵：恢复发
-        water = 0;
-        pf.Pump();
-        Assert.Equal(ParallelPrefetcher.MaxExtraConnections, pf.ActiveFetches);
     }
 
     [Fact]
-    public void Prefetcher_trytake_serves_cached_and_advances_consumed()
-    {
-        var pf = MakePrefetcher();
-        Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
-        pf.Pump();
-        pf.ReportFetched("https://cdn.example.com/s1.ts", new byte[] { 1, 2, 3 }, pf.Generation);
-        Assert.Equal(3, pf.CacheBytes);
-
-        Assert.True(pf.TryTake("https://cdn.example.com/s1.ts", out var data)); // 命中即服务
-        Assert.Equal(new byte[] { 1, 2, 3 }, data);
-        Assert.Equal(0, pf.CacheBytes); // 字节移交即出账
-
-        Assert.False(pf.TryTake("https://cdn.example.com/s2.ts", out _)); // 未预取：走内层
-        Assert.False(pf.TryTake("https://cdn.example.com/never.ts", out _)); // 清单外：不服务
-    }
-
-    [Fact]
-    public void Prefetcher_rejected_marks_host_conservative_then_recovers_after_cooldown()
+    public void Prefetcher_escalates_one_level_per_window_when_water_stalls()
     {
         long now = 0;
+        long water = 10_000;
         var requested = new List<string>();
-        var pf = MakePrefetcher(mono: () => now);
+        var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, mono: () => now);
+        pf.FetchRequested += (_, r) => requested.Add(r.Url);
+        Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
+
+        pf.Pump();                    // 首采样：只记账，不发
+        Assert.Empty(requested);
+        now += ParallelPrefetcher.ProbeSampleIntervalMs;
+        pf.Pump();                    // 水位不涨（持平）→ 升 1 档：发 1 路
+        Assert.Equal(1, pf.ProbeLevel);
+        Assert.Equal(1, pf.ActiveFetches);
+        Assert.Single(requested);
+
+        now += ParallelPrefetcher.ProbeSampleIntervalMs; // 观察期未满：不升
+        pf.Pump();
+        Assert.Equal(1, pf.ProbeLevel);
+        Assert.Equal(1, pf.ActiveFetches);
+
+        now += ParallelPrefetcher.EscalateCooldownMs;    // 观察期满 + 仍不涨：升 2 档（封顶）
+        pf.Pump();
+        Assert.Equal(2, pf.ProbeLevel);
+        Assert.Equal(2, pf.ActiveFetches);
+
+        now += ParallelPrefetcher.EscalateCooldownMs;    // 已封顶：不再升
+        pf.Pump();
+        Assert.Equal(2, pf.ProbeLevel);
+        Assert.Equal(2, pf.ActiveFetches);
+    }
+
+    [Fact]
+    public void Prefetcher_no_escalation_when_water_rising()
+    {
+        long now = 0;
+        long water = 5_000;
+        var requested = new List<string>();
+        var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, mono: () => now);
         pf.FetchRequested += (_, r) => requested.Add(r.Url);
         Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
         pf.Pump();
-        Assert.Equal(2, pf.ActiveFetches);
+        for (var i = 1; i <= 5; i++)
+        {
+            now += ParallelPrefetcher.ProbeSampleIntervalMs;
+            water += 5_000;           // 水位在涨：单路供得上
+            pf.Pump();
+        }
+        Assert.Equal(0, pf.ProbeLevel); // 好源全程单路
+        Assert.Empty(requested);
+    }
 
-        // 429/403 被拒：记源脾气，冷却期内该 host 不再并发
-        pf.ReportFailed("https://cdn.example.com/s1.ts", rejected: true, pf.Generation);
-        pf.ReportFailed("https://cdn.example.com/s2.ts", rejected: true, pf.Generation);
-        Assert.True(pf.IsHostConservative("cdn.example.com"));
-        requested.Clear();
-        pf.Pump();
-        Assert.Empty(requested); // 保守期：降回单连接（零并发）
+    [Fact]
+    public void Prefetcher_rejection_collapses_to_single_and_marks_persisted_temper()
+    {
+        long now = 0;
+        long water = 10_000;
+        var dir = Path.Combine(Path.GetTempPath(), "taolive-temper-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var temper = new SourceTemperStore(dir, nowUtcMs: () => now);
+            temper.Load();
+            var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, temper: temper, mono: () => now);
+            Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
+            now += ParallelPrefetcher.ProbeSampleIntervalMs;
+            pf.Pump();                // 升 1 档
+            now += ParallelPrefetcher.EscalateCooldownMs;
+            pf.Pump();                // 升 2 档
+            Assert.Equal(2, pf.ProbeLevel);
 
-        // 冷却期过：恢复并发
-        now += TemperLedger.DefaultCooldownMs + 1;
-        Assert.False(pf.IsHostConservative("cdn.example.com"));
-        pf.Pump();
-        Assert.Equal(ParallelPrefetcher.MaxExtraConnections, pf.ActiveFetches);
+            // 429/403 被拒：档位归零退回单路 + 源脾气入持久化账
+            pf.ReportFailed("https://cdn.example.com/s1.ts", rejected: true, pf.Generation);
+            Assert.Equal(0, pf.ProbeLevel);
+            Assert.True(pf.IsHostConservative("cdn.example.com"));
+            Assert.True(temper.IsConservative("cdn.example.com"));
+
+            // 落盘核验：新账本实例读同一文件，保守期仍在（跨启动调度依据）
+            temper.FlushNow();
+            var reloaded = new SourceTemperStore(dir, nowUtcMs: () => now);
+            reloaded.Load();
+            Assert.True(reloaded.IsConservative("cdn.example.com"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Prefetcher_probe_success_marks_good_ledger()
+    {
+        long now = 0;
+        long water = 10_000;
+        var dir = Path.Combine(Path.GetTempPath(), "taolive-temper-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var temper = new SourceTemperStore(dir, nowUtcMs: () => now);
+            temper.Load();
+            var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, temper: temper, mono: () => now);
+            Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
+            now += ParallelPrefetcher.ProbeSampleIntervalMs;
+            pf.Pump();                // 升 1 档，发 1 路
+            pf.ReportFetched("https://cdn.example.com/s1.ts", new byte[] { 1 }, pf.Generation);
+            Assert.Equal(1, temper.GoodStreakOf("cdn.example.com")); // 试探平安：好账+1
+            Assert.False(temper.IsConservative("cdn.example.com"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]
     public void Prefetcher_non_rejected_failure_does_not_mark_conservative()
     {
         long now = 0;
+        long water = 10_000;
         var requested = new List<string>();
-        var pf = MakePrefetcher(mono: () => now);
+        var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, mono: () => now);
         pf.FetchRequested += (_, r) => requested.Add(r.Url);
         Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
-        pf.Pump();
-        pf.ReportFailed("https://cdn.example.com/s1.ts", rejected: false, pf.Generation); // 普通失败：不记脾气
-        pf.ReportFailed("https://cdn.example.com/s2.ts", rejected: false, pf.Generation);
+        now += ParallelPrefetcher.ProbeSampleIntervalMs;
+        pf.Pump();                    // 升 1 档
+        pf.ReportFailed("https://cdn.example.com/s1.ts", rejected: false, pf.Generation); // 普通失败：不记脾气不缩档
         Assert.False(pf.IsHostConservative("cdn.example.com"));
-        requested.Clear();
+        Assert.Equal(1, pf.ProbeLevel);
         pf.Pump();
-        Assert.Equal(ParallelPrefetcher.MaxExtraConnections, pf.ActiveFetches); // 照常补发
+        Assert.Equal(1, pf.ActiveFetches); // 照常补发（档位内）
     }
 
     [Fact]
     public void Prefetcher_generation_invalidates_inflight_and_stale_cache()
     {
+        long now = 0;
+        long water = 10_000;
         var requested = new List<string>();
-        var pf = MakePrefetcher();
+        var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, mono: () => now);
         pf.FetchRequested += (_, r) => requested.Add(r.Url);
         Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
         var gen1 = pf.Generation;
-        pf.Pump();
+        now += ParallelPrefetcher.ProbeSampleIntervalMs;
+        pf.Pump();                    // 升 1 档发 1 路
         pf.ReportFetched("https://cdn.example.com/s1.ts", new byte[] { 9 }, gen1);
         Assert.True(pf.TryTake("https://cdn.example.com/s1.ts", out _));
 
@@ -228,20 +287,25 @@ public class Vc94ParallelWaterTests
         Assert.False(pf.TryTake("https://cdn.example.com/s2.ts", out _));
         Assert.Equal(0, pf.CacheBytes); // 旧缓存按新清单重整已清
 
-        // 新清单照常排片
+        // 新清单照常排片（档位仍在：换代不清试探档）；
+        // 观察期满且水位不涨，按试探口径再升一档：n1 在途 + 升档补发 n2
+        now += ParallelPrefetcher.EscalateCooldownMs;
         pf.Pump();
-        Assert.Equal(ParallelPrefetcher.MaxExtraConnections, pf.ActiveFetches);
-        Assert.All(requested.Take(2), u => Assert.StartsWith("https://cdn.example.com/n", u));
+        Assert.Equal(2, pf.ActiveFetches);
+        Assert.All(requested, u => Assert.StartsWith("https://cdn.example.com/n", u));
     }
 
     [Fact]
     public void Prefetcher_cache_byte_cap_stops_collection()
     {
+        long now = 0;
+        long water = 10_000;
         var requested = new List<string>();
-        var pf = MakePrefetcher();
+        var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => water, mono: () => now);
         pf.FetchRequested += (_, r) => requested.Add(r.Url);
         Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
-        pf.Pump();
+        now += ParallelPrefetcher.ProbeSampleIntervalMs;
+        pf.Pump();                    // 升 1 档发 1 路
         // 顶满字节硬顶：回报按顶满弃，不再收新片
         pf.ReportFetched("https://cdn.example.com/s1.ts", new byte[ParallelPrefetcher.CacheByteCap], pf.Generation);
         Assert.Equal(ParallelPrefetcher.CacheByteCap, pf.CacheBytes);
@@ -256,7 +320,6 @@ public class Vc94ParallelWaterTests
         long probe = 10_000;
         var pf = MakePrefetcher(watermarkMs: 30_000, waterProbe: () => probe);
         Assert.True(pf.UpdatePlaylist(FiveSegPlaylist, null));
-        pf.Pump();
         pf.ReportFetched("https://cdn.example.com/s1.ts", new byte[] { 1 }, pf.Generation);
         pf.ReportFetched("https://cdn.example.com/s2.ts", new byte[] { 2 }, pf.Generation);
         // 探针 10s + 缓存领先 2 片×5s=20s

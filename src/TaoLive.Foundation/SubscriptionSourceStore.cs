@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -103,7 +103,9 @@ public sealed class SubscriptionSourceStore
         IEnumerable<string>? knownKeys = null)
     {
         var added = 0;
-        var known = knownKeys as ICollection<string> ?? null;
+        // vc96 P3：先物化再判型——延迟枚举（LINQ/迭代器）过 `as ICollection<string>` 必为 null，
+        // 新收录限额静默失效且锁内多次枚举；改 ToList 一次性物化，语义与调用方口径不变
+        var known = knownKeys?.ToList();
         lock (_gate)
         {
             foreach (var (name, url, ua) in probed)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using TaoLive.Foundation;
@@ -35,9 +35,14 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
         _minVariantObserver = minVariantObserver;
     }
 
-    /// <summary>清单判据（与 RacingDataSource.IsSegment 口径互补）：URL 含 .m3u8 即清单。</summary>
-    public static bool IsPlaylist(string? url) =>
-        url is not null && url.Contains(".m3u8", StringComparison.OrdinalIgnoreCase);
+    /// <summary>清单判据（与 RacingDataSource.IsSegment 口径互补）：按 Uri 路径端判 .m3u8，
+    /// 避免查询串带 .m3u8 字样的分片被误判为清单。全限定 System.Uri（本类 Uri 属性遮蔽类型名）。</summary>
+    public static bool IsPlaylist(string? url)
+    {
+        if (url is null) return false;
+        var path = System.Uri.TryCreate(url, System.UriKind.Absolute, out var uri) ? uri.AbsolutePath : url;
+        return path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
+    }
 
     public long Open(AndroidX.Media3.DataSource.DataSpec? dataSpec)
     {
@@ -48,7 +53,7 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
             if (IsPlaylist(url)) return OpenPlaylist(dataSpec, url);
             if (_prefetcher.TryTake(url, out var cached) && cached is { } bytes)
             {
-                _served = new MemoryStream(bytes, writable: false);
+                ServeBytes(bytes);
                 _prefetcher.NotifyConsumed(url);
                 _prefetcher.Pump(); // 取走一片即补发新请求（水满才撤判据在预取器内）
                 return bytes.LongLength;
@@ -89,7 +94,7 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
                 obs(bandwidths.Min());
             }
 
-            _served = new MemoryStream(bytes, writable: false);
+            ServeBytes(bytes);
             _prefetcher.Pump();
             return bytes.LongLength;
         }
@@ -99,12 +104,24 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
         }
     }
 
+    /// <summary>换缝服务流：先释放旧流再挂新流，防覆盖泄漏（vc96 P3）。</summary>
+    private void ServeBytes(byte[] bytes)
+    {
+        try { _served?.Dispose(); } catch { /* 旧流释放失败无害 */ }
+        _served = new MemoryStream(bytes, writable: false);
+    }
+
     public int Read(byte[]? buffer, int offset, int count)
     {
         if (_served is { } served)
         {
             if (count <= 0) return 0;
-            return served.Read(buffer!, offset, count);
+            int read = served.Read(buffer!, offset, count);
+            // vc96 第 19 轮：内存流 EOF 返回 0 违反 Media3 DataSource 契约——length>0 时读到流末尾
+            // 须回 RESULT_END_OF_INPUT(-1)（内层 HTTP 源同口径）。返回 0 会被内核装载线程当
+            // 「读了 0 字节」立即重读，缓存分片读到末尾即空转打满 CPU 且永远读不完（预取命中即卡死）。
+            if (read == 0) return AndroidX.Media3.Common.C.ResultEndOfInput;
+            return read;
         }
         return _inner!.Read(buffer, offset, count);
     }

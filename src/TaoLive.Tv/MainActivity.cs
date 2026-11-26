@@ -565,9 +565,9 @@ public partial class MainActivity : Activity
         {
             WatchArm(playingCh);
         }
-        else if (e.State == PlaybackState.Failed)
+        else if (e.Session == _manager.Current && e.State == PlaybackState.Failed)
         {
-            WatchSeal(); // 失败终态：观看段封账（账本口径=真实观看时长，空态不计）
+            WatchSeal(); // 失败终态：观看段封账（账本口径=真实观看时长，空态不计）；vc96 第 6 轮：限前台会话——热备/让位会话失败不封前台账（事件对全部会话派发，原口径热备一失败就把前台观看段封掉，且前台保持 Playing 不再触发 Playing 重挂账，后续观看时长整段丢失）
         }
         // 逐次换源打点：所有会话（含热备）均落运行日志（自诊断/崩溃日志统计口径）
         // #15：转接器进程级唯一（静态字段首次赋值后恒等），对每个会话 -=/+= 幂等——换壳不双收

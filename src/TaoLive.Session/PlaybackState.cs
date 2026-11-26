@@ -7,7 +7,7 @@
 ///   Idle → Buffering | Failed
 ///   Buffering → Playing | Reconnecting | Failed | Idle（换台中断旧源）
 ///   Playing → Reconnecting | Failed | Idle（正常 Stop / 换台中断）
-///   Reconnecting → Buffering | Failed
+///   Reconnecting → Buffering | Playing（恢复沿） | Failed | Idle（卡流窗口换台，BUG-1 补）
 ///   Failed → Buffering（重试 / 备源切换） | Idle（放弃 / 换台中断）
 /// 其余迁移一律抛 InvalidOperationException（用例把关）。
 /// </summary>

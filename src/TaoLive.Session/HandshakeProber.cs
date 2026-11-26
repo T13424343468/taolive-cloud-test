@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -18,26 +18,35 @@ public interface IHandshakeProber
     Task<int> RaceAsync(Channel channel, IReadOnlyList<SourceEndpoint> candidates, int maxRacers = 3, CancellationToken ct = default);
 }
 
-/// <summary>赛马裁判（刀一抽公共）：并发任务谁先报正数下标谁赢，赢者定即撤全场；全败 -1。</summary>
+/// <summary>赛马裁判（刀一抽公共）：并发任务谁先报正数下标谁赢，赢者定即撤全场；全败 -1。
+/// vc96 P2：赛手任务挂 linked.Token（撤场即真取消，不再空转）；收场走 finally 统一撤场。</summary>
 internal static class HandshakeRace
 {
-    public static async Task<int> FirstWinnerAsync(List<Task<int>> tasks, CancellationToken ct)
+    public static async Task<int> FirstWinnerAsync(Func<CancellationToken, List<Task<int>>> startTasks, CancellationToken ct)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        int pending = tasks.Count;
-        while (pending > 0)
+        try
         {
-            var done = await Task.WhenAny(tasks).ConfigureAwait(false);
-            pending--;
-            int result = await done.ConfigureAwait(false);
-            if (result >= 0)
+            var tasks = startTasks(linked.Token); // 赛手挂 linked.Token：赢者定即真取消在途路
+            int pending = tasks.Count;
+            while (pending > 0)
             {
-                linked.Cancel(); // 赢者已定：撤其余在途
-                return result;
+                var done = await Task.WhenAny(tasks).ConfigureAwait(false);
+                pending--;
+                int result = await done.ConfigureAwait(false);
+                if (result >= 0)
+                {
+                    linked.Cancel(); // 赢者已定：撤其余在途
+                    return result;
+                }
+                tasks.Remove(done);
             }
-            tasks.Remove(done);
+            return -1;
         }
-        return -1;
+        finally
+        {
+            linked.Cancel(); // 撤场收尾：异常/全败路径同样撤清在途（vc96 P2）
+        }
     }
 }
 
@@ -54,11 +63,11 @@ public sealed class HttpHandshakeProber : IHandshakeProber
         ArgumentNullException.ThrowIfNull(candidates);
         if (candidates.Count == 0) return -1;
         int racerCount = Math.Clamp(maxRacers, 1, candidates.Count);
-        var tasks = candidates.Take(racerCount).Select(async (ep, i) =>
+        return await HandshakeRace.FirstWinnerAsync(token => candidates.Take(racerCount).Select(async (ep, i) =>
         {
             try
             {
-                using var resp = await Http.GetAsync(ep.Url, HttpCompletionOption.ResponseHeadersRead, ct)
+                using var resp = await Http.GetAsync(ep.Url, HttpCompletionOption.ResponseHeadersRead, token)
                     .ConfigureAwait(false);
                 int code = (int)resp.StatusCode;
                 return code >= 200 && code < 400 ? i : -1;
@@ -67,8 +76,7 @@ public sealed class HttpHandshakeProber : IHandshakeProber
             {
                 return -1; // 超时/取消/网络错：本路败，不掀整场
             }
-        }).ToList();
-        return await HandshakeRace.FirstWinnerAsync(tasks, ct).ConfigureAwait(false);
+        }).ToList(), ct).ConfigureAwait(false);
     }
 }
 
@@ -96,7 +104,7 @@ public sealed class TicketFusedProber : IHandshakeProber
         ArgumentNullException.ThrowIfNull(candidates);
         if (candidates.Count == 0 || channel is null) return -1;
         int racerCount = Math.Clamp(maxRacers, 1, candidates.Count);
-        var tasks = candidates.Take(racerCount).Select(async (ep, i) =>
+        return await HandshakeRace.FirstWinnerAsync(token => candidates.Take(racerCount).Select(async (ep, i) =>
         {
             try
             {
@@ -105,13 +113,12 @@ public sealed class TicketFusedProber : IHandshakeProber
                     var url = await _resolve(channel, ep).ConfigureAwait(false); // 取票即探通（合成一次）
                     return string.IsNullOrEmpty(url) ? -1 : i;
                 }
-                return await _inner.RaceAsync(channel, new[] { ep }, 1, ct).ConfigureAwait(false) >= 0 ? i : -1;
+                return await _inner.RaceAsync(channel, new[] { ep }, 1, token).ConfigureAwait(false) >= 0 ? i : -1;
             }
             catch
             {
                 return -1; // 单路败不掀整场
             }
-        }).ToList();
-        return await HandshakeRace.FirstWinnerAsync(tasks, ct).ConfigureAwait(false);
+        }).ToList(), ct).ConfigureAwait(false);
     }
 }

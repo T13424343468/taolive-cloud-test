@@ -406,9 +406,12 @@ public partial class MainActivity
     /// <summary>播放/热备是否在跑（拉源避让判据：任一在跑即让道）。</summary>
     private bool IsPlaybackBusy() => _manager?.Current is not null || _manager?.Standby is not null;
 
-    /// <summary>后台拉合集并试活入库；播放中挂起待停播补跑（startup 静默不弹提示）。线程池跑，不占主线程。</summary>
+    /// <summary>后台拉合集并试活入库；播放中挂起待停播补跑（startup 静默不弹提示）。线程池跑，不占主线程。
+    /// vc96 第 12 轮 P3 修：入口补源订阅开关闸——挂起补跑回调（ScheduleSubRecheck）只查挂起账与播放占用，
+    /// 用户关掉开关后停播仍会续跑拉源并入频道（违背「关=不拉源」语义）；入口统一拦截并清挂起账。</summary>
     private void KickSubscriptionRefresh(bool startup)
     {
+        if (!_subEnabled) { _subRefreshPending = false; return; } // vc96 第 12 轮 P3 修：关=不拉源，挂起账一并清
         if (IsPlaybackBusy())
         {
             _subRefreshPending = true;
@@ -425,16 +428,17 @@ public partial class MainActivity
             {
                 var added = SubscriptionSourceStore.Shared
                     .RefreshAsync(names, TaoLive.Catalog.TicketResolver.ClientUserAgent,
-                        abortWhenBusy: () => Shell?.IsPlaybackBusy() ?? true).GetAwaiter().GetResult();
+                        abortWhenBusy: () => (Shell?.IsPlaybackBusy() ?? true) || !MainActivity._subEnabled).GetAwaiter().GetResult(); // vc96 第 12 轮 P3 修：拉源途中关开关即中止（在途轮也守开关语义）；vc96 出包闸修：static 成员经类名访问（Shell?. 实例引用在 Release 档 CS0176）
                 RunOnUiThread(() =>
                 {
+                    if (!_subEnabled) return; // vc96 第 12 轮 P3 修：拉源途中被关（abort 优雅返回带部分结果），并入前再守一道，关=不并入不弹提示
                     // 订阅新收录频道并入列表（目录外主流台，表尾追加）；并入数>0 才提示（startup 静默不弹）
                     var newChannels = MergeSubscriptionChannels(silent: startup);
                     if (!startup && newChannels > 0) ShowToast($"源订阅：新收录频道 {newChannels} 个");
                     else if (!startup && added > 0) ShowToast($"源订阅：新收录 {added} 路");
                 });
-                // 刷新途中播放开始了（拉源中途让道）：挂起待停播补跑，保证收录完整
-                if (IsPlaybackBusy() && !_subRefreshPending)
+                // 刷新途中播放开始了（拉源中途让道）：挂起待停播补跑，保证收录完整（开关已关则不挂，vc96 第 12 轮 P3 修）
+                if (_subEnabled && IsPlaybackBusy() && !_subRefreshPending)
                 {
                     _subRefreshPending = true;
                     _subStartupPendingRun = startup;

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using TaoLive.Catalog;
 using TaoLive.Foundation;
 using Xunit;

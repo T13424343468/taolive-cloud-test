@@ -171,7 +171,8 @@ public sealed class PlaybackSession
         var winner = _queue[winnerIndex];
         _queue.RemoveAt(winnerIndex);
         _queue.Insert(0, winner);
-        if (_endpointIndex >= 0 && _endpointIndex < winnerIndex) _endpointIndex++; // 在播路在胜者之前：右移一位保身份
+        if (_endpointIndex == winnerIndex) _endpointIndex = 0;          // 在播路即胜者：随胜者归队头（vc96 P1 补 == 分支）
+        else if (_endpointIndex >= 0 && _endpointIndex < winnerIndex) _endpointIndex++; // 在播路在胜者之前：右移一位保身份
     }
 
     /// <summary>链路健康线（vc85 两增强①）：坏帧/掉速观察统一喂账；未接=null 静默。</summary>
@@ -394,6 +395,7 @@ public sealed class PlaybackSession
         _smoothnessTimes.Clear(); // vc70：平稳疑点账同口径，换台清零不跟人走
         _videoStallTimes.Clear(); // vc87：停滞账同口径清零
         _microlagSeekAtMs = null; // 微卡回退防振铃账随换台清零（同口径）
+        _lastFailoverAtMs = null; // vc96 P3：预防介入冷却账随换台清零，不跟人走（同限速账口径）
         Transition(PlaybackState.Buffering, "change channel");
         MarkBlindZoneIfAny(_queue[0]); // 盲区标记（微卡修法三条③）：同口径，换台起播首路即标
         MarkEndpointStarted(); // vc87 票账降权：端点起播打点
@@ -431,7 +433,7 @@ public sealed class PlaybackSession
         {
             return; // 同线无操作：不打断在播画面
         }
-        SwitchLineCore(endpointIndex, "line switch", "manual line switch");
+        SwitchLineCore(endpointIndex, "line switch", "manual line switch", userIntent: true);
     }
 
     /// <summary>对齐切原语（vc85 蓝本三原语之「对齐切」）：升降档/回主源统一落点。
@@ -452,7 +454,7 @@ public sealed class PlaybackSession
         {
             return; // 同线无操作：不打断在播画面
         }
-        SwitchLineCore(endpointIndex, "line switch", $"aligned switch: {reason}");
+        SwitchLineCore(endpointIndex, "line switch", $"aligned switch: {reason}", userIntent: false);
         AlignedSwitched?.Invoke(this, reason);
     }
 
@@ -460,7 +462,7 @@ public sealed class PlaybackSession
     public event EventHandler<string>? AlignedSwitched;
 
     /// <summary>换线动作核（SwitchLine/AlignedSwitchTo 共用）：状态清账与起播的单一实现点。</summary>
-    private void SwitchLineCore(int endpointIndex, string idleTag, string bufferingTag)
+    private void SwitchLineCore(int endpointIndex, string idleTag, string bufferingTag, bool userIntent)
     {
         // 两个入口（SwitchLine/AlignedSwitchTo）已各自行首校验非空；核内再断言一次供编译器收窄
         var startedChannel = _channel ?? throw new InvalidOperationException("SwitchLineCore requires a started channel");
@@ -473,7 +475,7 @@ public sealed class PlaybackSession
         FailoverCount = 0;
         _freshTicketRetried = false; // vc69：手动换线重记坏票重试机会
         _ticketRetrySinceMs = null;
-        _proactiveCount = 0; // vc67：手动换线=老板意图，重给预防介入预算
+        if (userIntent) _proactiveCount = 0; // vc67：手动换线=老板意图，重给预防介入预算；vc96 第 5 轮：对齐切（userIntent=false）不清预算，vc67 封顶 3 次恢复效力
         _stallTimes.Clear(); // 手动换线：欠载账随线清零
         _smoothnessTimes.Clear(); // vc70：平稳账随线清零
         _videoStallTimes.Clear(); // vc87：停滞账同口径清零
@@ -683,7 +685,11 @@ public sealed class PlaybackSession
                 {
                     // 轻试探活：只重放队首一拍（既有播放重试路径），不重开限速账不重记坏票账
                     Transition(PlaybackState.Buffering, "self-heal reprobe");
+                    _endpointIndex = 0;    // 轻试重放队首：端点索引先归零，打点按队首身份记账（vc96 第 5 轮：与慢轮同序）
                     MarkEndpointStarted(); // vc87 票账降权：轻试探活也是端点起播
+                    _stallTimes.Clear();   // 轻试探活：停滞账清零重记（vc96 P1，与慢轮同口径）
+                    _smoothnessTimes.Clear();
+                    _videoStallTimes.Clear();
                     _player.Play(new PlaybackParams(probeChannel, _queue[0], _preferLowLatency));
                     ReattachSurface();
                 }
@@ -973,6 +979,7 @@ public sealed class PlaybackSession
             // 预防冷却窗与介入封顶在入口已过闸保留。备源全挂仍由看门狗/报错保命路径兜底。
             SessionTrace.Emit($"[软着陆] {DescribeChannel()} 预防判据命中改走对齐切（硬切退役）：切下一路（原线路 {CurrentLineIndex + 1}/{LineCount}）");
             AlignedSwitchTo(_endpointIndex + 1, "proactive soft landing");
+            _lastFailoverAtMs = _clock.NowMs; // vc96 第 5 轮：软切也布预防冷却账（硬切路径 TryFailover 同口径），防横跳闸不再双失守
             return true;
         }
         // 走既有自救口径：先归 Failed 再切线（状态机矩阵 Playing 不直跳 Buffering，与看门狗/报错同路）

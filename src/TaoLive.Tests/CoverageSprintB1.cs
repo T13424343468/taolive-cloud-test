@@ -1,4 +1,4 @@
-using TaoLive.Foundation;
+﻿using TaoLive.Foundation;
 using TaoLive.Model;
 using TaoLive.Session;
 using Xunit;
@@ -296,7 +296,12 @@ public class CoverageSprintB1
         Assert.NotNull(e);
         Assert.Equal(0, e!.MicrolagCount); // 首拍只记窗口起点，不坐实
 
-        clock.Advance(10_000); // 窗内（60s）第二拍：坐实 1 次微卡并清窗口
+        clock.Advance(10_000); // 窗内（60s）第二拍：攒账不坐实（vc96 P3：阈值 3 次真生效）
+        store.ReportBufferingTrip(Epg, Src, Ep);
+        Assert.Equal(0, e.MicrolagCount);
+        Assert.NotEqual(0, e.MicrolagLastMs); // 窗口未清，仍在攒
+
+        clock.Advance(10_000); // 窗内第三拍：坐实 1 次微卡并清窗口
         store.ReportBufferingTrip(Epg, Src, Ep);
         Assert.Equal(1, e.MicrolagCount);
         Assert.Equal(0, e.MicrolagLastMs); // 坐实后清窗口

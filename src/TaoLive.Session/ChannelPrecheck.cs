@@ -103,10 +103,12 @@ public class ChannelPrecheck
 
     private static string GroupKey(Channel ch) => NormalizeName(ch.Name);
 
-    /// <summary>同频道各来源归并键：台名去空格后一致视为同一频道（不硬编码机型与来源）。</summary>
+    /// <summary>同频道各来源归并键：台名去空格/全角空格/半全角连字符后一致视为同一频道
+    /// （vc96 P3：与 SubscriptionSourceStore.NormalizeName 两库统一口径，不硬编码机型与来源）。</summary>
     internal static string NormalizeName(string name)
     {
-        var trimmed = (name ?? "").Replace(" ", "").Replace("　", "");
+        var trimmed = (name ?? "").Replace(" ", "").Replace("　", "")
+            .Replace("-", "").Replace("－", "");
         return string.IsNullOrEmpty(trimmed) ? (name ?? "") : trimmed;
     }
 
@@ -217,7 +219,8 @@ public class ChannelPrecheck
     }
 
     /// <summary>统一写入口径：探活结论、连续失败淘汰、落盘脏标记都在这一处（预检循环与播放实测共用）。
-    /// #78 健康账唯一令（2026-11-15）：写账只落唯一健康账；幽灵评分账写入已随账退役。</summary>
+    /// #78 健康账唯一令（2026-11-15）：写账只落唯一健康账；幽灵评分账写入已随账退役。
+    /// vc96 P3：读改写包 lock(entry) 原子化（并发回写不再丢更新）；事件移到锁外发（订阅方异常/重入不毒化锁）。</summary>
     private void WriteSourceResult(Channel ch, bool ok, long nowMs, long ms = 0, bool timeout = false, bool playback = false)
     {
         var key = SourceKey(ch);
@@ -226,24 +229,35 @@ public class ChannelPrecheck
             SourceId = ch.SourceId,
             EpgKey = ch.EpgKey,
         });
-        entry.State = ok ? ChannelHealth.Alive : ChannelHealth.Dead;
-        entry.CheckedAtMs = nowMs > 0 ? nowMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        entry.ConsecutiveFails = ok ? 0 : entry.ConsecutiveFails + 1;
-        // 播放实测=强证据（#4 修）：真画面在手，绿点判据直接达标；预检轻探照旧逐轮累计
-        var prevOks = entry.ConsecutiveOks;
-        entry.ConsecutiveOks = ok
-            ? (playback ? MarkGreenMinConsecutiveOks : entry.ConsecutiveOks + 1)
-            : 0;
-        if (!ok && entry.ConsecutiveFails >= RetireAfterConsecutiveFails)
+        bool retired = false;
+        bool greenCrossed = false;
+        lock (entry)
         {
-            _sourceHealth.TryRemove(key, out _); // 连挂自动淘汰：不再被选源取用，交回预检重探
-            HealthStore?.MarkDirty();
-            return;
+            entry.State = ok ? ChannelHealth.Alive : ChannelHealth.Dead;
+            entry.CheckedAtMs = nowMs > 0 ? nowMs : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            entry.ConsecutiveFails = ok ? 0 : entry.ConsecutiveFails + 1;
+            // 播放实测=强证据（#4 修）：真画面在手，绿点判据直接达标；预检轻探照旧逐轮累计
+            var prevOks = entry.ConsecutiveOks;
+            entry.ConsecutiveOks = ok
+                ? (playback ? MarkGreenMinConsecutiveOks : entry.ConsecutiveOks + 1)
+                : 0;
+            if (!ok && entry.ConsecutiveFails >= RetireAfterConsecutiveFails)
+            {
+                _sourceHealth.TryRemove(key, out _); // 连挂自动淘汰：不再被选源取用，交回预检重探
+                retired = true;
+            }
+            else
+            {
+                HealthStore?.MarkDirty();
+                // 绿门槛跨越补发刷新（断点二 2026-11-16 拍板）：来源账从不足额跨到足额时，频道级状态可能
+                // 未翻转（MarkState 仅翻转发事件），列表绿点会干等下次翻转——此处补发一次事件，刷新节流在壳层。
+                greenCrossed = ok && prevOks < MarkGreenMinConsecutiveOks
+                    && entry.ConsecutiveOks >= MarkGreenMinConsecutiveOks;
+            }
         }
-        HealthStore?.MarkDirty();
-        // 绿门槛跨越补发刷新（断点二 2026-11-16 拍板）：来源账从不足额跨到足额时，频道级状态可能
-        // 未翻转（MarkState 仅翻转发事件），列表绿点会干等下次翻转——此处补发一次事件，刷新节流在壳层。
-        if (ok && prevOks < MarkGreenMinConsecutiveOks && entry.ConsecutiveOks >= MarkGreenMinConsecutiveOks)
+        if (retired) return;
+        // 事件锁外发（vc96 P3）：StateChanged 订阅方异常/重入回写不再死锁或毒化 entry 锁
+        if (greenCrossed)
         {
             try { StateChanged?.Invoke(ch.EpgKey, ChannelHealth.Alive); }
             catch (Exception ex) { Report($"状态事件订阅方异常（不影响状态账本）：{ex.Message}"); }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,6 +32,7 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
     private AndroidX.Media3.DataSource.DataSpec? _spec;
     private long _openAtMs;
     private bool _raced;        // 本分片已判过竞速（一片最多赛一次）
+    private bool _firstByteRecorded; // 本分片首字节已入账（vc96 P3：只记首字节，后续读数不进均值）
     private byte? _pendingByte; // 赛跑者已取到的首字节（换缝：先吐这字节再走正常读）
 
     public RacingDataSource(Func<AndroidX.Media3.DataSource.IDataSource> innerFactory)
@@ -51,6 +52,7 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
         _spec = dataSpec;
         _openAtMs = Environment.TickCount64;
         _raced = false;
+        _firstByteRecorded = false;
         _pendingByte = null;
         _inner = _innerFactory();
         foreach (var l in _listeners) _inner.AddTransferListener(l);
@@ -82,7 +84,11 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
         }
         var active = _inner!;
         int read = active.Read(buffer, offset, count);
-        if (read > 0) RecordFirstByte(Environment.TickCount64 - _openAtMs);
+        if (read > 0 && !_firstByteRecorded)
+        {
+            _firstByteRecorded = true; // 只记首字节：后续读数不进滑动均值（vc96 P3）
+            RecordFirstByte(Environment.TickCount64 - _openAtMs);
+        }
         return read;
     }
 
@@ -99,6 +105,10 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
                 racer.Open(spec);
                 return racer.Read(probe, 0, 1);
             });
+            // 败者任务异常必须有人观察（vc96 P3）：挂 OnlyOnFaulted 观察器防 UnobservedTaskException
+            _ = raceTask.ContinueWith(
+                t => _ = t.Exception,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
             var winner = Task.WhenAny(raceTask, Task.Delay(RacerWaitMs)).GetAwaiter().GetResult();
             if (ReferenceEquals(winner, raceTask) && raceTask.Status == TaskStatus.RanToCompletion && raceTask.Result > 0)
             {
@@ -158,22 +168,35 @@ public sealed class RacingDataSourceFactory : Java.Lang.Object, AndroidX.Media3.
     /// 内核单分片重开受本封顶 2 次约束；会话退避自救兜底——无紧密空转，不改行为。</summary>
     public const int TicketReissueMaxPerOpen = 2;
 
-    /// <summary>并发预取器（vc94 激进版，老板 2026-11-26 拍板）：内核装配时注入；null=不启用（链路原样）。</summary>
+    /// <summary>并发预取器（vc94 激进版，老板 2026-11-26 拍板）：内核装配时注入；null=不启用（链路原样）。
+    /// vc96 P2：静态属性仅作未接线时的进程级兜底；实例级接线优先（后建内核不再覆盖前者）。</summary>
     public static ParallelPrefetcher? Prefetcher { get; set; }
 
-    /// <summary>最低变体带宽回调（vc94 低档起播）：清单发现多档即回调最低 BANDWIDTH（bps）；null=不接线。</summary>
+    /// <summary>最低变体带宽回调（vc94 低档起播）：清单发现多档即回调最低 BANDWIDTH（bps）；null=不接线。
+    /// vc96 P2：静态属性仅作未接线时的进程级兜底；实例级接线优先。</summary>
     public static Action<long>? MinVariantBitrateObserver { get; set; }
+
+    private readonly ParallelPrefetcher? _prefetcher;          // vc96 P2：实例级预取器（随内核走）
+    private readonly Action<long>? _minVariantObserver;        // vc96 P2：实例级低档观察（随内核走）
+
+    /// <summary>实例级接线（vc96 P2）：预取器与低档观察随内核实例装配，后建实例不再覆盖前者的静态接线。</summary>
+    public RacingDataSourceFactory(ParallelPrefetcher? prefetcher, Action<long>? minVariantObserver)
+    {
+        _prefetcher = prefetcher;
+        _minVariantObserver = minVariantObserver;
+    }
 
     public AndroidX.Media3.DataSource.IDataSource CreateDataSource()
     {
-        var prefetcher = Prefetcher;
+        var prefetcher = _prefetcher ?? Prefetcher;
+        var observer = _minVariantObserver ?? MinVariantBitrateObserver;
         if (prefetcher is null)
         {
             return new TicketSwapDataSource(() => new RacingDataSource(CreateInner));
         }
         // vc94 链路：TicketSwap(Racing(ParallelPrefetch(inner)))——竞速与换票语义原样保留，预取壳垫在最内层
         return new TicketSwapDataSource(() => new RacingDataSource(
-            () => new ParallelPrefetchDataSource(CreateInner, prefetcher, MinVariantBitrateObserver)));
+            () => new ParallelPrefetchDataSource(CreateInner, prefetcher, observer)));
     }
 
     internal static AndroidX.Media3.DataSource.IDataSource CreateInner()

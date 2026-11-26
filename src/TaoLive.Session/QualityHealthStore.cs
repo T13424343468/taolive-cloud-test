@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Linq;
 
@@ -16,6 +16,7 @@ public sealed class QualityHealthEntry
 {
     public string K { get; set; } = "";
     public long MicrolagCount;   // 微卡顿累计（进缓冲事件，短窗反复才上账；择路降权依据）
+    public long MicrolagTrips;   // 当前窗口内进缓冲次数（vc96 P3：按 MicrolagTripsPerTick 次阈值坐实，常量不再死置）
     public long GoodCount;       // 播放实测成功计数（长播健康/切换结果侧记）
     public long LastGoodUtcMs;   // 最近实测成功（Unix 毫秒，0=无实测）
     public bool BlindZone;       // 盲区标记：非 .m3u8 直流/事后判定无时间锚的源「天然贴边」（微卡修法三条③）
@@ -54,7 +55,9 @@ public sealed class QualityHealthStore
     private static string Key(string epgKey, string sourceId, string endpointUrl) =>
         $"{epgKey ?? ""}|{sourceId ?? ""}|{endpointUrl ?? ""}";
 
-    /// <summary>进缓冲记账（播放泵线程）：窗口内反复进缓冲才坐实微卡，单次抖动不入账（四原则：瞬时断流不记坏账）。</summary>
+    /// <summary>进缓冲记账（播放泵线程）：窗口内进缓冲满 <see cref="MicrolagTripsPerTick"/> 次才坐实微卡
+    /// （vc96 P3：阈值按常量真生效——第 1 拍开窗、第 2 拍攒账不坐实、第 3 拍坐实），单次抖动不入账
+    /// （四原则：瞬时断流不记坏账）。</summary>
     public void ReportBufferingTrip(string epgKey, string sourceId, string endpointUrl)
     {
         var e = _entries.GetOrAdd(Key(epgKey, sourceId, endpointUrl), k => new QualityHealthEntry { K = k });
@@ -62,19 +65,23 @@ public sealed class QualityHealthStore
         {
             long now = _monoMs();
             long windowStart = now - (long)MicrolagWindow.TotalMilliseconds;
-            // 窗口内已有一次未坐实记录：本次进缓冲是窗内第 N 次试探；用 MicrolagLastMs 兼作窗口起点。
-            // 达标即坐实并清窗口，未达标仅记最近时间（下一拍继续攒）。
+            // 窗口内已有未坐实记录：本次进缓冲是窗内第 N 拍；用 MicrolagLastMs 兼作窗口最近进缓冲时刻。
+            // 攒满 MicrolagTripsPerTick 拍即坐实并清窗口，未满仅续窗（下一拍继续攒）。
             if (e.MicrolagLastMs > 0 && e.MicrolagLastMs >= windowStart) // 0=窗口已清/无账哨兵，不判在窗
             {
+                e.MicrolagTrips++;
                 e.MicrolagLastMs = now; // 窗内再来一拍：滚动窗口按最近进缓冲续
+                if (e.MicrolagTrips < MicrolagTripsPerTick) return; // 未满阈值：不坐实（vc96 P3）
             }
             else
             {
-                e.MicrolagLastMs = now;
+                e.MicrolagLastMs = now; // 新窗口第 1 拍：开窗攒账
+                e.MicrolagTrips = 1;
                 return;
             }
             e.MicrolagCount++;
             e.MicrolagLastMs = 0; // 坐实一次清窗口：下个窗口重新攒，不连环记同一波
+            e.MicrolagTrips = 0;
         }
     }
 

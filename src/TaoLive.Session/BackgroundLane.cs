@@ -135,9 +135,15 @@ public static class BackgroundLane
                 await Task.Delay(500, ct).ConfigureAwait(false);
             }
             int wait = PendingWaitMs();
-            if (wait <= 0) break;
-            await Task.Delay(Math.Min(wait, 2_000), ct).ConfigureAwait(false); // 2 秒粒度轮询，让位不占核
+            if (wait > 0)
+            {
+                await Task.Delay(Math.Min(wait, 2_000), ct).ConfigureAwait(false); // 2 秒粒度轮询，让位不占核
+                continue;
+            }
+            await Gate.WaitAsync(ct).ConfigureAwait(false); // 拿到执行权（先到先得）
+            // 拿锁后复核（vc96 P2 过闸竞态）：排队期间间隔/门控可能已变，不过闸则让位重排
+            if (PendingWaitMs() <= 0) return;
+            Gate.Release();
         }
-        await Gate.WaitAsync(ct).ConfigureAwait(false); // 拿到执行权（先到先得）
     }
 }

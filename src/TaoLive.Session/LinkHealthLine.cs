@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace TaoLive.Session;
 
@@ -24,13 +24,19 @@ public sealed class LinkHealthLine
     /// <summary>掉速 EMA 半衰窗：约 8 秒（快速跟上恶化、又不被单拍抖动牵着走）。</summary>
     public static readonly TimeSpan DropEmaHalfLife = TimeSpan.FromSeconds(8);
 
+    /// <summary>坏帧账半衰窗（vc96 第2轮）：约 10 分钟——坏帧信号只服务近期择路，
+    /// 攒过的坏帧随时间指数衰减归零；不衰减则坏帧终身累积，裕度永久带负项，
+    /// 偷拉管道被永久钳死（AllowFactor 恒 0）、回主源水位条件永不满足。</summary>
+    public static readonly TimeSpan BadFrameHalfLife = TimeSpan.FromMinutes(10);
+
     private readonly object _gate = new();
     private readonly Func<long> _monoMs;
     private double _dropRatePerSec;      // 水位掉速（毫秒水位 / 秒，正值=在掉）
     private long _dropEmaAtMs = -1;     // -1=尚无首拍（0 是合法时钟值，不能当哨兵）
     private double _lastIntervalMs = -1; // 最近分片间隔（毫秒；-1=无账）
     private double _lastThroughputKbps;  // 最近下载吞吐（kbps；0=无账）
-    private long _badFrameCount;         // 累计坏帧（喂账方累加，封顶换算）
+    private long _badFrameCount;         // 累计坏帧（喂账方累加，封顶换算；按半衰窗指数衰减，vc96 第2轮）
+    private long _badFramesAtMs = -1;    // 坏帧账最近落账/衰减时刻（-1=尚无账，0 是合法时钟值不能当哨兵）
 
     public LinkHealthLine(Func<long>? monoMs = null)
     {
@@ -69,7 +75,33 @@ public sealed class LinkHealthLine
     public void ReportBadFrames(int count)
     {
         if (count <= 0) return;
-        lock (_gate) _badFrameCount += count;
+        lock (_gate)
+        {
+            DecayBadFramesLocked(_monoMs());
+            _badFrameCount += count;
+        }
+    }
+
+    /// <summary>坏帧账时间衰减（vc96 第2轮，锁内调用）：按半衰窗指数衰减并回写账面与时刻——
+    /// 与「质量账只服务近期择路」口径一致，坏帧攒过即随时间淡出，不终身带罚。</summary>
+    private void DecayBadFramesLocked(long nowMs)
+    {
+        if (_badFramesAtMs < 0 || _badFrameCount <= 0)
+        {
+            _badFramesAtMs = nowMs;
+            return;
+        }
+        var elapsed = nowMs - _badFramesAtMs;
+        if (elapsed > 0)
+        {
+            var factor = Math.Exp(-elapsed / BadFrameHalfLife.TotalMilliseconds * 0.693);
+            // 折算残账：≥1 帧期间向上取整保信号不提前消失；低于 1 帧归零——
+            // 若恒向上取整，残账永远卡 1 帧，margin 恒带 -0.03 负项，低码率档（吞吐≤2.24Mbps
+            // 补不回正）AllowFactor 恒 0，偷拉管道仍被永久钳死（vc96 第3轮修正）。
+            var decayed = _badFrameCount * factor;
+            _badFrameCount = decayed < 1 ? 0 : (long)Math.Ceiling(decayed);
+        }
+        _badFramesAtMs = nowMs;
     }
 
     /// <summary>
@@ -81,6 +113,7 @@ public sealed class LinkHealthLine
     {
         lock (_gate)
         {
+            DecayBadFramesLocked(_monoMs()); // 读路径同步衰减：坏帧停喂后残账也随时间淡出，不终身带罚（vc96 第2轮）
             double stock = Math.Clamp(_dropRatePerSec / 20_000.0, -1, 1);
             double interval = _lastIntervalMs < 0 ? 0 : Math.Clamp((_lastIntervalMs - 5000.0) / 5000.0, -1, 1);
             double throughput = _lastThroughputKbps <= 0 ? 0 : Math.Clamp((_lastThroughputKbps - 2000.0) / 2000.0, -1, 1);
@@ -98,5 +131,21 @@ public sealed class LinkHealthLine
     {
         var m = Margin();
         return m > 0 ? 1.0 : 0.0;
+    }
+
+    /// <summary>复位（vc96 第3轮，换台口径）：观察账全清——坏帧/掉速/间隔/吞吐都是本台线路观察量，
+    /// 换台后旧账跟去新台会把新台裕度压负（30 帧坏帧账按 10 分钟半衰约 51 分钟才归零），
+    /// 偷拉管道被旧账钳死、码率被旧账压档；与码率治理器「账只记本台，换台即 Reset」同口径。</summary>
+    public void Reset()
+    {
+        lock (_gate)
+        {
+            _dropRatePerSec = 0;
+            _dropEmaAtMs = -1;
+            _lastIntervalMs = -1;
+            _lastThroughputKbps = 0;
+            _badFrameCount = 0;
+            _badFramesAtMs = -1;
+        }
     }
 }

@@ -920,4 +920,13 @@ internal sealed class LoggingPlayer : IPlayer
         SeekBackCalls.Add(backMs);
         Log.Add($"SeekBack:{backMs}");
     }
+
+    /// <summary>起播库存档记录（vc94 深水档断言用）：DIM 原语覆写记账。</summary>
+    public List<BufferInventory.Mode> GateModes { get; } = new();
+
+    public void SetStartupGateMode(BufferInventory.Mode mode)
+    {
+        GateModes.Add(mode);
+        Log.Add($"Gate:{mode}");
+    }
 }

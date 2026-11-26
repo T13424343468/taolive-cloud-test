@@ -27,8 +27,10 @@ public sealed class PlaybackSessionManager
     /// <summary>回主源健康账门槛：主源预检轮次连续命中 OK 至少此次数（复用预检结果，不另起独立探测）。</summary>
     public const int ReturnToPrimaryMinConsecutiveOks = 3;
 
-    /// <summary>热备攒流窗口（方案书 v75）：窗口内攒不到起播门槛线（切片预取双曲线 7 秒同口径）即放弃热备转冷切，不无限等；终值随真机定标。</summary>
-    public static readonly TimeSpan StandbyAccumulateWindow = TimeSpan.FromSeconds(7);
+    /// <summary>热备攒流窗口（方案书 v75 初值 7 秒；vc94 深水档批 2026-11-26 老板拍板 7→15 秒：
+    /// 热备改 StartFull 档攒流，起播门槛 7 秒+下载余量，窗口同步放宽保热备就绪率；终值随真机定标）：
+    /// 窗口内攒不到起播门槛线即放弃热备转冷切，不无限等。</summary>
+    public static readonly TimeSpan StandbyAccumulateWindow = TimeSpan.FromSeconds(15);
 
     /// <summary>会话表容量（收口批③·LRU 按内存分档）：高配 8（兼作既有常量默认）；低配 4。</summary>
     public const int HighMemorySessions = 8;
@@ -226,11 +228,12 @@ public sealed class PlaybackSessionManager
         {
             Touch(channel.Id);
             _supersededAtMs.Remove(channel.Id); // 重新成为热备，超龄账清零
+            existing.SetStartupGate(BufferInventory.Mode.StartFull); // vc94 深水档：热备攒流即深水档，接管即 7 秒出画
             existing.ChangeChannel(channel);
             existing.PausePlayback(); // vc68 漏音根因①：备台静音攒流，不出声不出画（缓冲照常）
             Standby = existing;
             _standbySinceMs = _monotonicMs(); // 攒流超时账起算（v75）
-            SessionTrace.Emit($"[热备] 备台 {channel.Name} 起播攒流（会话表复用）");
+            SessionTrace.Emit($"[热备] 备台 {channel.Name} 起播攒流（会话表复用，StartFull 深水档）");
             return existing;
         }
         var session = _sessionFactory();
@@ -239,11 +242,12 @@ public sealed class PlaybackSessionManager
         _supersededAtMs.Remove(channel.Id);
         WireSession(session);
         EvictIfOverCapacity();
+        session.SetStartupGate(BufferInventory.Mode.StartFull); // vc94 深水档：热备攒流即深水档，接管即 7 秒出画
         session.ChangeChannel(channel); // 无面起播：攒流到门槛线，不接管画面
         session.PausePlayback(); // vc68 漏音根因①：备台静音攒流，不出声不出画（缓冲照常）
         Standby = session;
         _standbySinceMs = _monotonicMs();
-        SessionTrace.Emit($"[热备] 备台 {channel.Name} 起播攒流（新会话）");
+        SessionTrace.Emit($"[热备] 备台 {channel.Name} 起播攒流（新会话，StartFull 深水档）");
         return session;
     }
 
@@ -316,6 +320,8 @@ public sealed class PlaybackSessionManager
         // 之后才接管，起播期零后台网络门全程关不上（预检探针抢道换台带宽）。次序换位即闭合。
         session.IsForeground = true;
         EvictIfOverCapacity();
+        // vc94 深水档：冷切一律回默认档——防热备残档（StartFull）经会话表复用外溢到冷切口径
+        session.SetStartupGate(BufferInventory.Default);
         session.ChangeChannel(channel);
         RaiseCurrentChanged(session);
         return session;

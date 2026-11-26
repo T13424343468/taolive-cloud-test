@@ -1,0 +1,30 @@
+v49 出包基线对照 · 2026-11-26 11:04:04 UTC
+区间：5f179ae → HEAD
+
+状态   base hash    head hash    文件
+M        3cd80f7      d7a801d      .github/workflows/cloud-real-device-test.yml
+M        760ce91      cb5fc9f      .verify/pkg92/TaoLive-1.7-vc92.zip
+M        930b19c      07bef0d      .verify/pkg92/TaoLive-1.7-vc92/apk.sha256
+M        777380e      b5744e0      .verify/pkg92/TaoLive-1.7-vc92/com.taolive.tv-Signed.apk
+M        b2b2a6b      b44945d      .verify/pkg92/TaoLive-1.7-vc92/com.taolive.tv-Signed.apk.v45-report.txt
+M        e57fcc1      9e6cd68      .verify/pkg92/TaoLive-1.7-vc92/com.taolive.tv-Signed.apk.v46-report.txt
+M        (新增)     (删除)     ".verify/pkg92/TaoLive-1.7-vc92/\344\272\244\344\273\230\350\257\264\346\230\216.txt"
+M        f9634ea      68b8bcf      VERSION_LEDGER.md
+M        55bd802      551a0a3      src/TaoLive.Catalog/TicketResolver.cs
+M        60318f9      5d9c79f      src/TaoLive.Foundation/BufferPolicy.cs
+M        7c0926b      887d997      src/TaoLive.Players/ExoPlayerPlayer.cs
+M        a5ced85      04b8f27      src/TaoLive.Players/RacingHttpDataSource.cs
+M        58b21e1      7f08fa7      src/TaoLive.Session/ChannelPrecheck.cs
+M        83edc7b      ec386df      src/TaoLive.Session/PlaybackSessionManager.cs
+M        b5e4fec      7fddd51      src/TaoLive.Session/SourceHealthStore.cs
+M        8c3d73e      0d32bc8      src/TaoLive.Session/StealthPipeline.cs
+M        b8c36f7      ee740fb      src/TaoLive.Tests/CoverageSprintC1.cs
+A        (新增)     98cfabb      src/TaoLive.Tests/InventoryGateTests.cs
+M        8ebf150      cc7be21      src/TaoLive.Tests/TicketGateTests.cs
+M        2e28116      0de506d      src/TaoLive.Tv/AndroidManifest.xml
+M        66041a8      47a99f7      src/TaoLive.Tv/SettingsUi.cs
+M        fa7fd6e      699514b      src/TaoLive.Tv/TaoLive.Tv.csproj
+A        (新增)     (删除)     "v49-\345\237\272\347\272\277\345\257\271\347\205\247\346\270\205\345\215\225-420a9bc.txt"
+M        (新增)     (删除)     "v49-\345\237\272\347\272\277\345\257\271\347\205\247\346\270\205\345\215\225-c7ef13b.txt"
+
+统计：24 个文件变更；HEAD=c6c5f4f 工作树干净。

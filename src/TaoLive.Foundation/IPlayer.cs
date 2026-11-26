@@ -54,6 +54,10 @@ public interface IPlayer : IDisposable
     /// null=解除钳制（估速自由选档）。DIM 空默认：无档位概念的内核（直流盲区）静默不钳。</summary>
     void ApplyBitrateCeiling(long? maxVideoBitrate) { }
 
+    /// <summary>起播库存档下发（vc94 深水档，老板 2026-11-26 拍板）：热备攒流切 StartFull（接管即深水，
+    /// 治换台 1 秒水浅卡顿），冷切回默认档。DIM 空默认：无档位概念的内核静默不切。</summary>
+    void SetStartupGateMode(BufferInventory.Mode mode) { }
+
     // —— 事件时序语义（契约，两内核必须一致；次序即文档）——
 
     /// <summary>

@@ -528,9 +528,12 @@ public sealed class PlaybackSession
     /// 此前热备起播 PlayWhenReady=true，备台攒流期间该台声音直接外放（「切台了还在出上个台的音」）。
     /// Play 后即 Pause：READY 后解码器仍初始化、哑面预热不失效，热切门槛（State==Playing）不破坏。</summary>
     public void PausePlayback() => _player.Pause();
-
     /// <summary>恢复出声出画（vc68）：热备热切接管时调用，缓冲攒流不中断。</summary>
     public void ResumePlayback() => _player.Resume();
+
+    /// <summary>起播库存档透传（vc94 深水档，老板 2026-11-26 拍板）：热备攒流切 StartFull（接管即深水），
+    /// 冷切回默认档。须在 ChangeChannel（→Play）之前调，内核起播装配按档生效。</summary>
+    public void SetStartupGate(BufferInventory.Mode mode) => _player.SetStartupGateMode(mode);
 
     /// <summary>当前会话内核（vc66：壳层帧账归本会话用——热备攒流哑面解码的帧不再替当前台续零帧账）。</summary>
     public IPlayer Kernel => _player;

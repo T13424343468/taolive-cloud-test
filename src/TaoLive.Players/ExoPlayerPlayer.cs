@@ -65,10 +65,25 @@ public sealed class ExoPlayerPlayer : IPlayer
     /// </summary>
     private AndroidX.Media3.ExoPlayer.IExoPlayer BuildPlayer(Android.Content.Context context, bool blindZone)
     {
+        // vc94 并发拉流（激进版，老板 2026-11-26 拍板）：预取器随内核装配——水位探针=内核 BufferedMs 实读，
+        // 水位线=取满窗口（FillWindowMs 30s）；重建即换代清账（旧预取器退场，不串台）。
+        if (_prefetcher is { } oldPf)
+        {
+            oldPf.FetchRequested -= ParallelPrefetchDataSource.HandleFetchRequested;
+            oldPf.Reset();
+        }
+        var prefetcher = new ParallelPrefetcher(
+            watermarkMs: BufferInventory.FillWindowMs,
+            waterProbeMs: () => BufferedMs);
+        prefetcher.FetchRequested += ParallelPrefetchDataSource.HandleFetchRequested;
+        _prefetcher = prefetcher;
+        RacingDataSourceFactory.Prefetcher = prefetcher;
+        RacingDataSourceFactory.MinVariantBitrateObserver = OnMinVariantObserved;
+
         var playerBuilder = new AndroidX.Media3.ExoPlayer.ExoPlayerBuilder(context);
         // 已播保留档只进 TrackSelector（minDurationToRetainAfterDiscardMs，微卡修法①）：
         // LoadControl 水位（存货上限）原样不动——盲区档只多留已播，不多占存货上限
-        playerBuilder.SetLoadControl(BuildLoadControl(context));
+        playerBuilder.SetLoadControl(BuildLoadControl(context, _gateMode));
         // 六项优化⑤慢分片竞速：内核数据源整面包竞速壳——分片首字节慢出均值（×2，下限 1 秒）
         // 即对同源发第二请求赛跑先到先用；清单/快链路不赛。HTTP 头纪律与默认工厂原样不动。
         playerBuilder.SetMediaSourceFactory(new AndroidX.Media3.ExoPlayer.Source.DefaultMediaSourceFactory(
@@ -97,14 +112,17 @@ public sealed class ExoPlayerPlayer : IPlayer
     }
 
     /// <summary>盲区态切换（微卡修法①）：起播源盲区属性与当前内核保留档不符时重建内核实例。
+    /// vc94 深水档扩展：库存档（_gateMode）与已建内核档（_builtGate）不一致同样重建——
+    /// 热备攒流切 StartFull、冷切回默认档，重建统一在 Play 路径（起播期零视觉代价）。
     /// 只在 Play 路径调（起播期，画面未出），旧实例 release 幂等；重建失败退回旧实例照播（保守退化）。</summary>
     private void EnsurePlayerMode(bool blindZone)
     {
-        if (_blindZone == blindZone || _released) return;
+        if ((_blindZone == blindZone && _builtGate == _gateMode) || _released) return;
         try
         {
             var old = _player;
             _blindZone = blindZone;
+            _builtGate = _gateMode;
             _player = BuildPlayer(_context, blindZone);
             if (_hasSurface)
             {
@@ -118,10 +136,23 @@ public sealed class ExoPlayerPlayer : IPlayer
         {
             Reporter?.Invoke($"[内核] 盲区档切换失败退回原实例：{ex.Message}");
             _blindZone = !_blindZone; // 回滚标记与实例一致
+            _builtGate = _gateMode == BufferInventory.Mode.StartFull
+                ? BufferInventory.Mode.SilentRefetch
+                : BufferInventory.Mode.StartFull; // 同口径回滚已建档标记
         }
     }
 
     private bool _blindZone; // 当前内核保留档：true=盲区（已播保留 60s）
+    private BufferInventory.Mode _gateMode = BufferInventory.Default; // vc94 深水档：当前起播库存档（热备=StartFull，冷切=默认）
+    private BufferInventory.Mode _builtGate = BufferInventory.Default; // vc94 深水档：已建内核的库存档（不一致即重建）
+    private ParallelPrefetcher? _prefetcher; // vc94 并发拉流：预取器随内核装配（重建换代清账）
+
+    // —— vc94 低档起播账（老板 2026-11-26 拍板第 1 刀）——
+    private const int LowGearPollMs = 500; // 升档轮询节拍
+    private bool _lowGearActive;           // 低档持有中（钳在最低档）
+    private long _lowGearSinceMs;          // 低档起持时刻（单调钟 Environment.TickCount64）
+    private long? _deferredGovernorCeiling; // 低档期暂存的治理器钳制（升档时落）
+    private bool _trackCapActive;          // 当前是否落有选轨钳（ResetLowGear 判据）
 
     /// <summary>
     /// 缓冲深水接线（vc53 fix56 思路在 ExoPlayer 内核原生落位）：
@@ -131,7 +162,7 @@ public sealed class ExoPlayerPlayer : IPlayer
     ///   出画后内核后台继续把窗口填满——保满预取即此；
     /// - 水位读写下沉 Players 适配层口径：水位由内核 LoadControl 承担，会话层不掺内部。
     /// </summary>
-    private static AndroidX.Media3.ExoPlayer.DefaultLoadControl BuildLoadControl(Android.Content.Context context)
+    private static AndroidX.Media3.ExoPlayer.DefaultLoadControl BuildLoadControl(Android.Content.Context context, BufferInventory.Mode gateMode)
     {
         long totalMem = 0;
         try
@@ -149,8 +180,9 @@ public sealed class ExoPlayerPlayer : IPlayer
         int startupGateMs = (int)PrefetchCurve.StartupThreshold.TotalMilliseconds;
         // vc93 第 6 刀（老板 2026-11-26 拍板接线）：首帧出画门槛按库存档分档——
         // SilentRefetch（默认档）=1 秒出画（先出画后补库存，首帧不慢）；StartFull（回退档）=7 秒（出就流畅）。
+        // vc94 深水档（老板 2026-11-26 拍板）：档位由会话层下发（热备攒流=StartFull 接管即深水，冷切=默认档）。
         // 卡后重入门槛仍 StartupThreshold 12 秒不动；首帧永远取库存中最老画面，门槛只管何时出画。
-        int firstFrameGateMs = BufferInventory.FirstFrameOpenMs(BufferInventory.Default);
+        int firstFrameGateMs = BufferInventory.FirstFrameOpenMs(gateMode);
         // 步进式 builder（消 CS8602 可空链，同构造器口径）：绑定 fluent 链挂在可空返回上会报空解引用
         var loadBuilder = new AndroidX.Media3.ExoPlayer.DefaultLoadControl.Builder();
         // vc66 提速令：首帧门槛与重入门槛分家——卡后重入仍 12 秒（出就得流畅，#12 意图保留）
@@ -197,6 +229,7 @@ public sealed class ExoPlayerPlayer : IPlayer
         ArgumentNullException.ThrowIfNull(params_);
         _playGeneration++; // 新一轮播放：作废旧代次迟到回调（闪退镜红②）
         _firstFrameRaisedThisPlay = false;
+        ResetLowGear(); // vc94 低档起播：新一轮起播清低档账（钳制解除，ABR 自由选档，治理器经 PumpStealth 重下发）
         // 频道上下文自取（双实例热切前提：每会话独享内核，壳层不再代设）
         if (!string.IsNullOrEmpty(params_.Channel.Id)) CurrentChannelKey = params_.Channel.Id;
         if (!string.IsNullOrEmpty(params_.Channel.Name)) CurrentChannelName = params_.Channel.Name;
@@ -288,6 +321,7 @@ public sealed class ExoPlayerPlayer : IPlayer
         // 会被迟到的取流回调复活，旧台无声画但外放音频（vc68「退软件音频照放」残余通路）。
         _playGeneration++;
         _firstFrameRaisedThisPlay = false;
+        ResetLowGear(); // vc94 低档起播：停机清低档账（同 Play 口径）
         _player.Stop();
         _player.ClearMediaItems();
     }
@@ -428,8 +462,70 @@ public sealed class ExoPlayerPlayer : IPlayer
 
     /// <summary>分片级码率自适应（六项优化④，vc85 蓝本 v2.5）：链路健康裕度钳制选轨视频码率上限——
     /// 主线程进（TrackSelectionParameters 内核线程契约）；int.MaxValue=解除钳制。直流盲区源无多档清单，
-    /// 内核对单档流钳制无害（选轨无变体可选=原样）；已释放静默弃。</summary>
+    /// 内核对单档流钳制无害（选轨无变体可选=原样）；已释放静默弃。
+    /// vc94 低档起播：低档持有期内治理器钳制暂存不落（<see cref="_deferredGovernorCeiling"/>），
+    /// 升档时按暂存值落钳——低档期两套钳制不打架，升档后治理口径无缝接管。</summary>
     public void ApplyBitrateCeiling(long? maxVideoBitrate)
+    {
+        if (_released) return;
+        if (_lowGearActive)
+        {
+            _deferredGovernorCeiling = maxVideoBitrate; // 低档期暂存，升档时落钳
+            return;
+        }
+        ApplyTrackCapInternal(maxVideoBitrate);
+    }
+
+    /// <summary>起播库存档下发（vc94 深水档，IPlayer 契约）：热备攒流切 StartFull（接管即深水），
+    /// 冷切回默认档。只记账不重建——重建统一走 StartMedia→EnsurePlayerMode（起播期零视觉代价）。</summary>
+    public void SetStartupGateMode(BufferInventory.Mode mode) => _gateMode = mode;
+
+    /// <summary>低档起播回调（vc94 第 1 刀，老板拍板）：清单发现多档即钳到最低档起播——
+    /// 主线程落钳（TrackSelectionParameters 契约），起 500ms 轮询等升档条件
+    /// （<see cref="StartupGear.ShouldLift"/>：水位 15 秒或持有 20 秒）。
+    /// 单档/无带宽信息不进本回调（防黑屏口径在数据源层把住）。</summary>
+    private void OnMinVariantObserved(long minBandwidth)
+    {
+        if (_released) return;
+        _main.Post(() =>
+        {
+            if (_released || _lowGearActive) return; // 已在低档：不重复落钳
+            _lowGearActive = true;
+            _lowGearSinceMs = Environment.TickCount64;
+            ApplyTrackCapInternal(minBandwidth);
+            Reporter?.Invoke($"[低档起播] 清单多档，钳最低档 {minBandwidth}bps 起播（水位 15s 或持有 20s 升档）");
+            PollLowGear();
+        });
+    }
+
+    /// <summary>低档轮询（500ms 一拍，主线程）：升档条件到即落钳解除，不到继续排下一拍。</summary>
+    private void PollLowGear()
+    {
+        if (_released || !_lowGearActive) return;
+        long heldMs = Environment.TickCount64 - _lowGearSinceMs;
+        if (StartupGear.ShouldLift(BufferedMs, heldMs))
+        {
+            _lowGearActive = false;
+            var liftTo = _deferredGovernorCeiling;
+            _deferredGovernorCeiling = null;
+            ApplyTrackCapInternal(liftTo); // null=解除钳制（治理器无暂存时自由选档）
+            Reporter?.Invoke($"[低档起播] 升档：水位/持时达标（持有 {heldMs}ms），{(liftTo is { } v ? $"落治理钳 {v}bps" : "解除钳制")}");
+            return;
+        }
+        _main.PostDelayed(PollLowGear, LowGearPollMs);
+    }
+
+    /// <summary>低档账清零（Play/Stop 口径）：钳制解除、暂存作废、轮询自然停（下一拍查旗即弃）。</summary>
+    private void ResetLowGear()
+    {
+        if (!_lowGearActive && !_trackCapActive) return;
+        _lowGearActive = false;
+        _deferredGovernorCeiling = null;
+        ApplyTrackCapInternal(null);
+    }
+
+    /// <summary>选轨钳制单点（主线程）：null=解除。_trackCapActive 记账供 ResetLowGear 判有无钳可解。</summary>
+    private void ApplyTrackCapInternal(long? maxVideoBitrate)
     {
         if (_released) return;
         _main.Post(() =>
@@ -444,6 +540,7 @@ public sealed class ExoPlayerPlayer : IPlayer
                     : int.MaxValue);
                 var built = builder.Build();
                 if (built is not null) _player.TrackSelectionParameters = built;
+                _trackCapActive = maxVideoBitrate is not null;
             }
             catch (Exception ex)
             {

@@ -157,10 +157,25 @@ public sealed class RacingDataSourceFactory : Java.Lang.Object, AndroidX.Media3.
     /// 内核单分片重开受本封顶 2 次约束；会话退避自救兜底——无紧密空转，不改行为。</summary>
     public const int TicketReissueMaxPerOpen = 2;
 
-    public AndroidX.Media3.DataSource.IDataSource CreateDataSource() =>
-        new TicketSwapDataSource(() => new RacingDataSource(CreateInner));
+    /// <summary>并发预取器（vc94 激进版，老板 2026-11-26 拍板）：内核装配时注入；null=不启用（链路原样）。</summary>
+    public static ParallelPrefetcher? Prefetcher { get; set; }
 
-    private static AndroidX.Media3.DataSource.IDataSource CreateInner()
+    /// <summary>最低变体带宽回调（vc94 低档起播）：清单发现多档即回调最低 BANDWIDTH（bps）；null=不接线。</summary>
+    public static Action<long>? MinVariantBitrateObserver { get; set; }
+
+    public AndroidX.Media3.DataSource.IDataSource CreateDataSource()
+    {
+        var prefetcher = Prefetcher;
+        if (prefetcher is null)
+        {
+            return new TicketSwapDataSource(() => new RacingDataSource(CreateInner));
+        }
+        // vc94 链路：TicketSwap(Racing(ParallelPrefetch(inner)))——竞速与换票语义原样保留，预取壳垫在最内层
+        return new TicketSwapDataSource(() => new RacingDataSource(
+            () => new ParallelPrefetchDataSource(CreateInner, prefetcher, MinVariantBitrateObserver)));
+    }
+
+    internal static AndroidX.Media3.DataSource.IDataSource CreateInner()
     {
         // 老板令 2026-11-17 慢源宽限 A：内核 HTTP 超时放宽——连接 8→12s（与会话起播窗对齐）、
         // 读 8→15s（连接后慢灌容忍）；真死线（拒绝连接/DNS/404）不受影响照旧快切。

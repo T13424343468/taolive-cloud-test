@@ -33,6 +33,7 @@ public class CoverageSprintC1
     {
         public List<string> Log { get; } = new();
         public List<long?> Ceilings { get; } = new();
+        public List<BufferInventory.Mode> GateModes { get; } = new(); // vc94 深水档记账
         public long BufferedMs { get; set; }
 
 #pragma warning disable CS0067 // 桩内核不触发全部事件，按需 raise
@@ -57,6 +58,12 @@ public class CoverageSprintC1
         {
             Ceilings.Add(maxVideoBitrate);
             Log.Add($"Ceiling:{maxVideoBitrate?.ToString() ?? "null"}");
+        }
+
+        public void SetStartupGateMode(BufferInventory.Mode mode)
+        {
+            GateModes.Add(mode);
+            Log.Add($"Gate:{mode}");
         }
     }
 

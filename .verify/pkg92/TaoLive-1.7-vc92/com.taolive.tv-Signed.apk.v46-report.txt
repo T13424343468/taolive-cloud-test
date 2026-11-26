@@ -1,0 +1,5 @@
+v46 特征关扫描 · 2026-11-26 08:20:23 UTC
+APK：src/TaoLive.Tv/bin/Debug/net10.0-android36.0/com.taolive.tv-Signed.apk
+① 屏幕信息行：资源表与 dex 全量扫禁词（屏幕信息行 信息行（ 现帧率 原帧率）
+② 应用标签：TaoLive（期望逐字 TaoLive，纯英文）
+③ 电视横幅：application-banner 可见性=是

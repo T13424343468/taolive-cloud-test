@@ -62,8 +62,9 @@ public static class BufferInventory
     /// </summary>
     public const int FillWindowMs = 30_000;
 
-    /// <summary>默认档：起播即 7 秒（vc53 画面平稳优先令 00:36），真机验证「静默重接保帧」后可切 SilentRefetch。</summary>
-    public static Mode Default => Mode.StartFull;
+    /// <summary>默认档：老板 2026-11-25 令激活「先开画后补库存」——切 SilentRefetch（低缓存先开画，首帧后静默补满窗口）。
+    /// 原 StartFull（起播即 7 秒，vc53 画面平稳优先令 00:36）为激活前的旧默认档，保留作回退档。</summary>
+    public static Mode Default => Mode.SilentRefetch;
 
     /// <summary>起播缓存口径：StartFull=库存档兜底（不低 7 秒）；SilentRefetch=按阶梯低缓存先开画（首帧后静默补满窗口）。</summary>
     public static int StartCachingMs(Mode mode, int ladderMs) =>

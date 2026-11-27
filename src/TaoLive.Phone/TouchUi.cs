@@ -27,20 +27,26 @@ public partial class MainActivity
     private LinearLayout? _controlBar;
     private LockIconView? _lockBtn;
     private TextView? _cbTitle;    // 控制条行1：台名
-    private TextView? _cbReadout;  // 控制条行1：水位·画面时刻
-    private TextView? _cbProgram;  // 控制条行2：节目单（横屏并入行1）
+    private TextView? _cbMini;     // 控制条行1：分辨率 mini（老板令 2026-11-28「帧率可以不显示」：只显分辨率）
+    private TextView? _cbNowName;  // 控制条行2：节目名（占余宽省略，vc115 拆段保读数）
+    private TextView? _cbNowTime;  // 控制条行2：「· 画面时刻：HH:mm:ss」（完整不截，vc115）
+    private TextView? _cbAuxWater; // 控制条行3：「实时水位：X秒」（完整不截，vc115）
+    private TextView? _cbAuxNext;  // 控制条行3：「· 接下来：…」（占余宽省略，vc115）
     private bool _controlBarShown;
     private Java.Lang.Runnable? _controlBarHide;
     private GestureDetector? _gesture;
     private bool _orientationLocked; // 方向锁（持久化）：锁=钉当前方向，解锁=随传感器
+    // vc112 老板令「图标统一+调大」：六枚图标（◀ ▶ ☰ ⚙ 全屏 锁）统一字号——T(1.25)≈21sp（原 Item≈19sp），
+    // 自绘图标（全屏/锁）OnDraw 按 ScaledDensity 换算同尺寸绘制，热区 44dp 不变。
+    private static float IconGlyph => UiScale.T(1.25f);
 
     private FrameLayout? _hud;                 // 亮度/音量手势悬浮指示（竖条+图标，普通播放器样式，2026-11-27 老板令）
     private HudIconView? _hudIcon;
     private View? _hudFill;                    // 竖条填充（高度=音量/亮度比例）
     private Java.Lang.Runnable? _hudHide;
-    private const int HudTrackDp = 110;        // 竖条轨道高（dp，390 基准；vc110 老板令「悬浮指示条缩小」160→110）
-    private const int HudIconDp = 24;          // 指示图标边长（vc110 缩小 30→24）
-    private const int HudTrackWidthDp = 8;     // 竖条轨道宽（vc110 缩小 10→8）
+    private const int HudTrackDp = 120;        // 竖条轨道高（dp，390 基准；v31 老板令「参考系统窄条」定稿 5×120）
+    private const int HudIconDp = 16;          // 指示图标边长（v31 原型口径：太阳 SVG 16×16）
+    private const int HudTrackWidthDp = 5;     // 竖条轨道宽（v31 老板令：系统滚动条式细条 5×120，不占画面）
     private AudioManager? _audio;
     private float _brightness = 0.5f;          // 0.05–1，持久记忆
     private Java.Lang.Runnable? _brightnessSave; // 亮度落盘防抖
@@ -107,8 +113,8 @@ public partial class MainActivity
         { Gravity = GravityFlags.Center });
     }
 
-    /// <summary>悬浮指示条落位（vc110 老板令「移到黑区显示，不压画面」）：竖屏=顶部黑区居中，
-    /// 横屏=右侧黑区竖向居中（画面满高后左右留黑边）。转屏重算。</summary>
+    /// <summary>悬浮指示条落位（v28 老板令定稿④「落位」）：竖屏=亮度左上（顶部黑边内），
+    /// 横屏=亮度左黑边垂直居中（画面满高后左右留黑边）。音量走系统音量条（⑤定稿），自绘条只服务亮度。转屏重算。</summary>
     internal void PositionHud()
     {
         if (_hud is null || _playerPage is null) return;
@@ -122,12 +128,15 @@ public partial class MainActivity
         }
         if (landscape)
         {
-            lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Right;
-            lp.RightMargin = UiScale.Px(16);
+            lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Left; // 亮度左黑边垂直居中
+            lp.LeftMargin = UiScale.Px(10); // 原型 .landscape .ind-bri{left:10px}
+            lp.RightMargin = 0;
+            lp.TopMargin = 0;
         }
         else
         {
-            lp.Gravity = GravityFlags.CenterHorizontal | GravityFlags.Top;
+            lp.Gravity = GravityFlags.Top | GravityFlags.Left; // 竖屏亮度左上
+            lp.LeftMargin = UiScale.Px(12); // 原型 .ind-bri{top:56px;left:12px}（56px 含状态栏，挂播放页内由黑边区承接）
             lp.TopMargin = UiScale.Px(24);
             lp.RightMargin = 0;
         }
@@ -172,40 +181,69 @@ public partial class MainActivity
     {
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         _controlBar = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
-        _controlBar.SetBackgroundColor(InkTranslucency.PanelSolidColor(this));
+        _controlBar.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc111 老板令：全页面统一电视端水墨透光（原近实色 232 闷画面）
         _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), UiScale.Px(10));
 
-        // 信息行：台名+读数同行（v26 原型口径：台名左、读数右，均单行——2026-11-27 走查修：竖屏原把读数拼进台名
-        // 导致整行换行顶高，违 v13 单行令）；横屏与节目单同行横排（v25 紧凑口径）
+        // vc113 原型对照令（v31 定稿逐屏亲看）：竖屏三行=上行台名+mini 分辨率（右对齐小字；老板令 2026-11-28 帧率不显示）/
+        // 中行两行「节目名 · 画面时刻：HH:mm:ss」「实时水位：X秒 · 接下来：…」/ 下行按钮两端分组；
+        // 横屏=台名+mini+节目单同一行横排（超长省略）+按钮行。
+        TextView NewBarText(float size, Color color, bool bold = false)
+        {
+            var tv = new TextView(this) { TextSize = size, Ellipsize = TextUtils.TruncateAt.End };
+            tv.SetSingleLine(true);
+            tv.SetTextColor(color);
+            if (bold) tv.Typeface = Typeface.DefaultBold!;
+            InkTranslucency.ApplyReadabilityShadow(tv);
+            return tv;
+        }
+
+        // 上行：台名（占余宽、超长省略）+ 分辨率·帧率 mini（右对齐小字，无数据隐藏）
         var infoRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-        _cbTitle = new TextView(this) { TextSize = UiScale.Item, Ellipsize = TextUtils.TruncateAt.End };
-        _cbTitle.SetSingleLine(true);
-        _cbTitle.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(_cbTitle);
-        infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f)); // 台名占余宽、超长省略
-        _cbReadout = new TextView(this) { TextSize = UiScale.Caption, Ellipsize = TextUtils.TruncateAt.End };
-        _cbReadout.SetSingleLine(true);
-        _cbReadout.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(_cbReadout);
-        infoRow.AddView(_cbReadout);
+        infoRow.SetGravity(GravityFlags.CenterVertical);
+        _cbTitle = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+        _cbMini = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+        _cbMini.Gravity = GravityFlags.End;
+        _cbMini.SetPadding(UiScale.Px(10), 0, 0, 0); // vc115 分段令：mini 与节目名之间留间距
+        infoRow.AddView(_cbMini);
         _controlBar.AddView(infoRow);
 
         if (!landscape)
         {
-            _cbProgram = new TextView(this)
-            {
-                TextSize = UiScale.Caption,
-                Ellipsize = TextUtils.TruncateAt.End,
-                Gravity = GravityFlags.End, // vc110 老板令：节目名右对齐，右缘与「实时水位」读数对齐（不再像台名硬换行）
-            };
-            _cbProgram.SetSingleLine(true);
-            _cbProgram.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-            InkTranslucency.ApplyReadabilityShadow(_cbProgram);
-            _controlBar.AddView(_cbProgram);
+            // 中行两行（v31 原型 epg-bar；vc115 拆段保读数）：节目名（占余宽省略）+「· 画面时刻：HH:mm:ss」
+            // （完整不截）/「实时水位：X秒」（完整）+ 接下来（占余宽省略）——读数段永不被节目名挤掉
+            var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
+            _cbNowName = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+            nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+            _cbNowTime = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+            _cbNowTime.SetPadding(UiScale.Px(8), 0, 0, 0);
+            nowRow.AddView(_cbNowTime);
+            _controlBar.AddView(nowRow);
+
+            var auxRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
+            _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+            _cbAuxWater.SetPadding(0, 0, UiScale.Px(8), 0);
+            auxRow.AddView(_cbAuxWater);
+            _cbAuxNext = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+            auxRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+            _controlBar.AddView(auxRow);
         }
         else
         {
-            _cbProgram = null; // 横屏节目单并入信息行（v25），由 RefreshControlBarInfo 拼接
+            // 横屏（v25/v31 紧凑口径；vc115 分段令）：节目单并入上行横排——节目名（占余宽省略）+
+            // 画面时刻（完整）+ 水位（完整）+ 接下来（占余宽省略），段间固定间距不再粘连
+            _cbNowName = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
+            _cbNowName.SetPadding(UiScale.Px(10), 0, 0, 0);
+            infoRow.AddView(_cbNowName, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+            _cbNowTime = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
+            _cbNowTime.SetPadding(UiScale.Px(10), 0, 0, 0);
+            infoRow.AddView(_cbNowTime);
+            _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+            _cbAuxWater.SetPadding(UiScale.Px(10), 0, 0, 0);
+            infoRow.AddView(_cbAuxWater);
+            _cbAuxNext = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+            _cbAuxNext.SetPadding(UiScale.Px(10), 0, 0, 0);
+            infoRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         }
 
         // 按钮行：两端分组（v21）——左组切台、右组功能；中间留白撑开
@@ -215,35 +253,34 @@ public partial class MainActivity
         var left = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         var right = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
 
-        void AddBtn(LinearLayout into, string text, EventHandler click)
+        // vc113（老板真机三单②+v29 六行四态图例）：六枚图标全改自绘——◀▶☰⚙ 字符图标跟字体度量、
+        // 自绘按几何中心，两套混排中心线差 3.6px、字面高 13~22px 参差。现统一走自绘视图（44dp 热区、
+        // IconGlyph 字号绘制、几何居中），并按原型 v20/v29 补半透明胶囊底与按压态（默认 12% 白底、按压 26%）。
+        View AddIcon(LinearLayout into, BarIconView.IconKind kind, EventHandler click)
         {
-            var b = new TextView(this)
-            {
-                Text = text,
-                Gravity = GravityFlags.Center,
-                TextSize = UiScale.Item,
-            };
-            b.SetHeight(UiScale.Px(44)); // 定高按钮：◀▶ 符号字形走回退字体度量偏大，不定高会把整行顶高、字形下沉错位（2026-11-27 走查实锤）
-            b.SetTextColor(InkTranslucency.TextPrimary(this)); // 单色文本图标（v22：去彩色 emoji 呈现）
-            InkTranslucency.ApplyReadabilityShadow(b);
-            b.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12)); // 手机热区：间距档实值
+            var b = new BarIconView(this) { Kind = kind, Clickable = true };
+            b.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
+            b.Background = BarButtonBackground();
             b.Click += click;
             into.AddView(b);
+            return b;
         }
 
-        AddBtn(left, "◀", (_, _) => SwitchChannel(-1));
-        AddBtn(left, "▶", (_, _) => SwitchChannel(1));
+        AddIcon(left, BarIconView.IconKind.Prev, (_, _) => SwitchChannel(-1));
+        AddIcon(left, BarIconView.IconKind.Next, (_, _) => SwitchChannel(1));
 
-        AddBtn(right, "☰", (_, _) => { HideControlBar(); ShowList(); });
-        AddBtn(right, "⚙\uFE0E", (_, _) => { HideControlBar(); OpenSettingsPanel(); });
+        AddIcon(right, BarIconView.IconKind.List, (_, _) => { HideControlBar(); ShowList(); });
+        AddIcon(right, BarIconView.IconKind.Gear, (_, _) => { HideControlBar(); OpenSettingsPanel(); });
 
         // 翻转按钮（vc110 老板令：⟳ 换两枚图标——竖屏显「进全屏」、横屏显「返回竖屏」，自绘单色同风格）
         var flipBtn = new FullscreenIconView(this)
         {
             Kind = landscape ? FullscreenIconView.IconKind.ExitFullscreen : FullscreenIconView.IconKind.EnterFullscreen,
+            Clickable = true,
         };
         flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(44)); // 定高按钮：与文字钮同热区
         flipBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
+        flipBtn.Background = BarButtonBackground(); // v29 四态：按压态走胶囊底
         flipBtn.Click += (_, _) =>
         {
             bool land = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
@@ -253,9 +290,10 @@ public partial class MainActivity
         right.AddView(flipBtn);
 
         // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
-        var lockBtn = new LockIconView(this);
+        var lockBtn = new LockIconView(this) { Clickable = true };
         lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(44)); // 定高按钮：与文字钮同热区
         lockBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
+        lockBtn.Background = BarButtonBackground(); // v29 四态：按压态走胶囊底
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
         right.AddView(lockBtn);
@@ -274,7 +312,7 @@ public partial class MainActivity
         { Gravity = GravityFlags.Bottom });
     }
 
-    /// <summary>转屏重建控制条（竖屏三行/横屏两行布局不同，v25/v26 口径）。</summary>
+    /// <summary>转屏重建控制条（竖屏三行/横屏两行布局不同，v31 原型口径）。</summary>
     private void RebuildControlBar()
     {
         if (_controlBar is null) return;
@@ -283,33 +321,53 @@ public partial class MainActivity
         _controlBar = null;
         _lockBtn = null;
         _cbTitle = null;
-        _cbReadout = null;
-        _cbProgram = null;
+        _cbMini = null;
+        _cbNowName = null;
+        _cbNowTime = null;
+        _cbAuxWater = null;
+        _cbAuxNext = null;
         BuildControlBar();
         if (shown) ShowControlBar();
     }
 
-    /// <summary>控制条信息刷新：台名/水位读数/节目单（换台与显条时同步）。</summary>
+    /// <summary>控制条信息刷新（vc113 原型对照令）：台名/分辨率·帧率 mini/节目名·画面时刻/水位·接下来
+    /// （换台与显条时同步；mini 无读数降级隐藏）。</summary>
     private void RefreshControlBarInfo()
     {
-        if (_cbTitle is null || _cbReadout is null) return;
+        if (_cbTitle is null || _cbNowName is null || _cbNowTime is null || _cbAuxWater is null || _cbAuxNext is null) return;
         var ch = _channels.Count > 0 && _currentIndex >= 0 && _currentIndex < _channels.Count
             ? _channels[_currentIndex] : null;
         long buffered = BufferedMsNow() ?? 0;
-        string readout = $"实时水位：{buffered / 1000}秒 · 画面时刻：{PictureClock(buffered)}";
-        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
-        string program = _epgNowTitle is { } t ? t : "节目单暂无数据";
-        if (landscape)
+        // v31 原型口径（vc115 拆段保读数）：节目名与「画面时刻」分段——节目名超长省略，读数段完整；
+        // 「实时水位：X秒」完整，「接下来」段超长省略；缺表降级只显画面时刻（v13 老板令）
+        string clock = PictureClock(buffered);
+        bool hasNow = _epgNowTitle is { } t && t.Length > 0;
+        bool hasNext = _epgNextText is { } n && n.Length > 0;
+        _cbTitle.Text = ch is null ? "TaoLive" : ch.Name;
+        _cbNowName.Text = hasNow ? _epgNowTitle! : "";
+        _cbNowName.Visibility = hasNow ? ViewStates.Visible : ViewStates.Gone;
+        _cbNowTime.Text = hasNow ? $"· 画面时刻：{clock}" : $"画面时刻：{clock}";
+        _cbAuxWater.Text = $"实时水位：{buffered / 1000}秒";
+        _cbAuxNext.Text = hasNext ? $"· 接下来：{_epgNextText}" : "";
+        _cbAuxNext.Visibility = hasNext ? ViewStates.Visible : ViewStates.Gone;
+        RefreshControlBarMini();
+    }
+
+    /// <summary>分辨率 mini（老板令 2026-11-28「帧率可以不显示」：只显分辨率）：内核 OnVideoSizeChanged 实读，
+    /// 无读数（未就绪/音频流）降级隐藏不占位。</summary>
+    private void RefreshControlBarMini()
+    {
+        if (_cbMini is null) return;
+        var kernel = _manager.Current?.Kernel;
+        int? h = kernel?.VideoHeight;
+        if (h is { } hh && hh > 0)
         {
-            _cbTitle.Text = ch is null ? "TaoLive" : ch.Name;
-            _cbReadout.Text = $"  {readout}  {program}";
+            _cbMini.Text = $"{hh}";
+            _cbMini.Visibility = ViewStates.Visible;
         }
         else
         {
-            // 竖屏：台名/读数分属两个 TextView（信息行单行、台名超长省略，v26 原型口径）
-            _cbTitle.Text = ch is null ? "TaoLive" : ch.Name;
-            _cbReadout.Text = "  " + readout;
-            _cbProgram?.Text = program;
+            _cbMini.Visibility = ViewStates.Gone;
         }
     }
 
@@ -365,10 +423,11 @@ public partial class MainActivity
         }
     }
 
-    /// <summary>控制条显收：单击画面切换，3 秒自动收；抽屉/面板开着不出。</summary>
+    /// <summary>控制条显收：单击画面切换，3 秒自动收；抽屉/面板开着不出；空态横幅可见时不出（vc115 A1 互斥）。</summary>
     private void ToggleControlBar()
     {
         if (_listOpen || (_settingsPanelOpen)) return; // 面板优先：面板开着控制条不出
+        if (_emptyState is not null && _emptyState.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
         if (_controlBarShown) HideControlBar();
         else ShowControlBar();
     }
@@ -376,6 +435,7 @@ public partial class MainActivity
     private void ShowControlBar()
     {
         if (_controlBar is null) return;
+        if (_emptyState is not null && _emptyState.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
         RefreshControlBarInfo();
         _controlBar.Visibility = ViewStates.Visible;
         _controlBarShown = true;
@@ -406,7 +466,8 @@ public partial class MainActivity
     /// 右边缘左滑=横屏退全屏/竖屏出退出确认；长按=收藏/取消当前台。滑动阈值 96dp。</summary>
     private sealed class PhoneGestureListener(MainActivity host) : GestureDetector.SimpleOnGestureListener
     {
-        private const float SwipeMinDp = 96f;
+        private const float SwipeMinDp = 96f;  // 横向切台门槛（只管切台）
+        private const float VertEntryDp = 8f;  // 纵向入模门槛（v28 定稿①②：去 96dp 死区，微动即变、滑 1 得 1）
         private const float EdgeDp = 28f; // 边缘判定带宽：起点落在左右边缘此带宽内走边缘手势，不切台
 
         private float _startX, _startY, _lastY;
@@ -462,7 +523,7 @@ public partial class MainActivity
                     host.RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏：退全屏回竖屏
                     host.ShowToast("竖屏");
                 }
-                else host.ConfirmExit(); // 竖屏：出退出确认（再确认才退）
+                else host.ExitOrCollapseList(); // vc112：退出确认弹窗已整删，竖屏滑回=与返回键同口径（收抽屉/退后台续播）
             });
             return true;
         }
@@ -476,40 +537,40 @@ public partial class MainActivity
             if (_vMode == 0)
             {
                 if (HandleHorizontal(dx, dy)) return true;
-                if (Dp(Math.Abs(dx)) > SwipeMinDp && Math.Abs(dx) > Math.Abs(dy) * 1.2f)
+                float adx = Math.Abs(dx), ady = Math.Abs(dy);
+                if (adx > Dp(SwipeMinDp) && adx > ady * 1.2f)
                 {
                     _fired = true;
                     host.RunOnUiThread(() => host.SwitchChannel(dx < 0 ? -1 : 1)); // 左=上一台，右=下一台
                     return true;
                 }
-                if (Dp(Math.Abs(dy)) > SwipeMinDp && Math.Abs(dy) > Math.Abs(dx) * 1.2f)
+                if (ady > Dp(VertEntryDp) && ady > adx * 1.2f)
                 {
                     bool leftHalf = _startX < host.Resources!.DisplayMetrics!.WidthPixels / 2f;
                     _vMode = leftHalf ? 1 : 2; // 左半区亮度、右半区音量
+                    _lastY = _startY; // v28 定稿②：入模即从起点全额结算，起手行程不吞（滑 1 得 1）
                 }
             }
 
             if (_vMode == 1)
             {
-                float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels; // vc110：行程=整屏高
-                host.RunOnUiThread(() => host.SetBrightness(host._brightness + delta));
+                float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels; // 行程=整屏高
+                host.RunOnUiThread(() => host.SetBrightness(host._brightness + delta)); // 指示条即亮实时跟手（SetBrightness 内）
             }
             else if (_vMode == 2)
             {
                 if (host._audio is { } audio)
                 {
                     int max = audio.GetStreamMaxVolume(Android.Media.Stream.Music);
-                    float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels * max; // vc110：行程=整屏高
+                    float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels * max; // 行程=整屏高
                     _volAccum += delta;
                     if (Math.Abs(_volAccum) >= 1f)
                     {
                         int step = (int)_volAccum;
                         _volAccum -= step;
                         int idx = Math.Clamp(audio.GetStreamVolume(Android.Media.Stream.Music) + step, 0, max);
-                        // 手势调音量：自绘竖条跟手（不出系统条，避免侧边条与手势指示打架）；按钮路径才走系统条
-                        audio.SetStreamVolume(Android.Media.Stream.Music, idx, 0);
-                        int idxFinal = idx;
-                        host.RunOnUiThread(() => host.ShowHudBar(HudIconView.IconKind.Speaker, idxFinal / (float)max));
+                        // v28 定稿⑤：音量直接走系统音量条（系统音量面板即参照，应用不自制音量 UI）
+                        audio.SetStreamVolume(Android.Media.Stream.Music, idx, VolumeNotificationFlags.ShowUi); // 弹系统音量条
                     }
                 }
             }
@@ -586,8 +647,115 @@ public partial class MainActivity
         }
     }
 
-    /// <summary>翻转按钮图标（vc110 老板令）：竖屏显「进全屏」（四角外扩+外向箭头）、横屏显「返回竖屏」
-    /// （四角内收+内向箭头），单色自绘，与 ☰ ⚙ 同风格同热区。</summary>
+    /// <summary>控制条按钮胶囊底（原型 v20 半透明白底 + v29 四态）：默认 12% 白、按压 26% 白，圆角胶囊。</summary>
+    private static Android.Graphics.Drawables.Drawable BarButtonBackground()
+    {
+        Android.Graphics.Drawables.GradientDrawable NewBg(string hex)
+        {
+            var d = new Android.Graphics.Drawables.GradientDrawable();
+            d.SetShape(Android.Graphics.Drawables.ShapeType.Rectangle);
+            d.SetCornerRadius(UiScale.Px(999)); // 胶囊
+            d.SetColor(Color.ParseColor(hex));
+            return d;
+        }
+        var ss = new Android.Graphics.Drawables.StateListDrawable();
+        ss.AddState(new int[] { Android.Resource.Attribute.StatePressed }, NewBg("#42FFFFFF")); // 按压：透底 26%
+        ss.AddState(new int[] { }, NewBg("#1FFFFFFF")); // 默认：半透明白底 12%
+        return ss;
+    }
+
+    /// <summary>控制条自绘图标（vc113 老板令三单②：六枚全改自绘）：◀▶☰⚙ 四枚由字符改几何绘制，
+    /// 与全屏/锁图标同风格（单色描边、IconGlyph 字号、44dp 热区、几何居中），根除字体度量与几何中心两套混排的错位。</summary>
+    private sealed class BarIconView : View
+    {
+        internal enum IconKind { Prev, Next, List, Gear }
+        private IconKind _kind = IconKind.List;
+        private readonly Paint _stroke = new(PaintFlags.AntiAlias) { StrokeCap = Paint.Cap.Round, StrokeJoin = Paint.Join.Round };
+
+        public BarIconView(Context context) : base(context) => _stroke.SetStyle(Paint.Style.Stroke);
+
+        internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
+
+        // 与 FullscreenIconView 同口径：量死 44dp 见方热区，防默认测量撑满整行。
+        protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
+        {
+            int side = UiScale.Px(44);
+            SetMeasuredDimension(side, side);
+        }
+
+        protected override void OnDraw(Canvas? canvas)
+        {
+            if (canvas is null || Context is null) return;
+            float side = Android.Util.TypedValue.ApplyDimension(Android.Util.ComplexUnitType.Sp, IconGlyph, Context.Resources!.DisplayMetrics);
+            canvas.Save();
+            canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
+            DrawIcon(canvas, side);
+            canvas.Restore();
+        }
+
+        private void DrawIcon(Canvas canvas, float side)
+        {
+            var context = Context!;
+            _stroke.Color = InkTranslucency.TextPrimary(context);
+            _stroke.StrokeWidth = side * 0.085f;
+            float w = side, h = side;
+            switch (_kind)
+            {
+                case IconKind.Prev: // ⏮：竖线+左三角（上一台）
+                {
+                    float barX = w * 0.30f;
+                    canvas.DrawLine(barX, h * 0.22f, barX, h * 0.78f, _stroke);
+                    var tri = new float[] { w * 0.72f, h * 0.26f, w * 0.40f, h * 0.5f, w * 0.72f, h * 0.74f };
+                    var fill = new Paint(PaintFlags.AntiAlias) { Color = _stroke.Color };
+                    canvas.DrawPath(ToPath(tri), fill);
+                    break;
+                }
+                case IconKind.Next: // ⏭：右三角+竖线（下一台）
+                {
+                    float barX = w * 0.70f;
+                    canvas.DrawLine(barX, h * 0.22f, barX, h * 0.78f, _stroke);
+                    var tri = new float[] { w * 0.28f, h * 0.26f, w * 0.60f, h * 0.5f, w * 0.28f, h * 0.74f };
+                    var fill = new Paint(PaintFlags.AntiAlias) { Color = _stroke.Color };
+                    canvas.DrawPath(ToPath(tri), fill);
+                    break;
+                }
+                case IconKind.List: // ☰：三横线
+                {
+                    float left = w * 0.20f, right = w * 0.80f;
+                    canvas.DrawLine(left, h * 0.28f, right, h * 0.28f, _stroke);
+                    canvas.DrawLine(left, h * 0.50f, right, h * 0.50f, _stroke);
+                    canvas.DrawLine(left, h * 0.72f, right, h * 0.72f, _stroke);
+                    break;
+                }
+                case IconKind.Gear: // ⚙：外圈齿+中孔（简化：圆环+八向短齿+中心圆）
+                {
+                    float cx = w / 2f, cy = h / 2f, r = w * 0.30f;
+                    canvas.DrawCircle(cx, cy, r, _stroke);
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double a = i * Math.PI / 4;
+                        float x1 = cx + (float)(Math.Cos(a) * r);
+                        float y1 = cy + (float)(Math.Sin(a) * r);
+                        float x2 = cx + (float)(Math.Cos(a) * r * 1.32f);
+                        float y2 = cy + (float)(Math.Sin(a) * r * 1.32f);
+                        canvas.DrawLine(x1, y1, x2, y2, _stroke);
+                    }
+                    _stroke.StrokeWidth = side * 0.07f;
+                    canvas.DrawCircle(cx, cy, r * 0.38f, _stroke);
+                    break;
+                }
+            }
+        }
+
+        private static Android.Graphics.Path ToPath(float[] pts)
+        {
+            var p = new Android.Graphics.Path();
+            p.MoveTo(pts[0], pts[1]);
+            for (int i = 2; i < pts.Length; i += 2) p.LineTo(pts[i], pts[i + 1]);
+            return p;
+        }
+    }
+
     private sealed class FullscreenIconView : View
     {
         internal enum IconKind { EnterFullscreen, ExitFullscreen }
@@ -598,12 +766,32 @@ public partial class MainActivity
 
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
+        // vc111 真机修（老板截图第1条）：自绘视图不量尺寸会被系统撑满整行剩余宽度——
+        // 图标拉成巨大白块、锁定钮挤出屏外。量死 44dp 见方（与文字钮同热区），OnDraw 按方图绘制自然居中。
+        protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
+        {
+            int side = UiScale.Px(44);
+            SetMeasuredDimension(side, side);
+        }
+
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            _stroke.Color = InkTranslucency.TextPrimary(Context);
-            _stroke.StrokeWidth = Math.Max(Width, Height) * 0.08f;
-            float w = Width, h = Height;
+            // vc112 老板令「图标统一+调大」：绘制区按 IconGlyph 字号换算成 px（与 TextSize=sp 渲染同尺寸），
+            // 居中平移后按 side 见方绘制——与文字图标（◀▶☰⚙）观感一致
+            float side = Android.Util.TypedValue.ApplyDimension(Android.Util.ComplexUnitType.Sp, IconGlyph, Context.Resources!.DisplayMetrics); // sp→px（ScaledDensity API 34 起废弃，走 TypedValue 同口径）
+            canvas.Save();
+            canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
+            DrawIcon(canvas, side);
+            canvas.Restore();
+        }
+
+        private void DrawIcon(Canvas canvas, float side)
+        {
+            var context = Context!;
+            _stroke.Color = InkTranslucency.TextPrimary(context);
+            _stroke.StrokeWidth = side * 0.08f;
+            float w = side, h = side;
             float inset = w * 0.14f, len = w * 0.22f;
             // 四角括号
             canvas.DrawLines(new float[]
@@ -646,25 +834,42 @@ public partial class MainActivity
     {
         internal enum IconKind { Unlocked, LockLandscape, LockPortrait }
         private IconKind _kind = IconKind.Unlocked;
-        private readonly Paint _fill = new(PaintFlags.AntiAlias);
-        private readonly Paint _stroke = new(PaintFlags.AntiAlias) { StrokeCap = Paint.Cap.Round };
+        private readonly Paint _stroke = new(PaintFlags.AntiAlias) { StrokeCap = Paint.Cap.Round }; // vc112 锁体改线条风，填充画笔退场
 
         public LockIconView(Context context) : base(context) => _stroke.SetStyle(Paint.Style.Stroke);
 
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
+        // vc111 真机修（老板截图第1条）：同 FullscreenIconView——量死 44dp 见方，防默认测量撑满整行。
+        protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
+        {
+            int side = UiScale.Px(44);
+            SetMeasuredDimension(side, side);
+        }
+
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            var color = InkTranslucency.TextPrimary(Context);
-            _fill.Color = color;
+            // vc112 老板令「图标统一+调大」：绘制区按 IconGlyph 字号换算成 px（与 TextSize=sp 渲染同尺寸），
+            // 居中平移后按 side 见方绘制；锁体改线条风（描边），与全屏图标同风格
+            float side = Android.Util.TypedValue.ApplyDimension(Android.Util.ComplexUnitType.Sp, IconGlyph, Context.Resources!.DisplayMetrics); // sp→px（ScaledDensity API 34 起废弃，走 TypedValue 同口径）
+            canvas.Save();
+            canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
+            DrawIcon(canvas, side);
+            canvas.Restore();
+        }
+
+        private void DrawIcon(Canvas canvas, float side)
+        {
+            var context = Context!;
+            var color = InkTranslucency.TextPrimary(context);
             _stroke.Color = color;
-            _stroke.StrokeWidth = Math.Max(Width, Height) * 0.09f;
-            float w = Width, h = Height;
-            // 锁体：圆角矩形（居中偏下）
+            _stroke.StrokeWidth = side * 0.09f;
+            float w = side, h = side;
+            // 锁体：圆角矩形描边（居中偏下；vc112 改线条风，_fill 不再上锁体）
             float bw = w * 0.42f, bh = h * 0.32f;
             float bx = w * 0.42f - bw / 2, by = h * 0.54f;
-            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, bw * 0.2f, bw * 0.2f, _fill);
+            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, bw * 0.2f, bw * 0.2f, _stroke);
             // 锁梁：拱形；解锁=右腿翘起离体，锁定=双腿扣到体上
             float r = bw * 0.30f;
             float scx = bx + bw / 2, scy = by;
@@ -674,11 +879,11 @@ public partial class MainActivity
                 canvas.DrawLine(scx + r, scy - r * 0.7f, scx + r, scy - r * 1.3f, _stroke); // 右腿翘起=开
             else
                 canvas.DrawLine(scx + r, scy - r * 0.7f, scx + r, scy, _stroke);
-            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）
+            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）——vc112 同改描边线条风
             if (_kind == IconKind.LockLandscape)
-                canvas.DrawRoundRect(w * 0.76f, h * 0.44f, w * 0.94f, h * 0.62f, 2f, 2f, _fill);
+                canvas.DrawRoundRect(w * 0.76f, h * 0.44f, w * 0.94f, h * 0.62f, 2f, 2f, _stroke);
             else if (_kind == IconKind.LockPortrait)
-                canvas.DrawRoundRect(w * 0.80f, h * 0.36f, w * 0.94f, h * 0.64f, 2f, 2f, _fill);
+                canvas.DrawRoundRect(w * 0.80f, h * 0.36f, w * 0.94f, h * 0.64f, 2f, 2f, _stroke);
         }
     }
 }

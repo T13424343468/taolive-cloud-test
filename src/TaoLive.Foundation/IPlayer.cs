@@ -58,6 +58,18 @@ public interface IPlayer : IDisposable
     /// 治换台 1 秒水浅卡顿），冷切回默认档。DIM 空默认：无档位概念的内核静默不切。</summary>
     void SetStartupGateMode(BufferInventory.Mode mode) { }
 
+    /// <summary>冷切开画攒流闸是否在攒（vc112 真机修「没出画就换源」）：会话看门狗据此让路——
+    /// 攒流期起播判死窗下限抬到强制开之后，先出画后接管，判死钟不与开画闸赛跑。
+    /// 默认 false：无闸概念的内核/测试替身不改变既有看门狗口径。</summary>
+    bool StartupGateAccumulating => false;
+
+    /// <summary>视频分辨率读数（vc113 原型对照令，控制条 mini「1080 · 25fps」）：画面高度（如 1080），
+    /// 内核给不出（未就绪/音频流）=null。默认 null 兼容既有实现与测试替身。</summary>
+    int? VideoHeight => null;
+
+    /// <summary>视频帧率读数（vc113 原型对照令）：帧/秒（如 25.0），内核给不出=null。默认 null 同上。</summary>
+    float? VideoFrameRate => null;
+
     // —— 事件时序语义（契约，两内核必须一致；次序即文档）——
 
     /// <summary>

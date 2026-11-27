@@ -244,6 +244,11 @@ public static class ChannelTable
         // 查映射必败，底部节目单永久无数据（vc53 有节目单而 2.0 整个没有的根因）。
         // 键=频道 Id（c_cctv1/c_jsws 形态），恰是 CntvIds 映射表键；映射外台（nmtv/gxtv/直连）官方无数据不硬造。
         foreach (var c in grouped) c.EpgKey = c.Id;
+        // vc113 修（筛选根因，老板真机三单①）：编号落字段——此前 Number 恒 0，筛选数字路径拿 Number 匹配永远空、
+        // 收藏账 Toggle(ch.Number) 存的也是 0、订阅顺延编号从 1 起反常；行上显示的编号是 IndexInTable 现场按表序算的，
+        // 显示与存储两张皮。现按分组序 1 起落字段，筛选/收藏/订阅三路同源。
+        int no = 0;
+        foreach (var c in grouped) c.Number = ++no;
         return grouped.ToList();
     }
 

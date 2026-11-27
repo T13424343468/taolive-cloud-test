@@ -198,6 +198,10 @@ public sealed class PlaybackSession
     /// <summary>本会话累计断流自救切换次数；换台归零。</summary>
     public int FailoverCount { get; private set; }
 
+    /// <summary>当前自愈退避重试次数（vc113 原型对照令：失败终态文案「第 X/6 次」读数）；
+    /// 满额轻试不消耗也不重置（账面钉住满额），换台归零。</summary>
+    public int SelfHealAttempts => _selfHealAttempts;
+
     /// <summary>
     /// 备源队列吃内置表（方案书收口批①）：建队列时在本台源之后追加该供给给出的备援候选
     /// （URL 去重，本台已有同址不重复入队）；空=不吃内置表（既有契约不变，测试可注空）。
@@ -719,6 +723,12 @@ public sealed class PlaybackSession
         if (_state == PlaybackState.Buffering
             && _bufferingSinceMs is { } started)
         {
+            // vc112 老板拍板「攒流期看门狗只判真死」：零进度照旧判死快切；慢而通（3 秒内有进度）攒流期不判死——
+            // 门没开没画面可看，死活交开画闸（7 秒水位/8 秒强制开）兜底，出画后看门狗接管。
+            if (_player.StartupGateAccumulating && _lastBufferProgressAtMs is { } t && nowMs - t < 3_000)
+            {
+                return false; // 慢而通攒流期不判死（Buffering 态下后续 Reconnecting 分支不适用）
+            }
             var windowMs = WatchdogWindowMs(nowMs, SlowStartWindow, started);
             if (nowMs - started >= windowMs)
             {

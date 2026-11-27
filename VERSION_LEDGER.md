@@ -57,3 +57,23 @@
 - 交付包：.verify/pkg92/TaoLive-1.7-vc92.zip（SHA-256 10d70dfaa89b8b74217caea3afc918615cda2d0a6a0252cd6fc78ef32af40c21）
 - 云测：build-apk 45782386520 / emulator 45782392592 / cloud-real-device 45782397589（2026-11-26 16:20 发起）
 - 更正（2026-11-26 16:44）：首发包误用 Debug 测试档（10.7MB 无预编译），已重出 Release 档（APK 22,169,067 字节，SHA-256 6ab58825…8a6e，与 vc91 同口径）；三闸重过，交付包 artifact v4
+
+## vc114 / 1.0.4（2026-11-28 手机版原型对照整改收口）
+- 版本锚：csproj 114/1.0.4 = manifest 114/1.0.4 = badging 114/1.0.4（三处对账一致，亲验；manifest 补齐 vc113 欠账两版）
+- 内容：v31 原型逐屏亲看对照整改——控制条竖屏三行/横屏一行横排+mini「1080·25fps」读数（VideoSize.Height+Format.FrameRate，0=未知哨兵）、空态橙框横幅+「第X/6次」+可点链接、列表页头「频道列表」+顺序重排+空态三分支、设置页分组卡片+真实 Switch 控件（SwitchView 自绘）
+- 全测：406/406 全绿 0 失败；Debug 编译 0 错 0 警
+- 交付包：build/vc114/TaoLive.Phone-1.0.4-vc114-signed.apk（Release 档 22,757,172 字节，SHA-256 2da51376b91b7a541a3642dbe657d1a183b24057f9fd0fc2ee848ca4261a069b）+ 同名 zip 双件
+
+## vc115 / 1.0.5（2026-11-28 手机版原型布局定稿令）
+- 版本锚：csproj 115/1.0.5 = manifest 115/1.0.5 = badging 115/1.0.5（三处对账一致，亲验）
+- 内容（老板三次澄清定稿：透明化保留最大化、要原型布局设计感、帧率不显示）：
+  1. A1 空态横幅与控制条互斥：失败横幅可见时控制条不出（ShowControlBar/ToggleControlBar 守卫），横幅出场先收控制条（ShowEmptyState→HideControlBar）
+  2. A2 档位弹层每个选项行自带托底胶囊（原型 .opt 同款：未选中墨 36 底+纸 64 细边，选中保持强化样式），圆角 Dp(10)
+  3. C2 竖屏节目名拆段：节目名占余宽省略+「· 画面时刻：HH:mm:ss」完整；「实时水位：X秒」完整+接下来占余宽省略；横屏四段横排段间 Px(10)
+  4. C3 横屏分段间距 Px(10)，不再粘连；mini 与节目名间 Px(10)
+  5. D1 列表行台名块补 weight=1（修 vc113 宽 0 不可见）
+  6. D2 当前台高亮改 deep #3D6E9E 描边（原型 .chan-row.current），去棕色 Accent 填充
+  7. 设置页删帮助行「点按切换 · 点 ← 或返回键收起」
+  8. mini 只显分辨率（老板令 2026-11-28「帧率可以不显示」，撤 vc114 帧率读数）
+- 统一验证：Debug 编译 0 错 0 警；全测 406/406 全绿 0 失败；Release -m:1 编译 0 错 0 警；badging 亲验 115/1.0.5
+- 交付包：build/vc115/TaoLive.Phone-1.0.5-vc115-signed.apk（Release 档 22,761,268 字节，SHA-256 eb0af7c2c539a1eccb95e7bb3fa86df6b5cd6fbc143d8c8563fbcd1749a5a146）+ 同名 zip

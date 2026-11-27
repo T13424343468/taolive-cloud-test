@@ -256,6 +256,24 @@ public sealed class ExoPlayerPlayer : IPlayer
     /// 壳层只出声守卫据此把零帧账直接判过期，快速递进自救，不等零帧窗硬等。仅诊断口径，不影响内核状态机。</summary>
     public event EventHandler<string>? OnVideoFault;
 
+    // —— vc113 原型对照令：分辨率·帧率读数（控制条 mini「1080 · 25fps」）——
+    // 来源=内核 OnVideoSizeChanged（IPlayerListener 回调，主线程）；Play/Stop 即清账，换台不串台。
+    // volatile 不允许可空类型（CS0677）：用 0=未知哨兵承载，属性层换算回可空契约。
+    private int _videoHeight;      // 画面高度（如 1080）；0=未知
+    private float _videoFrameRate; // 帧率（如 25.0）；0=未知
+
+    /// <summary>IPlayer 契约：视频分辨率读数（画面高度），未知=null。</summary>
+    public int? VideoHeight => _videoHeight > 0 ? _videoHeight : null;
+
+    /// <summary>IPlayer 契约：视频帧率读数，未知=null。</summary>
+    public float? VideoFrameRate => _videoFrameRate > 0 ? _videoFrameRate : null;
+
+    private void ResetVideoReadout()
+    {
+        _videoHeight = 0;
+        _videoFrameRate = 0f;
+    }
+
     internal void HandleVideoFault(string detail) => OnVideoFault?.Invoke(this, detail);
 
     public void Play(PlaybackParams params_)
@@ -263,7 +281,9 @@ public sealed class ExoPlayerPlayer : IPlayer
         ArgumentNullException.ThrowIfNull(params_);
         _playGeneration++; // 新一轮播放：作废旧代次迟到回调（闪退镜红②）
         _firstFrameRaisedThisPlay = false;
+        ResetVideoReadout(); // vc113 原型对照令：新一轮播放清分辨率·帧率账（换台不串台）
         ResetLowGear(); // vc94 低档起播：新一轮起播清低档账（钳制解除，ABR 自由选档，治理器经 PumpStealth 重下发）
+        ResetStartupGate(); // vc111 自适应开画：新一轮起播清攒流账（撤旧轮询，防旧闸串台）
         // 频道上下文自取（双实例热切前提：每会话独享内核，壳层不再代设）
         if (!string.IsNullOrEmpty(params_.Channel.Id)) CurrentChannelKey = params_.Channel.Id;
         if (!string.IsNullOrEmpty(params_.Channel.Name)) CurrentChannelName = params_.Channel.Name;
@@ -331,7 +351,17 @@ public sealed class ExoPlayerPlayer : IPlayer
             EnsureWarmVideoSink(); // vc66 哑面预热：无真面起播（热备攒流）也把视频解码器初始化到位，热切接管零解码器冷启
             _player.SetMediaItem(mediaItem);
             _player.Prepare();
-            _player.PlayWhenReady = true;
+            // vc111 自适应开画（老板拍板）：默认档冷切起播（有真面）先攒流后开画——快源 1 秒级开、
+            // 慢源攒满 7 秒开、8 秒强制开兜底。热备攒流（StartFull 档/无面预热）不挂闸，原样即开。
+            if (_gateMode == BufferInventory.Mode.SilentRefetch && _hasSurface)
+            {
+                _player.PlayWhenReady = false;
+                StartStartupGate();
+            }
+            else
+            {
+                _player.PlayWhenReady = true;
+            }
         }
         catch (Exception ex)
         {
@@ -342,12 +372,15 @@ public sealed class ExoPlayerPlayer : IPlayer
 
     public void Pause()
     {
+        _shellPaused = true; // vc111：壳层切后台暂停记账（攒流期开画不抢放，回前台统一续播）
         _player.PlayWhenReady = false;
     }
 
     /// <summary>vc68 热备静音攒流：备台热切接管时恢复出声出画（PlayWhenReady=true，缓冲攒流不中断）。</summary>
     public void Resume()
     {
+        _shellPaused = false;
+        if (_gateAccumulating) return; // vc111 攒流闸未开：不提前出声出画，开画时统一放行
         _player.PlayWhenReady = true;
     }
 
@@ -357,7 +390,9 @@ public sealed class ExoPlayerPlayer : IPlayer
         // 会被迟到的取流回调复活，旧台无声画但外放音频（vc68「退软件音频照放」残余通路）。
         _playGeneration++;
         _firstFrameRaisedThisPlay = false;
+        ResetVideoReadout(); // vc113 原型对照令：停机清分辨率·帧率账（同 Play 口径）
         ResetLowGear(); // vc94 低档起播：停机清低档账（同 Play 口径）
+        ResetStartupGate(); // vc111 自适应开画：停机清攒流账（撤轮询防串台）
         _player.Stop();
         _player.ClearMediaItems();
     }
@@ -430,6 +465,97 @@ public sealed class ExoPlayerPlayer : IPlayer
             _hasSurface = false;
             _surfaceHandle = IntPtr.Zero;
         }
+    }
+
+    // —— vc111 自适应开画（老板 2026-11-27 拍板「改底层，真机可靠电视端同步跟进」；vc112 真机修）——
+    // 病根：默认档 SilentRefetch=1 秒出画（vc103 回退令），慢源 1 秒出画→黑十来秒→出一帧→继续黑；
+    // vc102 改 7 秒门槛又致慢源「一分钟都不出」（攒不满门槛永不开画）。
+    // 改法：冷切起播先暂停出画攒流（ExoPlayer 暂停态照常缓冲），三条件先到先开——
+    // ①攒满 7 秒目标水位（BufferInventory.TargetMs）；②攒流满 5 秒且 2 秒滑动窗灌速 ≥0.9×实时（真快源固定 5 秒出画，老板 2026-11-27 拍板）；
+    // ③攒流满 8 秒强制开（慢源兜底，vc103 教训：永不开=黑屏）。
+    // vc112 真机修（老板截图「一秒就出画」）：快源灌速原按 250ms 单拍差值算——直播源按段突发到货，
+    // 一段 4~6 秒内容几百毫秒涌进内核，单拍灌速轻松 10×实时，0.9 阈值形同虚设，任何源第一段到货即被判快源
+    // 1 秒开画，vc103 老病复发。改 2 秒滑动窗：灌速=窗首到现在的均值，单拍脉冲不再骗闸；
+    // 开画时点再钉死为攒流满 5 秒（老板终口径：快源固定 5 秒出画，不再「存货够就早开」）。
+    // 攒流期看门狗让路（vc112 真机修「没出画就换源」）：起播判死窗与强制开同为 8 秒赛跑，看门狗先到即切源、
+    // 强制开没轮到——会话层经 IPlayer.StartupGateAccumulating 感知攒流期，判死窗下限抬到 12 秒（强制开+4 秒余量），
+    // 8 秒强制开先出画，出画后看门狗照常接管（口径见 PlaybackSession.CheckWatchdog）。
+    // 预防换源 _inventoryEverFilled 闸、后台拉源首帧放行、卡流看门狗 NotifyFirstFrame 正门均不动。
+    // 热备哑面预热（vc66）走 StartFull 档，不挂闸原样即开；读数不可靠立即开画（不赌，交既有兜底）。
+    private const int GatePollMs = 250;          // 攒流轮询节拍
+    private const long GateFastOpenMs = 5000;    // 快源开画时点：攒流满 5 秒（老板终口径：快源固定 5 秒出画）
+    private const long GateFastWindowMs = 2000;  // 快源灌速滑动窗：≥2 秒窗均值，单拍脉冲不再骗闸
+    private const long GateForceOpenMs = 8000;   // 攒流兜底：满 8 秒强制开
+    private const double GateFastFillRate = 0.9; // 快源判据：滑动窗灌速 ≥0.9×实时
+    private bool _gateAccumulating;              // 攒流中（PlayWhenReady=false 攒水）
+    private long _gateSinceMs;                   // 攒流起点（单调钟 Environment.TickCount64）
+    private readonly List<(long TickMs, long BufferedMs)> _gateSamples = new(); // 滑动窗样本（单调钟递增，无锁：仅主线程轮询触达）
+    private bool _shellPaused;                   // 壳层切后台暂停（vc110⑧）：攒流期开画不出声，回前台 Resume 统一放行
+
+    /// <summary>攒流闸是否在攒（IPlayer 契约 vc112）：会话看门狗据此让路，判死窗不与强制开赛跑。</summary>
+    public bool StartupGateAccumulating => _gateAccumulating;
+
+    /// <summary>冷切起播挂攒流闸：PlayWhenReady=false 起轮询，开画条件见字段注释。</summary>
+    private void StartStartupGate()
+    {
+        _gateAccumulating = true;
+        _gateSinceMs = Environment.TickCount64;
+        _gateSamples.Clear();
+        Reporter?.Invoke("[开画闸] 冷切攒流：暂停出画，攒满 7 秒 / 滑动窗灌速跟得上 / 满 8 秒，三条件先到先开");
+        _main.PostDelayed(PollStartupGate, GatePollMs);
+    }
+
+    /// <summary>攒流轮询（250ms 一拍，主线程）：三开画条件先到先开，不到继续排下一拍。</summary>
+    private void PollStartupGate()
+    {
+        if (_released || !_gateAccumulating) return;
+        long now = Environment.TickCount64;
+        long buffered = BufferedMs;
+        long elapsed = now - _gateSinceMs;
+        if (!BufferedMsKnown) { OpenStartupGate("读数不可靠"); return; } // 不赌：立即开画交既有兜底
+        if (buffered >= BufferInventory.TargetMs) { OpenStartupGate($"攒满 {buffered}ms"); return; }
+        // vc112 快源判据（老板终口径）：攒流满 5 秒 + 2 秒滑动窗灌速 ≥0.9×实时——真快源固定 5 秒出画，
+        // 单拍脉冲不再骗闸，也不再「存货够就早开」
+        _gateSamples.Add((now, buffered));
+        _gateSamples.RemoveAll(s => s.TickMs < now - GateFastWindowMs);
+        var oldest = _gateSamples[0];
+        double rate = now > oldest.TickMs
+            ? (buffered - oldest.BufferedMs) / (double)(now - oldest.TickMs)
+            : 0;
+        if (elapsed >= GateFastOpenMs && now - oldest.TickMs >= GateFastWindowMs && rate >= GateFastFillRate)
+        {
+            OpenStartupGate($"滑动窗灌速 {rate:0.00}×实时（存货 {buffered}ms）");
+            return;
+        }
+        if (elapsed >= GateForceOpenMs) { OpenStartupGate($"攒流满 {elapsed}ms 强制"); return; }
+        _main.PostDelayed(PollStartupGate, GatePollMs);
+    }
+
+    /// <summary>开画：恢复出声出画并补发首帧口径（攒流期 READY 被闸住，会话层起播兜底从真开画起算）。
+    /// 壳层切后台暂停中不抢放（PlayWhenReady 保持 false），回前台 Resume 统一放行。</summary>
+    private void OpenStartupGate(string why)
+    {
+        if (!_gateAccumulating) return;
+        _gateAccumulating = false;
+        _main.RemoveCallbacks(PollStartupGate);
+        if (_released) return;
+        try
+        {
+            if (!_shellPaused) _player.PlayWhenReady = true;
+            Reporter?.Invoke($"[开画闸] 开画：{why}");
+            HandleReady(); // 首帧正门补发（_firstFrameRaisedThisPlay 仍 false，只此一次）
+        }
+        catch (Exception ex)
+        {
+            Reporter?.Invoke($"[开画闸] 开画失败交既有自救：{ex.Message}");
+        }
+    }
+
+    /// <summary>攒流闸清账（Play/Stop/Dispose 口径）：撤轮询、清旗；已开画无害。</summary>
+    private void ResetStartupGate()
+    {
+        _gateAccumulating = false;
+        _main.RemoveCallbacks(PollStartupGate);
     }
 
     /// <summary>
@@ -590,6 +716,7 @@ public sealed class ExoPlayerPlayer : IPlayer
         if (_released) return; // vc96 P3：不可重入——重复 Dispose 不再二次 Release 内核
         _playGeneration++; // 释放后作废一切在途回调（闪退镜红②）
         _released = true;  // vc74 P3⑧：监听摘除→Release 与内核/渲染线程在途回调有窗口，回调桥入口查旗收窄窗口（vc75 定案：查旗到执行间非原子，Dispose 可在窗内完成——诊断噪声由 Reporter 有界队列与会话守卫兜底，口径是收窄非消除）
+        ResetStartupGate(); // vc111 自适应开画：撤攒流轮询（释放后回调查旗即弃，双保险）
         ReleaseWarmupSink();
         _player.RemoveListener(_forwarder);
         _player.RemoveAnalyticsListener(_diagForwarder);
@@ -621,6 +748,9 @@ public sealed class ExoPlayerPlayer : IPlayer
 
     private void HandleReady()
     {
+        // vc111 自适应开画：攒流期（PlayWhenReady=false 攒水）READY 不上报——首帧正门后移到
+        // 开画（OpenStartupGate 补发），会话层起播兜底从真开画起算，攒流期只留死源判定。
+        if (_gateAccumulating) return;
         OnBufferingEnd?.Invoke(this, new PlayerBufferingEventArgs { IsSeeking = false });
         if (!_firstFrameRaisedThisPlay)
         {
@@ -811,6 +941,17 @@ public sealed class ExoPlayerPlayer : IPlayer
                 ? (cause is { } c && c != m ? $"{m} | cause={c}" : m)
                 : "unknown playback error";
             _owner.HandleError(code, message);
+        }
+
+        /// <summary>视频尺寸回调（vc113 原型对照令）：缓存画面高度与帧率供控制条 mini 读数；
+        /// 帧率内核给不出（&lt;=0）不覆盖旧账，尺寸同理（只认有效值，防中途探针态清掉已得读数）。</summary>
+        public void OnVideoSizeChanged(AndroidX.Media3.Common.VideoSize? videoSize)
+        {
+            if (_owner._released || videoSize is null) return; // vc74 P3⑧：释放后在途回调即弃
+            if (videoSize.Height > 0) _owner._videoHeight = videoSize.Height;
+            // 帧率不在 VideoSize 上（1.11.1 绑定无该成员）：从当前视频轨道 Format 取，给不出（<=0）不覆盖旧账
+            var frameRate = _owner._player?.VideoFormat?.FrameRate ?? 0f;
+            if (frameRate > 0) _owner._videoFrameRate = frameRate;
         }
     }
 }

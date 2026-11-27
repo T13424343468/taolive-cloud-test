@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- vc113 对照原型 04 节：诊断日志页 🗑 清空二次确认（绑定只收资源 ID 重载，文案落资源） -->
+  <string name="diag_clear_title">清空崩溃日志</string>
+  <string name="diag_clear_msg">确定清空崩溃日志？此操作不可撤销。</string>
+  <string name="diag_clear_ok">清空</string>
+  <string name="diag_clear_cancel">取消</string>
+</resources>

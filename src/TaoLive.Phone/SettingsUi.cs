@@ -30,6 +30,7 @@ public partial class MainActivity
     // ---- 全屏子页（自管面板：非 AlertDialog——对话框浮动容器吃边，真机全屏仍缩半屏） ----
     // v26 原型重做（2026-11-27 真机反馈第9条）：运行统计/崩溃日志/自诊断三页并进设置页页签，独立弹层撤除
     private FrameLayout? _advOverlay;
+    private FrameLayout? _advGearOverlay; // vc111 v10 原型：进阶调优底部档位弹层（点行弹出，点遮罩收层）
     private FrameLayout? _licenseOverlay;
     private ScrollView? _licenseScroll;
     private TextView? _licenseCloseBtn;
@@ -118,7 +119,7 @@ public partial class MainActivity
     }
 
     // —— 窗口唯一令（#64 老板令 2026-11-15）：打开任何窗口前先关掉其它所有窗口——
-    //    不允许重叠，当前操作的窗口永远第一顺位且唯一。覆盖：频道抽屉/设置面板/退出确认弹窗/
+    //    不允许重叠，当前操作的窗口永远第一顺位且唯一。覆盖：频道抽屉/设置面板/
     //    运行统计·崩溃日志/自诊断/进阶调优/开源许可。纯关闭不触发「返回设置页」收口。 ——
 
     /// <summary>统一闸：开新窗口前先关掉其它全部窗口（幂等，重复调无害）。</summary>
@@ -126,15 +127,11 @@ public partial class MainActivity
     {
         if (_listOpen) ShowPlayer();      // 收频道抽屉回播放页（纯收起，画面本就没停）
         CloseSettingsPanel();             // 收设置面板
-        if (_exitDialog is not null)      // 收退出确认弹窗
-        {
-            _exitDialog.Dismiss();
-            _exitDialog = null;
-            _exitNo = null;
-            _exitYes = null;
-        }
+        // vc112：退出确认弹窗已整删（返回=停播攒流退后台），无弹窗可收
         CloseLicenseOverlayOnly();
         CloseAdvancedOverlayOnly();
+        CloseDiagOverlayOnly();           // vc113：诊断日志/运行统计子页同入唯一闸
+        CloseStatsOverlayOnly();
     }
 
     private void OpenSettingsPanel()
@@ -172,7 +169,9 @@ public partial class MainActivity
     private LinearLayout BuildSettingsPanel()
     {
         var panel = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        panel.SetBackgroundColor(InkTranslucency.PanelSolidColor(this)); // 近实色水墨底，亮画面上不叠字
+        // vc111 老板令「全页面统一电视端水墨透光」：面板改自适应透底（亮屏76/暗房108），画面透出、
+        // 文字清晰由可读性投影兜底（电视端 vc53 同口径）；不再用近实色底闷住画面。
+        panel.SetBackgroundColor(InkTranslucency.PanelColor(this));
         panel.SetPadding(Dp(20), Dp(10), Dp(20), Dp(12));
         panel.Visibility = ViewStates.Gone;
 
@@ -203,52 +202,11 @@ public partial class MainActivity
         _settingsScroll.AddView(_settingsFlow, new FrameLayout.LayoutParams(-1, -2));
         page.AddView(_settingsScroll, new LinearLayout.LayoutParams(-1, -2));
 
-        // 诊断卡片：页签行 + 正文 + 操作行（v26 原型：运行台账/崩溃日志/自诊断）
-        var card = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        card.SetPadding(Dp(14), Dp(8), Dp(14), Dp(12));
-        var cardBg = new GradientDrawable();
-        cardBg.SetColor(Color.Argb(60, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
-        cardBg.SetCornerRadius(Dp(12));
-        card.Background = cardBg;
-        var cardLp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) };
-        page.AddView(card, cardLp);
-
-        var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        string[] tabNames = { "运行台账", "崩溃日志", "自诊断" };
-        for (int i = 0; i < tabNames.Length; i++)
-        {
-            var tab = new TextView(this) { Text = tabNames[i], TextSize = UiScale.Item };
-            tab.SetPadding(Dp(16), Dp(8), Dp(16), Dp(8));
-            tab.Focusable = true;
-            int idx = i;
-            tab.Click += (_, _) => SwitchDiagTab(idx);
-            tabRow.AddView(tab);
-            _diagTabs.Add(tab);
-            _settingsRows.Add(tab); // 显式焦点导航覆盖页签（#61 口径）
-        }
-        card.AddView(tabRow, new LinearLayout.LayoutParams(-1, -2));
-
-        _diagBodyScroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
-        _diagBody = new TextView(this) { TextSize = UiScale.Caption };
-        _diagBody.SetTextIsSelectable(false);
-        _diagBody.Focusable = false; // 正文不抢焦点，焦点只在页签与按钮间转
-        _diagBody.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(_diagBody);
-        _diagBodyScroll.AddView(_diagBody);
-        card.AddView(_diagBodyScroll, new LinearLayout.LayoutParams(-1, Dp(300)) { TopMargin = Dp(6) });
-
-        _diagBtnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        card.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) });
-
-        // #19：说明收进底部帮助行
-        var help = new TextView(this) { Text = "点按切换 · 点 ← 或返回键收起", TextSize = UiScale.Caption };
-        help.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(help);
-        help.SetPadding(Dp(14), Dp(8), Dp(14), Dp(4));
-        panel.AddView(help, new FrameLayout.LayoutParams(-1, -2));
+        // vc113 全页面对照原型（03/04 节）：诊断卡片撤出设置页——运行统计/诊断日志改独立入口行（›），
+        // 各自独立子页（05/04 节），设置页只留开关组+入口组两组卡片
+        // vc115：帮助行「点按切换 · 点 ← 或返回键收起」按定稿清单删除
 
         _root.AddView(panel, new FrameLayout.LayoutParams(-1, -1)); // 全屏页
-        SwitchDiagTab(0); // 默认落运行台账
         return panel;
     }
 
@@ -273,47 +231,85 @@ public partial class MainActivity
         LoadDiagBody();
     }
 
-    /// <summary>页签操作行重建：崩溃日志=一键清理（朱砂危险项）；运行台账/自诊断=导出日志。</summary>
+    /// <summary>页签操作行重建（vc113 对照原型 04 节）：📄📁🗑 三钮上收 topbar 常驻，操作行只留「导出日志」
+    /// （自诊断页签，v15⑨ 老板令：导出到文件管理器可见目录）；运行台账/崩溃日志页签无操作钮。</summary>
     private void RefreshDiagButtons()
     {
         if (_diagBtnRow is null) return;
         _diagBtnRow.RemoveAllViews();
-        void AddBtn(string text, Action onClick, GradientDrawable focus)
+        if (_diagTab != 2) return;
+        var b = new TextView(this) { Text = "导出日志", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+        b.SetPadding(Dp(20), Dp(12), Dp(20), Dp(12));
+        b.Focusable = true;
+        b.Click += (_, _) =>
         {
-            var b = new TextView(this) { Text = text, Gravity = GravityFlags.Center, TextSize = UiScale.Item };
-            b.SetPadding(Dp(20), Dp(12), Dp(20), Dp(12));
-            b.Focusable = true;
-            b.Click += (_, _) => onClick();
-            StyleOverlayButton(b, focus);
-            _diagBtnRow.AddView(b, new LinearLayout.LayoutParams(-2, -2) { RightMargin = Dp(10) });
-            _settingsRows.Add(b); // 显式焦点导航覆盖操作钮（#61 口径）
-        }
-        if (_diagTab == 1)
-        {
-            AddBtn("一键清理", () =>
+            // 导出快照后台组装（#23 同条款：快照含 256KB 日志尾扫，不占主线程）
+            _ = Task.Run(() =>
             {
-                try
-                {
-                    var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
-                    if (path.Exists()) System.IO.File.Delete(path.AbsolutePath!);
-                    ShowToast("崩溃日志已清空");
-                }
-                catch { ShowToast("清理失败，请重试"); }
-                LoadDiagBody();
-            }, InkTranslucency.AccentFocusDrawable());
-        }
-        else
+                var path = DiagLog.Export(ApplicationContext!, BuildDiagSnapshot());
+                CrashNet.Record(path is null ? "[诊断] 导出失败" : $"[诊断] 已导出：{path}");
+                _main.Post(() => ShowToast(path is null ? "导出失败，请重试" : "已导出到文件管理器可见目录"));
+            });
+        };
+        StyleOverlayButton(b, InkTranslucency.FocusDrawable());
+        _diagBtnRow.AddView(b, new LinearLayout.LayoutParams(-2, -2));
+        _settingsRows.Add(b); // 显式焦点导航覆盖操作钮（#61 口径）
+    }
+
+    /// <summary>
+    /// vc111 诊断出口①「打开源文件」：日志文件经只读 ContentProvider（LogProvider，白名单两文件）
+    /// 交系统查看器打开。查 FilesDir/taolive_crash.log 优先，无则查外部应用目录 taolive_diag.txt，
+    /// 都没有 toast 提示；打不开（无查看器）按文案提示，不裸奔异常。
+    /// </summary>
+    private void OpenDiagSourceFile()
+    {
+        try
         {
-            AddBtn("导出日志", () =>
+            string? name = null;
+            if (new Java.IO.File(FilesDir!, "taolive_crash.log").Exists()) name = "taolive_crash.log";
+            else if (new Java.IO.File(GetExternalFilesDir(null)!, "taolive_diag.txt").Exists()) name = "taolive_diag.txt";
+            if (name is null) { ShowToast("暂无日志文件"); return; }
+            var intent = new Intent(Intent.ActionView);
+            intent.SetDataAndType(Android.Net.Uri.Parse($"content://com.taolive.phone.logs/{name}"), "text/plain");
+            intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.NewTask);
+            try { StartActivity(intent); }
+            catch (ActivityNotFoundException) { ShowToast("没有能打开日志的应用"); }
+        }
+        catch (Exception ex)
+        {
+            CrashNet.Record($"[诊断] 打开源文件失败：{ex.Message}");
+            ShowToast("打开失败，请重试");
+        }
+    }
+
+    /// <summary>
+    /// vc111 诊断出口②「打开目录」：文件管理器直达应用日志目录（DocumentsUI 外部存储文档 URI）；
+    /// 设备无 DocumentsUI 降级系统下载页，再不行提示「未找到文件管理器」，不裸奔异常。
+    /// </summary>
+    private void OpenDiagDirectory()
+    {
+        try
+        {
+            var uri = Android.Net.Uri.Parse(
+                "content://com.android.externalstorage.documents/document/primary:Android/data/com.taolive.phone/files");
+            try
             {
-                // 导出快照后台组装（#23 同条款：快照含 256KB 日志尾扫，不占主线程）
-                _ = Task.Run(() =>
-                {
-                    var path = DiagLog.Export(ApplicationContext!, BuildDiagSnapshot());
-                    CrashNet.Record(path is null ? "[诊断] 导出失败" : $"[诊断] 已导出：{path}");
-                    _main.Post(() => ShowToast(path is null ? "导出失败，请重试" : "已导出到文件管理器可见目录"));
-                });
-            }, InkTranslucency.FocusDrawable());
+                StartActivity(new Intent(Intent.ActionView).SetData(uri).AddFlags(ActivityFlags.NewTask));
+                return;
+            }
+            catch (Exception) { /* 无 DocumentsUI：降级下一级 */ }
+            try
+            {
+                StartActivity(new Intent(Android.App.DownloadManager.ActionViewDownloads).AddFlags(ActivityFlags.NewTask));
+                return;
+            }
+            catch (Exception) { /* 下载页也没有：落提示 */ }
+            ShowToast("未找到文件管理器");
+        }
+        catch (Exception ex)
+        {
+            CrashNet.Record($"[诊断] 打开目录失败：{ex.Message}");
+            ShowToast("打开失败，请重试");
         }
     }
 
@@ -468,8 +464,52 @@ public partial class MainActivity
         }
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            base.OnMeasure(widthMeasureSpec,
-                MeasureSpec.MakeMeasureSpec(_maxHeight, MeasureSpecMode.AtMost));
+            // vc113 修（设置页点不动两处低风险修正之一）：原写法恒以 AtMost(_maxHeight) 覆盖父级高度规格——
+            // 父级给 Exactly（面板内定高）也被推翻，且上限不受父级尺寸钳制，滚动容器可量出超出父级的自然高，
+            // 内容整体下探后触摸目标与视觉错位。改为尊重父级规格：Exactly 原样透传，其余档位钳到 min(父级尺寸, 上限)。
+            var mode = MeasureSpec.GetMode(heightMeasureSpec);
+            var size = MeasureSpec.GetSize(heightMeasureSpec);
+            if (mode == MeasureSpecMode.Exactly)
+            {
+                base.OnMeasure(widthMeasureSpec, heightMeasureSpec);
+                return;
+            }
+            int cap = _maxHeight == int.MaxValue
+                ? (mode == MeasureSpecMode.Unspecified ? (1 << 30) - 1 : size)
+                : Math.Min(_maxHeight, mode == MeasureSpecMode.Unspecified ? (1 << 30) - 1 : size);
+            base.OnMeasure(widthMeasureSpec, MeasureSpec.MakeMeasureSpec(Math.Max(0, cap), MeasureSpecMode.AtMost));
+        }
+    }
+
+    /// <summary>真实开关控件（vc113 原型对照令 03 节）：48×28 圆角轨道+白色圆形滑块，开=bam 绿、关=line 灰；点击翻转并重绘。</summary>
+    private sealed class SwitchView : View
+    {
+        private readonly Paint _paint = new(PaintFlags.AntiAlias);
+
+        /// <summary>开关状态（对象初始化器赋初值；点击翻转后由 Toggle* 重建行刷新终态）。</summary>
+        public bool Checked { get; set; }
+
+        public SwitchView(Context c) : base(c)
+        {
+            Clickable = true;
+            // 内部先翻转（构造期注册的处理器先于外部 Click 执行），外部处理器读到的是新值
+            Click += (_, _) => { Checked = !Checked; Invalidate(); };
+        }
+
+        protected override void OnDraw(Canvas canvas)
+        {
+            base.OnDraw(canvas);
+            int w = Width, h = Height;
+            if (w <= 0 || h <= 0) return;
+            float density = Resources!.DisplayMetrics!.Density * UiScale.Scale;
+            float r = h / 2f;
+            _paint.Color = Checked ? Color.ParseColor("#6FBF8E") : Color.ParseColor("#3A444D"); // 原型 --bam / --line
+            canvas.DrawRoundRect(0, 0, w, h, r, r, _paint);
+            float inset = 3 * density; // 滑块内距 3dp
+            float td = h - 2 * inset;
+            float cx = Checked ? w - inset - td / 2 : inset + td / 2; // 开=右、关=左
+            _paint.Color = Color.White;
+            canvas.DrawCircle(cx, h / 2f, td / 2, _paint);
         }
     }
 
@@ -477,7 +517,7 @@ public partial class MainActivity
     {
         if (_settingsPanel is null || _settingsFlow is null) return;
         // 重建前记录焦点行（只记可聚焦行；#61 焦点实修：显式导航只走 _settingsRows，不含标签行）
-        var focusedNow = CurrentFocus as TextView;
+        var focusedNow = CurrentFocus;
         int focusedIdx = focusedNow is null ? -1 : _settingsRows.IndexOf(focusedNow);
         _settingsFlow.RemoveAllViews();
         _settingsRows.Clear();
@@ -486,48 +526,117 @@ public partial class MainActivity
         _settingsRows.AddRange(_diagTabs);
         RefreshDiagButtons(); // 操作钮随页签重建并入导航序列
 
-        // #19 流式行：紧凑内边距（项间距自带），操作提示收进底部帮助行不再每行下挂
-        void AddRow(string text, Action onClick, string color, Action? onLongClick = null)
+        // —— vc113 原型对照令（03 节设置页定稿）：分组卡片+真实 switch 控件——
+        // 开关组卡片（即时生效）+ 入口组卡片（逐级进入），两组卡片分隔；行=标题+副标题+右缘控件/箭头。
+
+        // 卡片容器（原型 .set-card：card 底、edge 描边、12 圆角、行间 1px 分隔线）
+        LinearLayout NewCard()
         {
-            var tv = new TextView(this) { Text = text, TextSize = UiScale.Item };
-            tv.SetTextColor(Color.ParseColor(color));
-            tv.SetPadding(Dp(16), Dp(14), Dp(16), Dp(14)); // 手机热区：行高加大
-            tv.Focusable = true;
-            var focusDrawable = InkTranslucency.FocusDrawable();
-            tv.FocusChange += (_, e) =>
-            {
-                if (e.HasFocus) tv.Background = focusDrawable;
-                else if (tv.Background == focusDrawable) tv.Background = null;
-            };
-            tv.Click += (_, _) => onClick();
-            // 手机版整改令 2026-11-27：触屏按压反馈（电视端只有焦点高亮，触屏按下无态）
-            tv.Touch += (_, e) =>
-            {
-                if (e.Event is null) return;
-                if (e.Event.Action == MotionEventActions.Down) tv.Background = focusDrawable;
-                else if (e.Event.Action is MotionEventActions.Up or MotionEventActions.Cancel && !tv.HasFocus)
-                    tv.Background = null;
-            };
-            if (onLongClick is not null) tv.LongClick += (_, _) => onLongClick();
-            _settingsFlow!.AddView(tv);
-            _settingsRows.Add(tv); // #61 显式焦点导航：真机实锤系统焦点搜索在自实现流式容器上不可靠
+            var card = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            var bg = new GradientDrawable();
+            bg.SetColor(Color.ParseColor("#2B333B")); // 原型 --card
+            bg.SetStroke(Dp(1), Color.ParseColor("#3A444D")); // 原型 --line 作描边
+            bg.SetCornerRadius(Dp(12));
+            card.Background = bg;
+            var lp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(8) };
+            _settingsFlow!.AddView(card, lp);
+            return card;
         }
 
-        // ⑤开机自启（方案书收口批②：BootReceiver+开关行）：安装默认开启（照 vc53 v22 第 15 项），与 BootReceiver 同读一份偏好
-        AddRow($"开机自启：{(_prefs.GetBoolean("autostart_enabled", true) ? "开" : "关")}（长按跳自启管理）",
-            ToggleAutoStart, "#F7F5EE", OpenAutoStartSettings);
-        // ⑥开机默认台设置行已删（老板令 2026-11-15：一百多台循环点选没法用；启动选台回归 vc53 口径=断点台回看，见 MainActivity.DefaultChannelIndex）
+        // 行按压反馈（原型 .set-row:active=card-2 底；焦点高亮沿用全局 FocusDrawable）
+        void BindPressFeedback(View row)
+        {
+            var focusDrawable = InkTranslucency.FocusDrawable();
+            row.Focusable = true;
+            row.FocusChange += (_, e) =>
+            {
+                if (e.HasFocus) row.Background = focusDrawable;
+            };
+            row.Touch += (_, e) =>
+            {
+                if (e.Event is null) { e.Handled = false; return; }
+                if (e.Event.Action == MotionEventActions.Down) row.Background = focusDrawable;
+                else if (e.Event.Action is MotionEventActions.Up or MotionEventActions.Cancel && !row.HasFocus)
+                    row.Background = null;
+                e.Handled = false;
+            };
+        }
+
+        // 卡片行（原型 .set-row）：左=标题+副标题两行块，右=控件（开关/箭头）；divider=行间 1px 分隔线
+        LinearLayout NewCardRow(LinearLayout card, string title, string subtitle, bool first)
+        {
+            if (!first)
+            {
+                var divider = new View(this) { Background = new Android.Graphics.Drawables.ColorDrawable(Color.ParseColor("#3A444D")) }; // 原型 --line
+                card.AddView(divider, new LinearLayout.LayoutParams(-1, Dp(1)));
+            }
+            var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            row.SetGravity(GravityFlags.CenterVertical);
+            row.SetPadding(Dp(12), Dp(14), Dp(12), Dp(14)); // 原型 14/12 内距，行高 ≥48 触控目标
+            var txt = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            var n = new TextView(this) { Text = title, TextSize = UiScale.Item };
+            n.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(n);
+            txt.AddView(n);
+            var d = new TextView(this) { Text = subtitle, TextSize = UiScale.Caption };
+            d.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(d);
+            txt.AddView(d, new LinearLayout.LayoutParams(-2, -2) { TopMargin = Dp(2) });
+            row.AddView(txt, new LinearLayout.LayoutParams(0, -2, 1f));
+            card.AddView(row);
+            BindPressFeedback(row);
+            _settingsRows.Add(row); // #61 显式焦点导航：行容器入序列
+            return row;
+        }
+
+        // 真实开关（原型 .switch：48×28 圆角轨道，开=bam 绿、关=line 灰，白色滑块；点击即切换）
+        SwitchView NewSwitch(LinearLayout row, bool initial, Action<bool> onChanged)
+        {
+            var sw = new SwitchView(this) { Checked = initial };
+            sw.Click += (_, _) => onChanged(sw.Checked);
+            row.AddView(sw, new LinearLayout.LayoutParams(Dp(48), Dp(28)) { LeftMargin = Dp(12) });
+            return sw;
+        }
+
+        // —— 开关组卡片（即时生效；默认值对齐 vc105 读盘持久化口径） ——
+        var toggleCard = NewCard();
+        // ⑤开机自启（方案书收口批②：BootReceiver+开关行）：安装默认开启，与 BootReceiver 同读一份偏好
+        var autoStartRow = NewCardRow(toggleCard, "开机自启", "开机进入应用（长按跳系统自启管理）", first: true);
+        NewSwitch(autoStartRow, _prefs.GetBoolean("autostart_enabled", true), _ =>
+        {
+            ToggleAutoStart();
+        });
+        autoStartRow.LongClick += (_, _) => OpenAutoStartSettings();
         // 预检握手（vc53 v1.0.8 一比一）：真实控制常驻循环预检（关=循环同停）；
         // 收口批④开关合流：预热与预检两个开关管同一条车道必出一个死开关——只留本开关，
         // 预热（开机全量预热+换台邻台预取）随预检同起同停，不再单设开关。
         // vc105 老板令：以 93 为基线——入口接回（vc101 撤除令被「以93为基线」覆盖）。
-        AddRow($"预检握手：{(_precheckEnabled ? "开" : "关")}（预热同起同停）", TogglePrecheck, "#F7F5EE");
+        var precheckRow = NewCardRow(toggleCard, "预检握手", "开播前先探活，预热同起同停", first: false);
+        NewSwitch(precheckRow, _precheckEnabled, _ => TogglePrecheck());
         // 内置订阅（老板 2026-11-26 拍板「只做内置订阅」）：开关默认关；长按=立即刷新合集
-        AddRow($"源订阅：{(_subEnabled ? "开" : "关")}（自动收录公开源）", ToggleSubscription, "#F7F5EE", RefreshSubscriptionNow);
+        var subRow = NewCardRow(toggleCard, "源订阅", "自动收录公开源（默认关，长按立即刷新）", first: false);
+        NewSwitch(subRow, _subEnabled, _ => ToggleSubscription());
+        subRow.LongClick += (_, _) => RefreshSubscriptionNow();
+
+        // —— 入口组卡片（逐级进入；vc113 原型 03 节：运行统计/诊断日志/进阶调优/关于，各自独立子页） ——
+        var entryCard = NewCard();
+        AddEntryRow(entryCard, "运行统计", "取票 / 换台 / 播放时长台账", ShowStatsPanel, first: true);
+        AddEntryRow(entryCard, "诊断日志", "运行台账 · 崩溃日志 · 自诊断", ShowDiagPanel, first: false);
+        AddEntryRow(entryCard, "进阶调优", "缓冲水位 · 出画门槛 · 预热车道", ShowAdvancedTuningPanel, first: false);
+        AddEntryRow(entryCard, "关于 · 开源许可", null, ShowLicensePanel, first: false);
+
+        void AddEntryRow(LinearLayout card, string title, string? subtitle, Action onClick, bool first)
+        {
+            var row = NewCardRow(card, title, subtitle ?? "", first);
+            var chev = new TextView(this) { Text = "›", TextSize = UiScale.Item };
+            chev.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(chev);
+            row.AddView(chev, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(12) });
+            row.Click += (_, _) => onClick();
+        }
+
+        // ⑥开机默认台设置行已删（老板令 2026-11-15：一百多台循环点选没法用；启动选台回归 vc53 口径=断点台回看，见 MainActivity.DefaultChannelIndex）
         // 显示大小项已撤（老板 2026-11-27 拍板：尺寸跟系统「显示大小」走，App 内不再单设档位）
-        // 运行统计/崩溃日志/自诊断三行已撤（v26 原型重做：并进诊断卡片三页签）
-        AddRow("进阶调优", ShowAdvancedTuningPanel, "#C9D6E2");
-        AddRow("关于 · 开源许可", ShowLicensePanel, "#C9D6E2");
 
         // 重建完成，焦点回原行（#61：走显式导航，含滚入可视）
         if (focusedIdx >= 0) FocusSettingsRow(focusedIdx);
@@ -536,8 +645,8 @@ public partial class MainActivity
     // —— 设置面板显式焦点导航（#61 真机实锤：设置面板改流式一行多项后，系统焦点搜索在自实现
     //    FlowLayout 上切不动焦点，且左右键原被键位分支吞掉——照退出弹窗先例改显式接管） ——
 
-    /// <summary>当前面板可聚焦行（添加序=流式视觉序：从左到右、从上到下）。</summary>
-    private readonly List<TextView> _settingsRows = new();
+    /// <summary>当前面板可聚焦行（添加序=卡片视觉序：从左到右、从上到下；vc113 原型对照令：行改卡片容器 View）。</summary>
+    private readonly List<View> _settingsRows = new();
 
     /// <summary>焦点落到指定行并滚入可视区。</summary>
     private void FocusSettingsRow(int idx)
@@ -553,7 +662,7 @@ public partial class MainActivity
     private bool SettingsFocusMove(int dx, int dy)
     {
         if (_settingsRows.Count == 0) return true;
-        var focusedNow = CurrentFocus as TextView;
+        var focusedNow = CurrentFocus;
         int idx = focusedNow is null ? -1 : _settingsRows.IndexOf(focusedNow);
         if (idx < 0) { FocusSettingsRow(0); return true; }
         if (dx != 0)
@@ -834,6 +943,208 @@ public partial class MainActivity
         _licenseCloseBtn = null;
     }
 
+    // —— 诊断日志页 / 运行统计页（vc113 全页面对照原型 04/05 节：独立子页，从设置进入） ——
+
+    private FrameLayout? _diagOverlay;
+    private FrameLayout? _statsOverlay;
+
+    /// <summary>诊断日志页（原型 04 节）：topbar=返回+标题+📄打开源文件+📁打开目录+🗑清空（二次确认）；
+    /// 三页签同页（运行台账/崩溃日志/自诊断），自诊断页签挂「导出日志」。</summary>
+    private void ShowDiagPanel()
+    {
+        EnforceSingleWindow(); // #64 窗口唯一令：开新先关旧
+        try
+        {
+            var overlay = new FrameLayout(this) { Clickable = true };
+            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
+            int pad = Dp(20);
+            var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            box.SetPadding(pad, Dp(10), pad, Dp(14));
+            overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
+
+            // topbar：返回 + 标题 + 三常驻钮（📄📁🗑）
+            var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            head.SetGravity(GravityFlags.CenterVertical);
+            var back = new TextView(this) { Text = "←", TextSize = UiScale.Title };
+            back.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(back);
+            back.SetPadding(Dp(14), Dp(10), Dp(26), Dp(10));
+            back.Click += (_, _) => CloseDiagPanel();
+            head.AddView(back);
+            var title = new TextView(this) { Text = "诊断日志", TextSize = UiScale.Title };
+            title.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(title);
+            head.AddView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+            head.AddView(DiagHeadBtn("📄", "打开源文件", OpenDiagSourceFile));
+            head.AddView(DiagHeadBtn("📁", "打开目录", OpenDiagDirectory));
+            head.AddView(DiagHeadBtn("🗑", "清空", ConfirmClearCrashLog));
+            box.AddView(head, new LinearLayout.LayoutParams(-1, -2));
+
+            // 页签行（运行台账/崩溃日志/自诊断，v5 老板令三标签同页）
+            var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            string[] tabNames = { "运行台账", "崩溃日志", "自诊断" };
+            for (int i = 0; i < tabNames.Length; i++)
+            {
+                var tab = new TextView(this) { Text = tabNames[i], TextSize = UiScale.Item };
+                tab.SetPadding(Dp(16), Dp(8), Dp(16), Dp(8));
+                tab.Focusable = true;
+                int idx = i;
+                tab.Click += (_, _) => SwitchDiagTab(idx);
+                tabRow.AddView(tab);
+                _diagTabs.Add(tab);
+                _settingsRows.Add(tab); // 显式焦点导航覆盖页签（#61 口径）
+            }
+            box.AddView(tabRow, new LinearLayout.LayoutParams(-1, -2));
+
+            _diagBodyScroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
+            _diagBody = new TextView(this) { TextSize = UiScale.Caption };
+            _diagBody.SetTextIsSelectable(false);
+            _diagBody.Focusable = false; // 正文不抢焦点，焦点只在页签与按钮间转
+            _diagBody.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(_diagBody);
+            _diagBodyScroll.AddView(_diagBody);
+            box.AddView(_diagBodyScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            _diagBtnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            box.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) });
+
+            _diagOverlay = overlay;
+            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
+            CloseSettingsPanel();
+            SwitchDiagTab(0); // 默认落运行台账
+            if (_diagTabs.Count > 0) _diagTabs[0].RequestFocus();
+        }
+        catch (Exception ex) { CrashNet.Record($"[诊断] 打开失败：{ex.Message}"); ShowToast("诊断日志打开失败"); }
+    }
+
+    /// <summary>topbar 常驻钮统一样式（描边自管，与面板操作钮同款）。</summary>
+    private TextView DiagHeadBtn(string glyph, string desc, Action onClick)
+    {
+        var b = new TextView(this) { Text = glyph, TextSize = UiScale.Item, ContentDescription = desc, Gravity = GravityFlags.Center };
+        b.SetPadding(Dp(18), Dp(10), Dp(18), Dp(10));
+        StyleOverlayButton(b, InkTranslucency.FocusDrawable());
+        b.Click += (_, _) => onClick();
+        return b;
+    }
+
+    private void CloseDiagPanel()
+    {
+        CloseDiagOverlayOnly();
+        OpenSettingsPanel();
+    }
+
+    /// <summary>#64 窗口唯一令：诊断页纯关闭（不回设置页），供统一闸复用。</summary>
+    private void CloseDiagOverlayOnly()
+    {
+        if (_diagOverlay is null) return;
+        _root.RemoveView(_diagOverlay);
+        _diagOverlay.Dispose();
+        _diagOverlay = null;
+        _diagBody = null;
+        _diagBodyScroll = null;
+        _diagBtnRow = null;
+        _diagTabs.Clear();
+    }
+
+    /// <summary>🗑 清空（原型 04 节：清空需二次确认）——确认后删崩溃日志文件并刷新正文。</summary>
+    private void ConfirmClearCrashLog()
+    {
+        var builder = new Android.App.AlertDialog.Builder(this); // 绑定只收资源 ID 重载，文案落 strings.xml
+        builder.SetTitle(Resource.String.diag_clear_title);
+        builder.SetMessage(Resource.String.diag_clear_msg);
+        builder.SetPositiveButton(Resource.String.diag_clear_ok, (object? s, DialogClickEventArgs e) =>
+        {
+            try
+            {
+                var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
+                if (path.Exists()) System.IO.File.Delete(path.AbsolutePath!);
+                ShowToast("崩溃日志已清空");
+            }
+            catch { ShowToast("清理失败，请重试"); }
+            LoadDiagBody();
+            (s as Android.Content.IDialogInterface)?.Dismiss();
+        });
+        builder.SetNegativeButton(Resource.String.diag_clear_cancel, (object? s, DialogClickEventArgs e) =>
+            (s as Android.Content.IDialogInterface)?.Dismiss());
+        builder.Show();
+    }
+
+    /// <summary>运行统计页（原型 05 节）：只读一页无按钮，聚合台账分组展示；空态「暂无运行台账」不白板；
+    /// 读盘+解析后台走（1MB 尾扫不占主线程），读前判文件还在（可能被清空删掉）。</summary>
+    private void ShowStatsPanel()
+    {
+        EnforceSingleWindow(); // #64 窗口唯一令：开新先关旧
+        try
+        {
+            var overlay = new FrameLayout(this) { Clickable = true };
+            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
+            int pad = Dp(20);
+            var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            box.SetPadding(pad, Dp(10), pad, Dp(14));
+            overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
+
+            var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            head.SetGravity(GravityFlags.CenterVertical);
+            var back = new TextView(this) { Text = "←", TextSize = UiScale.Title };
+            back.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(back);
+            back.SetPadding(Dp(14), Dp(10), Dp(26), Dp(10));
+            back.Click += (_, _) => CloseStatsPanel();
+            head.AddView(back);
+            var title = new TextView(this) { Text = "运行统计（近期）", TextSize = UiScale.Title };
+            title.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(title);
+            head.AddView(title);
+            box.AddView(head, new LinearLayout.LayoutParams(-1, -2));
+
+            var body = new TextView(this) { Text = "统计中…", TextSize = UiScale.Caption };
+            body.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(body);
+            var scroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
+            scroll.AddView(body);
+            box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            _statsOverlay = overlay;
+            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
+            CloseSettingsPanel();
+
+            // 后台读台账尾扫并聚合（原型 05 节性能口径），读前判文件还在
+            string logPath = System.IO.Path.Combine(FilesDir!.AbsolutePath!, "taolive_crash.log");
+            _ = Task.Run(() =>
+            {
+                string stats;
+                try
+                {
+                    var f = new Java.IO.File(logPath);
+                    string log = f.Exists() ? ReadLogTail(logPath, 1024 * 1024) : "";
+                    stats = log.Length == 0 ? "暂无运行台账" : BuildRunStats(log);
+                }
+                catch (Exception ex) { stats = "统计读取失败：" + ex.Message; }
+                _main.Post(() =>
+                {
+                    if (_statsOverlay is null) return; // 页已关
+                    body.Text = stats;
+                });
+            });
+        }
+        catch (Exception ex) { CrashNet.Record($"[统计] 打开失败：{ex.Message}"); ShowToast("运行统计打开失败"); }
+    }
+
+    private void CloseStatsPanel()
+    {
+        CloseStatsOverlayOnly();
+        OpenSettingsPanel();
+    }
+
+    /// <summary>#64 窗口唯一令：统计页纯关闭（不回设置页），供统一闸复用。</summary>
+    private void CloseStatsOverlayOnly()
+    {
+        if (_statsOverlay is null) return;
+        _root.RemoveView(_statsOverlay);
+        _statsOverlay.Dispose();
+        _statsOverlay = null;
+    }
+
     /// <summary>五类摘要组装：全部经现有公开接口/公开成员取数，不落设备标识、不新增采集。</summary>
     private string BuildDiagSnapshot()
     {
@@ -913,7 +1224,7 @@ public partial class MainActivity
 
     // —— 进阶调优面板：旋钮全量可调 + 每项讲清作用 + 一键还原 ——
 
-    /// <summary>旋钮档位（确认键循环）。改动即存偏好并即时生效（方案书收口令：ProxyPort 假旋钮已删）。</summary>
+    /// <summary>旋钮档位（vc111 v10 原型：点行弹底部档位选择，点选即生效）。改动即存偏好并即时生效（方案书收口令：ProxyPort 假旋钮已删）。</summary>
     private static readonly int[] AdvGateSteps = { 1, 2, 3, 5, 8, 12 };
     private static readonly int[] AdvReprobeMinSteps = { 1, 2, 5, 10, 15 };
     private static readonly int[] AdvCacheSecSteps = { 15, 30, 60, 120, 300 };
@@ -921,20 +1232,6 @@ public partial class MainActivity
     private static readonly int[] AdvLagSecSteps = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 }; // 落后目标 5 秒一档（老板令 2026-11-16）
     private static readonly int[] AdvRetrySecSteps = { 30, 60, 120, 300, 600 }; // 起步；封顶 16 分钟（AdvancedTuning.DefaultRetryMaxMs 口径）
     private static readonly int[] AdvFailoverCapSteps = { 1, 2, 3, 4, 5, 6, 8, 10 }; // 防快切闸：下限 1 次/分钟全局钳死（蓝图 v2.5），上限 10
-
-    private static int NextStep(int[] steps, int current)
-    {
-        for (int i = 0; i < steps.Length; i++)
-            if (steps[i] > current) return steps[i];
-        return steps[^1]; // 到最大档即停（边界限位，不回绕）
-    }
-
-    private static int PrevStep(int[] steps, int current)
-    {
-        for (int i = steps.Length - 1; i >= 0; i--)
-            if (steps[i] < current) return steps[i];
-        return steps[0]; // 到最小档即停
-    }
 
     private void ShowAdvancedTuningPanel()
     {
@@ -957,36 +1254,16 @@ public partial class MainActivity
 
             var refreshers = new List<Action>();
 
-            // 加减号交互：每项「− 当前值 +」——值纯展示不落光标，光标只在 −/+ 两个焦点位间移；
-            // 加减真改值且有界：预设最大/最小档，到边界即停不回绕，边界处对应钮灰显。
-            void AddKnob(string desc, int[] steps, Func<string> valueText, Action<int> set, Func<int> cur)
+            // vc111 老板令（v10 原型）：加减号旋钮改底部档位弹层——每项一行「名称：当前值 ›」+ 下挂说明行，
+            // 点行弹底部档位选择（单选、当前档高亮、点选即生效、点遮罩收层）。
+            void AddTuningRow(string desc, int[] steps, Func<string> valueText, Func<int, string> gearLabel, Action<int> set, Func<int> cur)
             {
-                var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-                row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(2));
-
-                var minus = new TextView(this) { Text = "−", Gravity = GravityFlags.Center };
-                var value = new TextView(this) { Gravity = GravityFlags.Start }; // 值靠左与说明对齐
-                var plus = new TextView(this) { Text = "+", Gravity = GravityFlags.Center };
-
-                int btn = Dp(40);
-                void StyleKnob(TextView b)
-                {
-                    StyleOverlayButton(b, InkTranslucency.AccentFocusDrawable()); // 选中态加重：朱砂底
-                    b.TextSize = UiScale.Item;
-                }
-                StyleKnob(minus);
-                StyleKnob(plus);
-                value.Focusable = false;
-                value.TextSize = UiScale.Item;
-                value.SetTextColor(Color.ParseColor("#F7F5EE"));
-                value.SetPadding(Dp(12), 0, Dp(12), 0);
-                InkTranslucency.ApplyReadabilityShadow(value);
-
-                minus.Click += (_, _) => { if (cur() > steps[0]) { set(PrevStep(steps, cur())); SaveAdvancedTuning(); Refresh(); } };
-                plus.Click += (_, _) => { if (cur() < steps[^1]) { set(NextStep(steps, cur())); SaveAdvancedTuning(); Refresh(); } };
-                row.AddView(minus, new LinearLayout.LayoutParams(btn, btn));
-                row.AddView(value, new LinearLayout.LayoutParams(0, -2, 1f));
-                row.AddView(plus, new LinearLayout.LayoutParams(btn, btn));
+                var row = new TextView(this) { TextSize = UiScale.Item };
+                row.SetTextColor(Color.ParseColor("#F7F5EE"));
+                row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(4));
+                row.Focusable = true;
+                InkTranslucency.ApplyReadabilityShadow(row);
+                row.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur, Refresh);
                 body.AddView(row);
 
                 var sub = new TextView(this) { Text = desc, TextSize = UiScale.Caption };
@@ -995,57 +1272,59 @@ public partial class MainActivity
                 sub.SetPadding(Dp(24), 0, Dp(24), Dp(8));
                 body.AddView(sub);
 
-                void Refresh()
-                {
-                    value.Text = valueText();
-                    minus.Alpha = cur() <= steps[0] ? 0.35f : 1f; // 边界灰显：到头即停
-                    plus.Alpha = cur() >= steps[^1] ? 0.35f : 1f;
-                }
+                void Refresh() => row.Text = $"{valueText()} ›";
                 refreshers.Add(Refresh);
                 Refresh();
             }
 
             // 7 个旋钮（每项下挂一行人话作用说明）：写入 AdvancedTuning 即时生效（播放链读门面）
-            AddKnob("网络解析出毛病时，撑几次失败才启动自救判别——调低自救快但易误伤，调高稳但自救慢",
+            AddTuningRow("网络解析出毛病时，撑几次失败才启动自救判别——调低自救快但易误伤，调高稳但自救慢",
                 AdvGateSteps,
                 () => $"自愈门槛：连败 {AdvancedTuning.SelfHealFailGate} 次（默认 3）",
+                v => $"自愈门槛：连败 {v} 次",
                 v => AdvancedTuning.Apply(v, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs),
                 () => AdvancedTuning.SelfHealFailGate);
-            AddKnob("自救起来之后，隔多久偷偷试一次能否回直连——调低回得快但探测勤，调高省流量回得慢",
+            AddTuningRow("自救起来之后，隔多久偷偷试一次能否回直连——调低回得快但探测勤，调高省流量回得慢",
                 AdvReprobeMinSteps,
                 () => $"自愈回探：{AdvancedTuning.SelfHealReprobeMs / 60_000} 分钟（默认 5）",
+                v => $"自愈回探：{v} 分钟",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, v * 60_000L, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs),
                 () => (int)(AdvancedTuning.SelfHealReprobeMs / 60_000));
-            AddKnob("频道清单数据在手上留多久不重取——留久省流量，留短换台信息更新鲜",
+            AddTuningRow("频道清单数据在手上留多久不重取——留久省流量，留短换台信息更新鲜",
                 AdvCacheSecSteps,
                 () => $"清单缓存：{AdvancedTuning.ListCacheSec} 秒（默认 60）",
+                v => $"清单缓存：{v} 秒",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, v, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs),
                 () => AdvancedTuning.ListCacheSec);
-            AddKnob("被源服务器拒绝后退多远再试——跟风控博弈的分寸：调急了容易挨打，调钝了台恢复慢（封顶 16 分钟）",
+            AddTuningRow("被源服务器拒绝后退多远再试——跟风控博弈的分寸：调急了容易挨打，调钝了台恢复慢（封顶 16 分钟）",
                 AdvRetrySecSteps,
                 () => $"重试节奏：起步 {AdvancedTuning.RetryBaseMs / 1000} 秒（默认 120）",
+                v => $"重试节奏：起步 {v} 秒",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, v * 1000L, AdvancedTuning.RetryMaxMs),
                 () => (int)(AdvancedTuning.RetryBaseMs / 1000));
-            AddKnob("切片预取的库存时长：出画后后台往深里攒多久的切片——攒深卡不住但直播延迟感重，攒浅跟得紧但抗抖差；改档后新开的台生效（默认 60）",
+            AddTuningRow("切片预取的库存时长：出画后后台往深里攒多久的切片——攒深卡不住但直播延迟感重，攒浅跟得紧但抗抖差；改档后新开的台生效（默认 60）",
                 AdvWindowSecSteps,
                 () => $"预取库存：{AdvancedTuning.PrefetchWindowSec} 秒",
+                v => $"预取库存：{v} 秒",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, v),
                 () => AdvancedTuning.PrefetchWindowSec);
-            AddKnob("起播和追赶落在直播边缘后面多远——落后越深手上的旧货越多越抗卡，但看到的画面越旧；源拿不出这么深就按源的实际深度；0=贴边看最新。改档后新开的台生效（默认 60）",
+            AddTuningRow("起播和追赶落在直播边缘后面多远——落后越深手上的旧货越多越抗卡，但看到的画面越旧；源拿不出这么深就按源的实际深度；0=贴边看最新。改档后新开的台生效（默认 60）",
                 AdvLagSecSteps,
                 () => $"播放落后：{AdvancedTuning.LiveLagSec} 秒",
+                v => v == 0 ? "播放落后：贴边看最新（0 秒）" : $"播放落后：{v} 秒",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.PrefetchWindowSec, v),
                 () => AdvancedTuning.LiveLagSec);
-            AddKnob("一分钟内自动换源的次数上限——到顶冻结转慢恢复，防连环快切烧线：调低更稳但坏线恢复慢，调高坏线切得快；下限保底 1 次/分钟调不灭（默认 3）",
+            AddTuningRow("一分钟内自动换源的次数上限——到顶冻结转慢恢复，防连环快切烧线：调低更稳但坏线恢复慢，调高坏线切得快；下限保底 1 次/分钟调不灭（默认 3）",
                 AdvFailoverCapSteps,
                 () => $"防快切闸：{AdvancedTuning.FailoverCapPerMin} 次/分钟",
+                v => $"防快切闸：{v} 次/分钟",
                 v => AdvancedTuning.Apply(AdvancedTuning.SelfHealFailGate, AdvancedTuning.SelfHealReprobeMs, AdvancedTuning.ListCacheSec, AdvancedTuning.RetryBaseMs, AdvancedTuning.RetryMaxMs, AdvancedTuning.PrefetchWindowSec, AdvancedTuning.LiveLagSec, v),
                 () => AdvancedTuning.FailoverCapPerMin);
 
             var tip = new TextView(this)
             {
-                // vc105 老板令：文案放一行（原写死 \n 拆两行，改一行自然排版）
-                Text = "点按 − / + 调档；到头即停。改坏了随时点「一键还原默认」回出厂值，全部即时生效。",
+                // vc111 v10 原型：加减号改档位弹层，文案随口径更新
+                Text = "点按调优行弹出档位选择，点选即生效。改坏了随时点「一键还原默认」回出厂值，全部即时生效。",
                 TextSize = UiScale.Caption,
             };
             tip.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
@@ -1088,6 +1367,75 @@ public partial class MainActivity
         catch (Exception ex) { CrashNet.Record($"[进阶调优] 打开失败：{ex.Message}"); ShowToast("进阶调优打开失败"); }
     }
 
+    /// <summary>
+    /// vc111 v10 原型：底部档位弹层——单选、当前档高亮、点选即生效、点遮罩收层。
+    /// 挂 _root 顶层（盖住进阶调优面板），窗口唯一令随 CloseAdvancedOverlayOnly 一并收。
+    /// </summary>
+    private void ShowGearSheet(string title, int[] steps, Func<int, string> gearLabel, Action<int> set, Func<int> cur, Action refresh)
+    {
+        CloseAdvGearSheetOnly(); // 窗口唯一令同口径：先收旧层
+        try
+        {
+            var overlay = new FrameLayout(this) { Clickable = true };
+            overlay.SetBackgroundColor(Color.Argb(140, 0, 0, 0)); // 遮罩：点即收层
+            overlay.Click += (_, _) => CloseAdvGearSheetOnly();
+
+            var sheet = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            sheet.SetBackgroundColor(InkTranslucency.PanelColorDeep(this)); // 底部档位层底色加深一档，不跟画面亮度走
+            int padSheet = Dp(20);
+            sheet.SetPadding(padSheet, Dp(14), padSheet, Dp(18));
+
+            var head = new TextView(this) { Text = title, TextSize = UiScale.Item };
+            head.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(head);
+            sheet.AddView(head, new LinearLayout.LayoutParams(-1, -2) { BottomMargin = Dp(6) });
+
+            int curVal = cur();
+            foreach (var step in steps)
+            {
+                bool selected = step == curVal;
+                var opt = new TextView(this)
+                {
+                    Text = selected ? $"{gearLabel(step)}（当前）" : gearLabel(step),
+                    TextSize = UiScale.Item,
+                    Gravity = GravityFlags.CenterVertical,
+                };
+                opt.SetPadding(Dp(16), Dp(14), Dp(16), Dp(14));
+                opt.SetTextColor(selected
+                    ? InkTranslucency.TextPrimary(this)
+                    : Color.ParseColor(InkTranslucency.TextSecondary));
+                // vc115 A2：每个选项行自带托底胶囊（原型 .opt 同款），选中行保持强化样式
+                var pill = new GradientDrawable();
+                pill.SetCornerRadius(Dp(10));
+                if (selected) // 当前档高亮：淡底细边框（诊断卡片同构）
+                {
+                    pill.SetColor(Color.Argb(60, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+                    pill.SetStroke(1, Color.Argb(InkTranslucency.FocusStrokeAlpha, InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
+                }
+                else // 未选中：墨色托底+纸色细边框，保证半透明面板上文字可读
+                {
+                    pill.SetColor(Color.Argb(36, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+                    pill.SetStroke(1, Color.Argb(64, InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
+                }
+                opt.Background = pill;
+                int val = step;
+                opt.Click += (_, _) =>
+                {
+                    set(val);
+                    SaveAdvancedTuning();
+                    refresh(); // 原位刷新行文案，不整页重建
+                    CloseAdvGearSheetOnly();
+                };
+                sheet.AddView(opt, new LinearLayout.LayoutParams(-1, -2));
+            }
+
+            overlay.AddView(sheet, new FrameLayout.LayoutParams(-1, -2) { Gravity = GravityFlags.Bottom });
+            _advGearOverlay = overlay;
+            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        }
+        catch (Exception ex) { CrashNet.Record($"[进阶调优] 档位弹层打开失败：{ex.Message}"); }
+    }
+
     private void CloseAdvancedPanel()
     {
         CloseAdvancedOverlayOnly();
@@ -1097,10 +1445,20 @@ public partial class MainActivity
     /// <summary>#64 窗口唯一令：进阶调优面板纯关闭（不回设置页），供统一闸复用。</summary>
     private void CloseAdvancedOverlayOnly()
     {
+        CloseAdvGearSheetOnly(); // 档位弹层随面板一并收（幂等）
         if (_advOverlay is null) return;
         _root.RemoveView(_advOverlay);
         _advOverlay.Dispose();
         _advOverlay = null;
+    }
+
+    /// <summary>#64 窗口唯一令：档位弹层纯关闭（幂等，重复调无害）。</summary>
+    private void CloseAdvGearSheetOnly()
+    {
+        if (_advGearOverlay is null) return;
+        _root.RemoveView(_advGearOverlay);
+        _advGearOverlay.Dispose();
+        _advGearOverlay = null;
     }
 
     private void SaveAdvancedTuning() // 旋钮写偏好（跨启动记忆；Apply 即生效）

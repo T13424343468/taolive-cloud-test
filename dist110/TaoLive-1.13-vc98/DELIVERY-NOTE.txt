@@ -1,0 +1,26 @@
+PACKAGE VERSION: TaoLive 98/1.13 (2026-11-27)
+TaoLive TV 1.13 vc98 — 全台不出画根治版（明文拦截 → 全量 https 化）
+
+【真机诊断结论（实锤）】
+老板家宽带运营商对明文 HTTP 视频流量拦截/阻断：
+- 真机日志：取票（https）全部成功（bkliveinfo.ysp.cctv.cn、zlive-das.cztv.com）；
+  节目单（api.cntv.cn，https）正常；播放（http）全部失败 4xx/IO 错——
+  含官方 CDN、124.165 纯 IP、ali-m-l.cztv.com、bp-resource-dfl.bestv.cn。
+- 决定性对照：同一主机 ali-m-l.cztv.com，http 被拦，https 实测 200（0.2s）。
+- 已排除：IP 风控不成立（取票成功）；cleartext 开关不成立（manifest 已开）。
+
+【本轮修复：全量 https 化（vc98）】
+1. TicketResolver：ysp 官方 CDN 票据 http→https（UpgradeHttps 白名单改写，
+   分片相对路径自动跟随）；cztv 取票 ali-m-l/ali-xwl 同口径升级。
+2. FallbackSourceRegistry：浙江卫视（ali-m-l）、东方卫视（bestv）http→https。
+3. ChannelTable：上虞/东阳（l.cztvcloud.com）、福建经济（satellitepull.cnr.cn）http→https。
+4. 白名单仅收实测 https 200 的主机；zwebl/zhfivel（无 https）、纯 IP 源不动。
+
+【验证】
+- 全测 406/406 绿（Release）。
+- 包体特征锚核验：badging versionCode='98' versionName='1.13'（aapt2 亲验）。
+- sha256 见 sha256.txt；先验哈希再安装。
+
+【真机验证要点】
+装包后直接开台即可，无需任何额外操作。央视走官方 CDN 加密票据，卫视走
+加密备源；如个别台仍不出画属个别源问题，会话层自救会自动换线。

@@ -126,6 +126,8 @@ public partial class MainActivity : Activity
     private TextView? _epgNext;
     private TextView? _epgWater; // 老板令 2026-11-17：节目单条挂实时水位（上下排列），与画面时刻同源同拍
     private TextView? _waterLevelText;       // 老板令 2026-11-16：列表页头「实时水位:XX秒」——当前会话内核攒着还没播的量
+    private TextView? _headerTitle;          // 走查令 2026-11-27：页头标题/台数视图引用（ApplyListWidth 页头项 Paint 实测用）
+    private TextView? _headerCount;
     private bool _epgHasData;                // 当前台拉到过节目单（抽屉收起后据此重新亮出）
     private Action? _epgHidePending;         // 7 秒自动收起任务
     private int _epgSeq;                     // 节目单代数：换台即作废旧拉取
@@ -835,6 +837,9 @@ public partial class MainActivity : Activity
         // 手机版整改令 2026-11-27：画面等比适配——视频区按 16:9 contain 居中（竖屏上下留边、横屏左右留边），
         // 根治「竖屏黑边巨大/横屏上下被裁」（电视端 MatchParent 直铺在手机屏上两头不讨好的根因）
         _videoView.LayoutChange += (_, _) => ApplyVideoAspect();
+        // 走查令 2026-11-27（D4 根治）：转屏瞬间 OnConfigurationChanged 里播放页尺寸还是旧值，算出的竖屏口径被原样带回横屏
+        //（v4 走查实锤：横屏视频带 1079×607 = 竖屏 16:9 尺寸）——挂播放页布局变化，尺寸真落地后再重算
+        _playerPage.LayoutChange += (_, _) => ApplyVideoAspect();
         _videoView.SurfaceTextureListener = new TextureHook(this);
 
         // 1.5 起播亮牌（雷二·延迟亮）+ 换台遮罩（真机反馈批#2 修：底固定不透明，盖住 GPU 残留旧画面）：
@@ -946,6 +951,10 @@ public partial class MainActivity : Activity
         var count = new TextView(this) { Text = $"  共 {_channels.Count} 路", TextSize = UiScale.Caption };
         count.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(count);
+        count.SetSingleLine(true); // 走查令 2026-11-27：台数不竖排换行（宽度由 ApplyListWidth 页头项兜底，极端钳制走省略号）
+        count.Ellipsize = TextUtils.TruncateAt.End;
+        _headerTitle = title;
+        _headerCount = count;
         titleRow.AddView(count);
         header.AddView(titleRow);
         // 老板令 2026-11-16：共N路后面挂「实时水位」——内核当前攒着还没播的库存（BufferedMs 实时读数），
@@ -953,6 +962,8 @@ public partial class MainActivity : Activity
         _waterLevelText = new TextView(this) { TextSize = UiScale.Caption };
         _waterLevelText.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(_waterLevelText);
+        _waterLevelText.SetSingleLine(true); // 走查令 2026-11-27：水位行不竖排换行（宽度由 ApplyListWidth 页头项兜底，极端钳制走省略号）
+        _waterLevelText.Ellipsize = TextUtils.TruncateAt.End;
         UpdateWaterLevel();
         header.AddView(_waterLevelText);
         _listPage.AddView(header);
@@ -1509,12 +1520,14 @@ public partial class MainActivity : Activity
         }
     }
 
-    /// <summary>转屏不重启（v16 口径）：尺寸/方向变化时重排画面等比 + 重建控制条（竖横布局不同）。</summary>
+    /// <summary>转屏不重启（v16 口径）：尺寸/方向变化时重排画面等比 + 重建控制条（竖横布局不同）。
+    /// 走查令 2026-11-27：回调瞬间布局未完成（读到旧尺寸），布局落地后再兜底重算一次（D4）。</summary>
     public override void OnConfigurationChanged(Android.Content.Res.Configuration? newConfig)
     {
         base.OnConfigurationChanged(newConfig!);
         ApplyVideoAspect();
         RebuildControlBar();
+        _main.Post(ApplyVideoAspect);
     }
 
     /// <summary>SurfaceTexture 就绪：自建 Surface 并补挂当前会话（首帧创建/回前台重建同路径）。</summary>
@@ -2004,13 +2017,12 @@ public partial class MainActivity : Activity
         if (_exitDialog != null) return; // 弹窗已开着：不重复弹
         EnforceSingleWindow(); // #64 窗口唯一令：开新先关旧（退出弹窗也是窗口）
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        float density = Resources!.DisplayMetrics!.Density; // #68 语义字号令：浮层间距与文字同口径重定标
-        // #71 退出弹窗重定基（老板真机反馈②：同尺寸下弹窗太大）——#68 把浮层 chrome 从旧观感放大了 1.8 倍（Factor→Scale），
-        // 间距/最小宽按中档实值折回旧观感（旧值÷1.8）：pad≈11dp、最小宽≈267dp；字体 Title/Item/Caption 不动
-        int pad = UiScale.Px(11 * density);
+        // 走查令 2026-11-27（D3 根治）：#71 重定基把 density 又乘进 Px()（2026-11-27 整改令后 PxScale 已含密度），
+        // 弹窗间距被放大 ~2.6 倍（pad 80px≈30dp），按钮内宽被挤到装不下「取消（继续看）」竖排三行——去掉重复乘数，入参即 390dp 基准 dp 值
+        int pad = UiScale.Px(11);
         box.SetPadding(pad * 2, pad * 2, pad * 2, pad);
         box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // 半透明水墨底，与抽屉面板同源同号
-        box.SetMinimumWidth(UiScale.Px(267 * density)); // 居中浮层不因文案缩成窄条
+        box.SetMinimumWidth(UiScale.Px(267)); // 居中浮层不因文案缩成窄条
 
         var msg = new TextView(this) { Text = "确认退出 TaoLive？", TextSize = UiScale.Title };
         msg.SetTextColor(InkTranslucency.TextPrimary(this)); // 统一 Token，暗屏自动提白
@@ -2020,17 +2032,23 @@ public partial class MainActivity : Activity
         var note = new TextView(this) { Text = "退出后开机自启仍可用，随时回来看", TextSize = UiScale.Caption };
         note.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(note);
-        box.AddView(note, new LinearLayout.LayoutParams(-2, -2) { TopMargin = UiScale.Px(4 * density) }); // #71 重定基：旧观感 8÷1.8
+        box.AddView(note, new LinearLayout.LayoutParams(-2, -2) { TopMargin = UiScale.Px(4) }); // #71 重定基：旧观感 8÷1.8
 
         var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var lp = new LinearLayout.LayoutParams(0, -2, 1f) { TopMargin = pad, LeftMargin = pad / 2, RightMargin = pad / 2 };
         // vc22 第 11 项：按钮改 TextView 自绘——ROM Material 按钮的焦点高亮/系统着色从根上去掉
         var no = new TextView(this) { Text = "取消（继续看）", Gravity = GravityFlags.Center, TextSize = UiScale.Item }; // #68 语义字号令：弹窗按钮此前漏设字号吃系统默认
-        no.SetPadding(pad / 2, UiScale.Px(8 * density), pad / 2, UiScale.Px(8 * density)); // #71 重定基：旧观感 14÷1.8
+        no.SetPadding(pad / 2, UiScale.Px(8), pad / 2, UiScale.Px(8)); // #71 重定基：旧观感 14÷1.8
+        no.SetSingleLine(true); // 走查令 2026-11-27：按钮文案单行（盒最小宽按按钮实测宽兜底，见下）
         no.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; };
         var yes = new TextView(this) { Text = "退出", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
-        yes.SetPadding(pad / 2, UiScale.Px(8 * density), pad / 2, UiScale.Px(8 * density)); // #71 重定基：旧观感 14÷1.8
+        yes.SetPadding(pad / 2, UiScale.Px(8), pad / 2, UiScale.Px(8)); // #71 重定基：旧观感 14÷1.8
+        yes.SetSingleLine(true);
         yes.Click += (_, _) => { _exitDialog?.Dismiss(); _exitDialog = null; Finish(); };
+        // 走查令 2026-11-27：盒最小宽并入按钮行实需——两钮权重均分等宽，按较宽文案算：
+        // 盒宽 ≥ 2×较宽文案 + 8×pad（盒左右距 4×pad + 每钮内外距合计 4×pad），「取消（继续看）」不再被挤换行
+        float btnRowNeed = 8f * pad + 2f * Math.Max(no.Paint!.MeasureText(no.Text!.ToString()), yes.Paint!.MeasureText(yes.Text!.ToString()));
+        box.SetMinimumWidth(Math.Max(UiScale.Px(267), (int)btnRowNeed));
         // v1.0.10 修复④：左右键在「退出」与「取消（继续看）」间切换——显式指路，不靠焦点搜索碰运气
         no.Id = View.GenerateViewId();
         yes.Id = View.GenerateViewId();
@@ -2288,41 +2306,46 @@ public partial class MainActivity : Activity
     /// <summary>列表宽度恒定（vc65 老板令 2026-11-15：列表页每次打开宽度都一样，「地方台」页签不换行）。
     /// 根因（#72 口径的副作用）：宽度按当前页签 adapter.Rows 贴内容估——打开所在页签/收藏不同，面板就漂移；
     /// 面板窄于页签行自然宽时最后签被挤换行。修法：估宽改按<b>全表</b>最长频道行（含收藏星位），恒定公式不随页签/收藏变；
-    /// 页签行最小宽并入下限兜底；上限半屏、下限 300dp 钳制不变。
-    /// #15 尺寸令：估宽基准随档缩放；#72 列表贴内容口径保留（行宽计入台标+边距，无重复留白）。</summary>
+    /// 页签行最小宽并入下限兜底；下限 300dp、上限钳制不变。
+    /// #15 尺寸令：估宽基准随档缩放；#72 列表贴内容口径保留（行宽计入台标+边距，无重复留白）。
+    /// 走查令 2026-11-27（D1/D2 根治）：间距重定标（Px 入参改 390dp 基准）后行内 chrome 实宽≈0.68 屏，
+    /// 旧估宽公式仍按文字档折算（96×Scale≈86px 当 266px padding 用）系统性偏窄，半屏钳制把台名挤成「C…」单字省略——
+    /// 估宽改按行装配实式（Paint 实测文字 + Px 实距），上限改 0.98 屏：≤5 字台名全显，更长台名单行省略号
+    /// （v26 olist-longname 长台名口径一致）；页头两行（标题+台数/水位行）一并并入估宽，杜绝竖排逐字换行。</summary>
     private void ApplyListWidth(IReadOnlyList<Channel> channels)
     {
         float density = Resources!.DisplayMetrics!.Density;
-        float scale = UiScale.Scale;
-        float Estimate(string s, float sizeDp)
-        {
-            float px = sizeDp * density * scale; // #15 尺寸令：字号随档，估宽同步
-            float w = 0;
-            foreach (var c in s) w += c > 127 ? px : px * 0.55f;
-            return w;
-        }
-        // 频道行恒定公式（vc65：逐台估宽取最大，不再读当前页签的行集——页签/收藏变化不再带动面板漂移）
-        // 行宽 = 左右 padding(48×2) + 台标+边距(40+16) + 号(3字符) + 间距(32) + 星(1字符) + 间距(24) + 台名(Item) + 状态标识(Caption) + 左距(24)
+        // 文字实测：Paint 按最终 sp→px 装载（TextView TextSize=sp，渲染 px=sp×density），量出的就是实渲染宽
+        using var itemPaint = new Paint(PaintFlags.AntiAlias) { TextSize = UiScale.Item * density };
+        using var captionPaint = new Paint(PaintFlags.AntiAlias) { TextSize = UiScale.Caption * density };
+        // 频道行恒定口径（vc65：逐台估宽取最大，不读当前页签行集）——行装配实式（BuildRowHolder 同源）：
+        // 行宽 = 左右 padding Px(48)×2 + 台标 40dp×density×Scale + 右距 Px(16) + 号(3字符满宽)+右距 Px(32)
+        //      + 星(收藏位满宽)+右距 Px(24) + 台名(Item 实测) + 健康点(Caption 实测)+左距 Px(24)
+        float logoW = 40 * density * UiScale.Scale + UiScale.Px(16);
+        float rowChrome = UiScale.Px(48) * 2 + logoW
+            + itemPaint.MeasureText("000") + UiScale.Px(32)
+            + itemPaint.MeasureText("★") + UiScale.Px(24)
+            + captionPaint.MeasureText("●") + UiScale.Px(24);
         float max = 0;
         foreach (var ch in channels)
-        {
-            var w = 96 * scale + 56 * scale + Estimate(new string('0', 3), UiScale.Item) + 32 * scale
-                    + Estimate("★", UiScale.Item) + 24 * scale + Estimate(ch.Name, UiScale.Item)
-                    + Estimate("●", UiScale.Caption) + 24 * scale;
-            max = Math.Max(max, w);
-        }
+            max = Math.Max(max, rowChrome + itemPaint.MeasureText(ch.Name));
         // 空态提示行同为恒定文案，取最长一并兜进（单行不换行口径下不被截断）
-        max = Math.Max(max, 96 * scale + Estimate("收藏夹是空的，对着频道按确认可收藏", UiScale.Caption));
-        // 页签行最小宽兜底（vc65：面板窄于页签行时「地方台」被挤换行）——
-        // = 行左右 padding(48×2) + 五签文本(Item) + 每签内边距(12×2) + 非首签间距(8×4)
+        max = Math.Max(max, UiScale.Px(48) * 2 + captionPaint.MeasureText("收藏夹是空的，对着频道按确认可收藏"));
+        // 页签行最小宽兜底（vc65：面板窄于页签行时「地方台」被挤换行）——行装配实式：左右 padding + 每签文本+内边距 Px(12)×2 + 非首签间距 Px(8)×4
         string[] tabLabels = { "全部", "央视", "卫视", "地方台", "收藏" };
-        float tabRowMin = 96 * scale + 4 * 8 * scale;
-        foreach (var label in tabLabels) tabRowMin += Estimate(label, UiScale.Item) + 24 * scale;
+        float tabRowMin = UiScale.Px(48) * 2 + 4 * UiScale.Px(8);
+        foreach (var label in tabLabels) tabRowMin += itemPaint.MeasureText(label) + UiScale.Px(12) * 2;
         max = Math.Max(max, tabRowMin);
-        // ListMetrics（vc53 v1.0.8）：下限 300dp，上限半屏
+        // 页头两行并入估宽（走查令 D1：页头被半宽钳制挤成竖排逐字换行）——用实视图 Paint 实测，文案随台数/水位实时取
+        if (_headerTitle is { } ht && _headerCount is { } hc && _waterLevelText is { } wl)
+        {
+            max = Math.Max(max, UiScale.Px(48) * 2 + ht.Paint!.MeasureText(ht.Text!.ToString()) + hc.Paint!.MeasureText(hc.Text!.ToString()));
+            max = Math.Max(max, UiScale.Px(48) * 2 + wl.Paint!.MeasureText(wl.Text!.ToString()));
+        }
+        // ListMetrics（vc53 v1.0.8）：下限 300dp；上限 0.98 屏（走查令 2026-11-27：半屏钳制在间距重定标后必然截断台名）
         float total = max;
-        float lo = 300f * density * scale;
-        float hi = Resources.DisplayMetrics.WidthPixels / 2f;
+        float lo = UiScale.Px(300);
+        float hi = Resources.DisplayMetrics.WidthPixels * 0.98f;
         int width = (int)Math.Clamp(total, Math.Min(lo, hi), Math.Max(lo, hi));
         _listPage.LayoutParameters = new FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MatchParent, GravityFlags.Left);
     }

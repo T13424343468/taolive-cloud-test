@@ -1271,7 +1271,7 @@ public partial class MainActivity
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int padAdv = Dp(24);
             box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, padAdv); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
-            box.SetBackgroundColor(InkTranslucency.PanelColorDeep(this)); // 底色加深一档，不跟画面亮度走
+            box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档（跟普通面板浅档）
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
@@ -1303,6 +1303,11 @@ public partial class MainActivity
                 sub.SetPadding(Dp(24), 0, Dp(24), Dp(UiScale.RowGapDp));
                 sub.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur); // vc119：说明也可点
                 body.AddView(sub);
+
+                // vc120 老板令（2026-11-28「进阶调优那个选项页的横线」）：调优行间横线补回——
+                // vc119「只保留横线」令在此页同样执行走样成全去掉。档位弹层 OptLine 同款口径（#3A444D 1dp 全宽）
+                View TuningLine() => new View(this) { Background = new Android.Graphics.Drawables.ColorDrawable(Color.ParseColor("#3A444D")) };
+                body.AddView(TuningLine(), new LinearLayout.LayoutParams(-1, Dp(1)) { TopMargin = Dp(2) });
 
                 void Refresh() => row.Text = $"{valueText()} ›";
                 refreshers.Add(Refresh);
@@ -1390,7 +1395,7 @@ public partial class MainActivity
             box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = padAdv });
 
             var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
-            overlay.SetBackgroundColor(InkTranslucency.PanelColorDeep(this));
+            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
             _advOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1419,10 +1424,11 @@ public partial class MainActivity
             };
 
             var sheet = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            // vc116⑯：档位弹层与底页隔断——底色加深至 216、四角圆角 14dp、左右/底部 margin 12dp（仍半透明口径）
-            // vc119 老板令：描边退场（左右线条去掉只保留横线），靠深底填充隔断
+            // vc116⑯：档位弹层与底页隔断——四角圆角 14dp、左右/底部 margin 12dp（仍半透明口径）
+            // vc120 老板令（2026-11-28「所有页面底色一致」拍板跟普通面板一档）：弹层不再自写第三档深浅（原 216），
+            // 统一 PanelColor 同档（暗房自适应同套走）；vc119 描边退场口径不变，隔断靠底色+选项行横线
             var sheetBg = new GradientDrawable();
-            sheetBg.SetColor(Color.Argb(216, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+            sheetBg.SetColor(InkTranslucency.PanelColor(this));
             sheetBg.SetCornerRadius(Dp(14));
             sheet.Background = sheetBg;
             int padSheet = Dp(20);
@@ -1434,6 +1440,10 @@ public partial class MainActivity
             sheet.AddView(head, new LinearLayout.LayoutParams(-1, -2) { BottomMargin = Dp(6) });
 
             int curVal = cur();
+            // vc120 老板令（2026-11-28 真机「选择项的横线被改没了」）：选项行横线补回——vc119「只保留横线」
+            // 令在弹层执行成了全去掉，走样。按卡片同款横线口径（#3A444D 1dp 全宽）：组顶线+行间线+底横线收组
+            View OptLine() => new View(this) { Background = new Android.Graphics.Drawables.ColorDrawable(Color.ParseColor("#3A444D")) };
+            sheet.AddView(OptLine(), new LinearLayout.LayoutParams(-1, Dp(1)) { TopMargin = Dp(6) }); // 组顶横线
             foreach (var step in steps)
             {
                 bool selected = step == curVal;
@@ -1470,6 +1480,7 @@ public partial class MainActivity
                     ShowAdvancedTuningPanel();
                 };
                 sheet.AddView(opt, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(6) }); // vc116⑯：选项行间距，治零间距贴死
+                sheet.AddView(OptLine(), new LinearLayout.LayoutParams(-1, Dp(1)) { TopMargin = Dp(6) }); // 行间/收组横线（vc120 补回）
             }
 
             overlay.AddView(sheet, new FrameLayout.LayoutParams(-1, -2)

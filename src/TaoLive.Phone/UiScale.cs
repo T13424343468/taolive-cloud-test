@@ -52,8 +52,25 @@ public static class UiScale
     /// </summary>
     public static float Sp(float v) => v * Scale;
 
-    /// <summary>裸最终 px 尺寸（2026-11-27 手机整改令）：入参按 390dp 基准的 dp 值计，乘间距档转像素。</summary>
-    public static int Px(float v) => (int)(v * PxScale + 0.5f);
+    /// <summary>vc120 全元素去写死令（2026-11-28 老板拍板「全应用不允许有写死」）：
+    /// 字号档比例项——中档=1.0，大档大于1、小档小于1。Px 口径并入：间距/盒子/图标与文字同一套
+    /// 缩放基准（屏宽比例 × 系统显示大小 × 字号档），全应用不再有不跟档的固定值。</summary>
+    public static float FontScaleRatio => Factor / (17f / 36f);
+
+    /// <summary>裸最终 px 尺寸（2026-11-27 手机整改令）：入参按 390dp 基准的 dp 值计，乘间距档转像素。
+    /// vc120 起并入字号档比例项（全元素去写死令），与文字同一套缩放。</summary>
+    public static int Px(float v) => (int)(v * PxScale * FontScaleRatio + 0.5f);
+
+    /// <summary>vc120 肉眼对齐令（2026-11-28 老板拍板）：同字号单行 TextView 实测线高（px），
+    /// 按钮盒/对齐基准用——字号档位、系统字体缩放自动跟，不写死数值。</summary>
+    public static int TextLineHeight(Android.Content.Context ctx, float size)
+    {
+        var tv = new Android.Widget.TextView(ctx) { TextSize = size, Text = "测" };
+        tv.SetSingleLine(true);
+        tv.Measure(Android.Views.View.MeasureSpec.MakeMeasureSpec(0, Android.Views.MeasureSpecMode.Unspecified),
+                   Android.Views.View.MeasureSpec.MakeMeasureSpec(0, Android.Views.MeasureSpecMode.Unspecified));
+        return tv.MeasuredHeight;
+    }
 
     // —— vc119 全局间距口径（2026-11-28 老板拍板：块间距/行间距各一个数，全页面统一）——
     /// <summary>左右边距：所有页面统一按设置页口径 24dp。</summary>
@@ -64,6 +81,9 @@ public static class UiScale
     public const float RowGapDp = 10f;
     /// <summary>按钮间距：相邻按钮统一 8dp。</summary>
     public const float BtnGapDp = 8f;
-    /// <summary>按钮线框盒统一 44dp（vc119 老板令：36dp 太小回抬，vc116 原 44dp 口径）。</summary>
+    /// <summary>vc120 肉眼对齐令：按钮线框盒不再写死——盒高=旁边文字实际渲染高（控制条跟台名 Item、
+    /// 列表页头跟标题 Title），触控热区透明外扩 BtnTouchPadDp。BtnBoxDp 退场仅留档位参考。</summary>
     public const float BtnBoxDp = 44f;
+    /// <summary>vc120：按钮可见盒外的透明触控外扩边（dp），保证小盒好按。</summary>
+    public const float BtnTouchPadDp = 10f;
 }

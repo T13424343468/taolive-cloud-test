@@ -76,7 +76,7 @@ public partial class MainActivity
     private void BuildHud()
     {
         _hud = new FrameLayout(this);
-        _hud.SetBackgroundColor(InkTranslucency.PanelColorDeep(this));
+        _hud.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：深档退场，全应用一档
 
         // 竖排：图标在上、竖条在下（普通播放器通行样式，无文字）
         var col = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
@@ -125,17 +125,35 @@ public partial class MainActivity
         }
         if (landscape)
         {
-            lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Left; // 亮度左黑边垂直居中
-            lp.LeftMargin = UiScale.Px(10); // 原型 .landscape .ind-bri{left:10px}
+            // vc120 老板令（2026-11-28「横屏保证在黑区的中间」）：条落左黑区水平居中——按画面实际区域算，
+            // 不再写死 10dp。画面未布局时兜底 8dp 贴边（布局后 LayoutChange 会重算落准）。
+            lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Left;
+            int videoLeft = _videoView is { } vv && vv.Width > 0 ? vv.Left : 0;
+            int barW = _hud.Width;
+            int margin = videoLeft > 0 ? (videoLeft - barW) / 2 : UiScale.Px(8);
+            lp.LeftMargin = Math.Max(margin, UiScale.Px(8)); // 黑区窄于条时保底 8dp 不压画面
             lp.RightMargin = 0;
             lp.TopMargin = 0;
         }
         else
         {
-            lp.Gravity = GravityFlags.Top | GravityFlags.Left; // 竖屏亮度左上
-            lp.LeftMargin = UiScale.Px(12); // 原型 .ind-bri{top:56px;left:12px}（56px 含状态栏，挂播放页内由黑边区承接）
-            lp.TopMargin = UiScale.Px(24);
+            // vc120 老板令（2026-11-28「竖屏黑屏区域那么大为什么非要顶出去，根据画面区域计算」）：
+            // 条落顶部黑区垂直居中——黑区=屏顶到画面上沿，条中心对黑区中点；黑区太窄兜底 SafeTop+8dp。
+            lp.Gravity = GravityFlags.Top | GravityFlags.Left;
+            lp.LeftMargin = UiScale.Px(12);
             lp.RightMargin = 0;
+            int videoTop = _videoView is { } vv2 && vv2.Height > 0 ? vv2.Top : 0;
+            int barH = _hud.Height;
+            int safeTop = SafeTopInset(0);
+            if (videoTop > 0)
+            {
+                int margin = (videoTop - barH) / 2;
+                lp.TopMargin = Math.Max(margin, safeTop + UiScale.Px(8));
+            }
+            else
+            {
+                lp.TopMargin = safeTop + UiScale.Px(8); // 画面未布局兜底，LayoutChange 后重算
+            }
         }
     }
 
@@ -249,7 +267,8 @@ public partial class MainActivity
         View AddIcon(LinearLayout into, BarIconView.IconKind kind, EventHandler click)
         {
             var b = new BarIconView(this) { Kind = kind, Clickable = true };
-            b.Background = BarButtonBackground(); // 令16：36dp 定尺寸盒自带热区，旧文字钮 padding 退场
+            // vc120 肉眼对齐令：可见盒=文字渲染高，视图含透明外扩热区——背景 InsetDrawable 内缩同口径，线框画在可见盒上
+            b.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp));
             b.Click += click;
             // vc116④：相邻按钮统一 8dp 间距（首钮贴组首不留头距）
             into.AddView(b, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = into.ChildCount > 0 ? UiScale.Px(8) : 0 });
@@ -268,9 +287,9 @@ public partial class MainActivity
             Kind = landscape ? FullscreenIconView.IconKind.ExitFullscreen : FullscreenIconView.IconKind.EnterFullscreen,
             Clickable = true,
         };
-        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(UiScale.BtnBoxDp))
-        { LeftMargin = UiScale.Px(8) }; // 令16：36dp 定尺寸盒（原 44dp），图标居中稍大
-        flipBtn.Background = BarButtonBackground(); // vc116②：线框皮，按压态强描边
+        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
+        { LeftMargin = UiScale.Px(8) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场
+        flipBtn.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp)); // vc120：背景内缩对齐可见盒
         flipBtn.Click += (_, _) =>
         {
             bool land = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
@@ -281,9 +300,9 @@ public partial class MainActivity
 
         // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
         var lockBtn = new LockIconView(this) { Clickable = true };
-        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(UiScale.BtnBoxDp))
-        { LeftMargin = UiScale.Px(8) }; // 令16：36dp 定尺寸盒（原 44dp），图标居中稍大
-        lockBtn.Background = BarButtonBackground(); // vc116②：线框皮，按压态强描边
+        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
+        { LeftMargin = UiScale.Px(8) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场
+        lockBtn.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp)); // vc120：背景内缩对齐可见盒
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
         right.AddView(lockBtn);
@@ -667,18 +686,24 @@ public partial class MainActivity
 
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
-        // vc119 老板令（2026-11-28「改小不是改这么小」）：线框盒 36dp 回抬 44dp（vc116 原口径），
-        // 图标占盒 58%、几何正中间不变。全应用图标钮统一此盒径。
+        /// <summary>vc120 肉眼对齐令：可见盒高=旁边文字实际渲染高（控制条跟台名 Item、列表页头跟标题 Title），
+        /// 视图整体外扩 BtnTouchPadDp 透明热区；字号档位/系统缩放自动跟，不写死。</summary>
+        internal float BoxTextSize { get; set; } = UiScale.Item;
+
+        // vc120：盒径不再写死 44dp——按 BoxTextSize 实测线高取可见盒，视图含透明外扩热区
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(UiScale.BtnBoxDp);
+            int box = UiScale.TextLineHeight(Context!, BoxTextSize);
+            int side = box + UiScale.Px(UiScale.BtnTouchPadDp) * 2;
             SetMeasuredDimension(side, side);
         }
 
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            float side = Math.Min(Width, Height) * 0.58f; // 令16：图标占盒 58%，几何正中间
+            int pad = UiScale.Px(UiScale.BtnTouchPadDp);
+            float boxSide = Math.Min(Width, Height) - pad * 2f; // 可见盒（背景经 InsetDrawable 内缩同口径）
+            float side = boxSide * 0.58f; // 图标占可见盒 58%，几何正中间
             canvas.Save();
             canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
             DrawIcon(canvas, side);
@@ -830,18 +855,21 @@ public partial class MainActivity
 
         // vc111 真机修（老板截图第1条）：自绘视图不量尺寸会被系统撑满整行剩余宽度——
         // 图标拉成巨大白块、锁定钮挤出屏外。量死见方（与文字钮同热区），OnDraw 按方图绘制自然居中。
-        // vc117 令16：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
+        // vc120 肉眼对齐令：盒高=台名实际渲染高（Item 线高），视图含透明外扩热区，不写死。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(UiScale.BtnBoxDp);
+            int box = UiScale.TextLineHeight(Context!, UiScale.Item);
+            int side = box + UiScale.Px(UiScale.BtnTouchPadDp) * 2;
             SetMeasuredDimension(side, side);
         }
 
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            // 令16：图标占盒 58%（原 IconGlyph 字号≈48%），居中平移后按 side 见方绘制——几何正中间
-            float side = Math.Min(Width, Height) * 0.58f;
+            int pad = UiScale.Px(UiScale.BtnTouchPadDp);
+            float boxSide = Math.Min(Width, Height) - pad * 2f; // 可见盒
+            // 图标占可见盒 58%，居中平移后按 side 见方绘制——几何正中间
+            float side = boxSide * 0.58f;
             canvas.Save();
             canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
             DrawIcon(canvas, side);
@@ -903,18 +931,21 @@ public partial class MainActivity
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
         // vc111 真机修（老板截图第1条）：同 FullscreenIconView——量死见方，防默认测量撑满整行。
-        // vc117 令16：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
+        // vc120 肉眼对齐令：盒高=台名实际渲染高（Item 线高），视图含透明外扩热区，不写死。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(UiScale.BtnBoxDp);
+            int box = UiScale.TextLineHeight(Context!, UiScale.Item);
+            int side = box + UiScale.Px(UiScale.BtnTouchPadDp) * 2;
             SetMeasuredDimension(side, side);
         }
 
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            // 令16：图标占盒 58%（原 IconGlyph 字号≈48%），居中平移后按 side 见方绘制；锁体线条风不变
-            float side = Math.Min(Width, Height) * 0.58f;
+            int pad = UiScale.Px(UiScale.BtnTouchPadDp);
+            float boxSide = Math.Min(Width, Height) - pad * 2f; // 可见盒
+            // 图标占可见盒 58%，居中平移后按 side 见方绘制；锁体线条风不变
+            float side = boxSide * 0.58f;
             canvas.Save();
             canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
             DrawIcon(canvas, side);

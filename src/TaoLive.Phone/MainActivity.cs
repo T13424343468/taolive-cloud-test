@@ -914,7 +914,7 @@ public partial class MainActivity : Activity
             ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
         // 手机版整改令 2026-11-27：画面等比适配——视频区按 16:9 contain 居中（竖屏上下留边、横屏左右留边），
         // 根治「竖屏黑边巨大/横屏上下被裁」（电视端 MatchParent 直铺在手机屏上两头不讨好的根因）
-        _videoView.LayoutChange += (_, _) => ApplyVideoAspect();
+        _videoView.LayoutChange += (_, _) => { ApplyVideoAspect(); PositionHud(); }; // vc120：画面区域变化即重算亮度条黑区落位
         // 走查令 2026-11-27（D4 根治）：转屏瞬间 OnConfigurationChanged 里播放页尺寸还是旧值，算出的竖屏口径被原样带回横屏
         //（v4 走查实锤：横屏视频带 1079×607 = 竖屏 16:9 尺寸）——挂播放页布局变化，尺寸真落地后再重算
         _playerPage.LayoutChange += (_, _) => ApplyVideoAspect();
@@ -1009,15 +1009,15 @@ public partial class MainActivity : Activity
         // 整体退场，改 BarIconView 几何自绘（Refresh/Close），与控制条图标同风格同盒径 44dp，字形病根根除。
         Android.Graphics.Drawables.Drawable HeaderBtnBg() =>
             InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha);
-        var listRefresh = new BarIconView(this) { Kind = BarIconView.IconKind.Refresh, Clickable = true };
-        listRefresh.Background = HeaderBtnBg();
+        var listRefresh = new BarIconView(this) { Kind = BarIconView.IconKind.Refresh, Clickable = true, BoxTextSize = UiScale.Title }; // vc120 肉眼对齐令：跟「频道列表」标题渲染高
+        listRefresh.Background = new Android.Graphics.Drawables.InsetDrawable(HeaderBtnBg(), UiScale.Px(UiScale.BtnTouchPadDp)); // vc120：背景内缩对齐可见盒
         listRefresh.Click += (_, _) => RefreshChannelList();
-        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(UiScale.Px(UiScale.BtnBoxDp), UiScale.Px(UiScale.BtnBoxDp))
+        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(-2, -2)
         { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(UiScale.BtnGapDp) });
-        var drawerClose = new BarIconView(this) { Kind = BarIconView.IconKind.Close, Clickable = true };
-        drawerClose.Background = HeaderBtnBg();
+        var drawerClose = new BarIconView(this) { Kind = BarIconView.IconKind.Close, Clickable = true, BoxTextSize = UiScale.Title }; // vc120：同上
+        drawerClose.Background = new Android.Graphics.Drawables.InsetDrawable(HeaderBtnBg(), UiScale.Px(UiScale.BtnTouchPadDp));
         drawerClose.Click += (_, _) => ShowPlayer();
-        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(UiScale.Px(UiScale.BtnBoxDp), UiScale.Px(UiScale.BtnBoxDp))
+        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(-2, -2)
         { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(UiScale.BtnGapDp) });
         header.AddView(titleRow);
         _listPage.AddView(header);
@@ -1070,13 +1070,24 @@ public partial class MainActivity : Activity
         filterBox.SetBackgroundResource(0); // 去系统下划线底
         filterBox.Background = InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha); // vc116⑨：全透明+圆角线框（界面元素统一皮）
         filterBox.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12)); // vc117 令6：内距 8dp 呼吸边（框边 24dp 与全页边线对齐，vc119）
+        filterBox.Gravity = GravityFlags.CenterVertical; // 加高后文字垂直居中
+        // vc120 老板令（2026-11-28 真机截图拍板「高度对齐+间距放宽」）：筛选框最低高度=列表行高——
+        // 行高=上下 12dp 内距+台名行（Item）+副标题行（Caption），同字体度量实测取线高，档位/字体缩放自动跟
+        int LineHeight(float size)
+        {
+            var tv = new TextView(this) { TextSize = size, Text = "测" };
+            tv.SetSingleLine(true);
+            tv.Measure(Android.Views.View.MeasureSpec.MakeMeasureSpec(0, Android.Views.MeasureSpecMode.Unspecified), Android.Views.View.MeasureSpec.MakeMeasureSpec(0, Android.Views.MeasureSpecMode.Unspecified));
+            return tv.MeasuredHeight;
+        }
+        filterBox.SetMinHeight(UiScale.Px(12) * 2 + LineHeight(UiScale.Item) + LineHeight(UiScale.Caption));
         filterBox.TextChanged += (_, e) =>
         {
             if (_list?.Adapter is ChannelListAdapter adapter)
                 adapter.SetFilter(e.Text?.ToString() ?? "");
         };
         _listPage.AddView(filterBox, new LinearLayout.LayoutParams(-1, -2)
-        { LeftMargin = UiScale.Px(ListEdgePad), RightMargin = UiScale.Px(ListEdgePad), TopMargin = UiScale.Px(4), BottomMargin = UiScale.Px(8) }); // vc116⑦ 统一靠边
+        { LeftMargin = UiScale.Px(ListEdgePad), RightMargin = UiScale.Px(ListEdgePad), TopMargin = UiScale.Px(12), BottomMargin = UiScale.Px(12) }); // vc120 老板令：上下间距 4/8→12/12 放宽（左右仍 24dp 统一边线）
 
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
@@ -2480,8 +2491,13 @@ public partial class MainActivity : Activity
                 int pw = _toast.Width, ph = _toast.Height;
                 if (pw > 0)
                 {
+                    // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：包孔居中 + 安全钳制——
+                    // 孔贴顶时胶囊不出屏、文字不被裁
                     _toast.TranslationX = _cutoutHoleCenterX - pw / 2f;
-                    _toast.TranslationY = _cutoutHoleCenterY - ph / 2f;
+                    float ty = _cutoutHoleCenterY - ph / 2f;
+                    int safeTop = SafeTopInset(0);
+                    if (ty < safeTop) ty = safeTop;
+                    _toast.TranslationY = ty;
                 }
                 onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
             });
@@ -2494,7 +2510,7 @@ public partial class MainActivity : Activity
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 1);
             lp.Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal;
             lp.LeftMargin = 0;
-            lp.TopMargin = 0;
+            lp.TopMargin = SafeTopInset(0); // vc120 老板令：兜底分支不再贴死顶边，给安全区顶距
             _toast.TranslationX = 0;
             _toast.TranslationY = 0;
             onPositioned?.Invoke();
@@ -2537,10 +2553,27 @@ public partial class MainActivity : Activity
             }
             else
             {
-                lp.Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal;
+                // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：空态胶囊与提示胶囊同一套
+                // 规矩——包孔居中（水平对孔心、垂直对孔心）+ 安全钳制；原「挂孔下方 24dp」口径退场
+                lp.Gravity = GravityFlags.Top | GravityFlags.Left;
                 lp.LeftMargin = 0;
-                lp.TopMargin = _cutoutHoleW > 0 ? _cutoutHoleCenterY + UiScale.Px(24) : UiScale.Px(48);
+                lp.TopMargin = 0;
                 _emptyState.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.86f));
+                _emptyState.LayoutParameters = lp; // 先落参数再 Post 测量
+                _emptyState.Post(() =>
+                {
+                    int w = _emptyState.Width, h = _emptyState.Height;
+                    if (w > 0)
+                    {
+                        _emptyState.TranslationX = _cutoutHoleCenterX - w / 2f;
+                        float ty = _cutoutHoleCenterY - h / 2f;
+                        int safeTop = SafeTopInset(0);
+                        if (ty < safeTop) ty = safeTop;
+                        _emptyState.TranslationY = ty;
+                    }
+                    _emptyState.Visibility = ViewStates.Visible; // 终位落定再亮相
+                });
+                return; // 落位后由 Post 亮相
             }
             _emptyState.LayoutParameters = lp;
         }
@@ -2811,7 +2844,6 @@ public partial class MainActivity : Activity
         private RowHolder BuildRowHolder()
         {
             var ctx = _ctx;
-            var density = ctx.Resources!.DisplayMetrics!.Density;
             var h = new RowHolder { Line = new LinearLayout(ctx) { Orientation = Orientation.Horizontal } };
             // vc116⑦：行内左右 8dp（叠加 ListView 8dp 内距=内容对齐 16dp 边线）、垂直 20→12 降行高
             h.Line.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12));
@@ -2822,15 +2854,15 @@ public partial class MainActivity : Activity
             h.Line.AddView(h.Header);
 
             h.Logo = new ImageView(ctx);
-            // #61 尺寸令补漏：台标高度与首字占位块同框（40×28 基准×档位系数），ImageView 默认 FitCenter 框内等比不变形
-            h.Line.AddView(h.Logo, new LinearLayout.LayoutParams((int)(40 * density * UiScale.Scale), (int)(28 * density * UiScale.Scale))
+            // #61 尺寸令补漏：台标高度与首字占位块同框（40×28 基准），vc120 去写死令：改统一缩放口径 Px()（跟档自动走）
+            h.Line.AddView(h.Logo, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(28))
             { RightMargin = UiScale.Px(16), Gravity = GravityFlags.CenterVertical });
 
             h.Placeholder = new TextView(ctx);
             Style(h.Placeholder, InkTranslucency.TextSecondary, UiScale.Item);
             h.Placeholder.Gravity = GravityFlags.Center;
             h.Placeholder.SetBackgroundColor(Color.ParseColor("#3A4750"));
-            h.Line.AddView(h.Placeholder, new LinearLayout.LayoutParams((int)(40 * density * UiScale.Scale), (int)(28 * density * UiScale.Scale)) // #15 尺寸令
+            h.Line.AddView(h.Placeholder, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(28)) // #15 尺寸令；vc120 统一口径
             { RightMargin = UiScale.Px(16), Gravity = GravityFlags.CenterVertical });
 
             h.Spacer = new View(ctx);
@@ -2840,13 +2872,14 @@ public partial class MainActivity : Activity
             Style(h.Num, InkTranslucency.TextSecondary, UiScale.Item);
             InkTranslucency.ApplyReadabilityShadow(h.Num);
             h.Num.SetPadding(0, 0, UiScale.Px(32), 0);
-            h.Line.AddView(h.Num);
+            // vc120 老板令（2026-11-28「列表页的行元素也没有对齐」）：编号跟台名块同一垂直居中基准
+            h.Line.AddView(h.Num, new LinearLayout.LayoutParams(-2, -2) { Gravity = GravityFlags.CenterVertical });
 
             h.Star = new TextView(ctx) { Gravity = GravityFlags.CenterVertical }; // vc117 令6：收藏点垂直居中
             Style(h.Star, "#F0C563", UiScale.Item);
             InkTranslucency.ApplyReadabilityShadow(h.Star);
             h.Star.SetPadding(0, 0, UiScale.Px(24), 0);
-            h.Line.AddView(h.Star);
+            h.Line.AddView(h.Star, new LinearLayout.LayoutParams(-2, -2) { Gravity = GravityFlags.CenterVertical }); // vc120：布局重力修正（原误挂视图重力仍顶对齐）
 
             // 台名+副标题两行块（vc113 对照原型 02 节 chan-meta：chan-name 上、chan-sub 下）
             h.Meta = new LinearLayout(ctx) { Orientation = Orientation.Vertical };
@@ -2876,7 +2909,7 @@ public partial class MainActivity : Activity
             h.Dot = new TextView(ctx) { Gravity = GravityFlags.CenterVertical }; // vc117 令6：状态点垂直居中
             h.Dot.SetPadding(UiScale.Px(24), 0, 0, 0);
             InkTranslucency.ApplyReadabilityShadow(h.Dot);
-            h.Line.AddView(h.Dot);
+            h.Line.AddView(h.Dot, new LinearLayout.LayoutParams(-2, -2) { Gravity = GravityFlags.CenterVertical }); // vc120：布局重力修正（原误挂视图重力仍顶对齐）
             return h;
         }
 

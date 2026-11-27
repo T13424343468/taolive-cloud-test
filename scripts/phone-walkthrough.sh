@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# TaoLive 手机版逐屏走查出图 v3（制度：视觉模型比对与评分制度 2026-11-26）
+# TaoLive 手机版逐屏走查出图 v5（制度：视觉模型比对与评分制度 2026-11-26）
+# v5 改法（对照 v4 实拍缺陷）：
+#   ① 横屏段坐标转置修正——W,H 按竖屏读数，横屏中心=(H/2,W/2)；v4 用竖屏中心 (540,1200) 落横屏屏幕外，08 控制条/09 抽屉全没出（脚本缺陷）。
+#   ② HUD 滑动起终点改视频带内（y 1450→950，幅度 500px>96dp 阈值）——v4 起点 y=1600 在视频带（896–1503）外没落 TextureView。
+#   ③ 设置页进阶滚动起点改面板内容区（y=700→400）——v4 起点在面板外没滚出进阶内容。
 # v3 改法（对照 v2 实拍缺陷）：
 #   ① 控制条按钮改「源码布局推算坐标」直点——uiautomator dump 对视频页常空/超时，且控制条 3s 自动收起，
 #      dump 再点必 miss（v2 抽屉/设置全没打开的根因）。坐标按 1080x2400@420dpi、UiScale 手机重定标
@@ -77,8 +81,8 @@ adb shell input tap 656 $P_BAR_Y
 sleep 2
 SHOT 04-settings-portrait
 dump_ui ui-settings-portrait.xml
-# 下半：进阶调优（面板贴底，面板内上滑）
-adb shell input swipe "$CX" $((H*3/4)) "$CX" $((H/2)) 600; sleep 1.5
+# 下半：进阶调优（面板贴底，面板内容区内上滑——v5：起点改面板内容区 y<760，v4 起点在面板外没滚出进阶内容）
+adb shell input swipe "$CX" 700 "$CX" 400 600; sleep 1.5
 SHOT 05-settings-advanced
 # 诊断日志页（三标签；dump 对面板可能可用，miss 则跳过不阻塞）
 tap_text "崩溃日志" || true
@@ -94,8 +98,8 @@ sleep 0.7
 SHOT 11-switch-toast
 sleep 9
 
-# —— 竖屏：亮度 HUD（左半区慢拖，拖中快拍；ShowHud 700ms 自隐） ——
-adb shell input swipe $((W/4)) $((H*2/3)) $((W/4)) $((H/3)) 2000 &
+# —— 竖屏：亮度 HUD（左半区慢拖，拖中快拍；ShowHud 700ms 自隐；v5：起终点改视频带内 y 1450→950，v4 起点 1600 在带外没落 TextureView） ——
+adb shell input swipe $((W/4)) 1450 $((W/4)) 950 2000 &
 sleep 0.8
 SHOT 12-hud-brightness
 wait
@@ -103,8 +107,8 @@ sleep 1.2
 SHOT 12b-hud-brightness-late
 sleep 2
 
-# —— 竖屏：音量 HUD（右半区慢拖，拖中快拍） ——
-adb shell input swipe $((W*3/4)) $((H*2/3)) $((W*3/4)) $((H/3)) 2000 &
+# —— 竖屏：音量 HUD（右半区慢拖，拖中快拍；v5：起终点同改视频带内） ——
+adb shell input swipe $((W*3/4)) 1450 $((W*3/4)) 950 2000 &
 sleep 0.8
 SHOT 13-hud-volume
 wait
@@ -122,23 +126,26 @@ sleep 1.5
 SHOT 17b-exit-dialog-dismissed
 
 # —— 横屏段：系统旋转口径（可靠），应用 OnConfigurationChanged 重建 ——
+# v5：横屏下屏幕坐标转置（W,H 仍是竖屏读数 1080x2400），横屏中心=(H/2,W/2)=(1200,540)——
+# v4 直接用 CX,CY=(540,1200) 落在横屏屏幕外，点按全部落空（08 控制条/09 抽屉没出的根因，脚本缺陷非应用缺陷）
+L_CX=$((H/2)); L_CY=$((W/2))
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1
 sleep 4
 SHOT 07-play-landscape
-adb shell input tap "$CX" "$CY"; sleep 0.8
+adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 SHOT 08-controls-landscape
 
 adb shell input tap 1346 $L_BAR_Y
 sleep 2.5
 SHOT 09-drawer-landscape
-adb shell input tap $((W-60)) "$CY"; sleep 1.5
+adb shell input tap $((H-60)) "$L_CY"; sleep 1.5
 
-adb shell input tap "$CX" "$CY"; sleep 0.8
+adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 adb shell input tap 1498 $L_BAR_Y
 sleep 2
 SHOT 10-settings-landscape
-adb shell input tap "$CX" $((H/5)); sleep 1.5
+adb shell input tap "$L_CX" $((W/5)); sleep 1.5
 
 # 转回竖屏
 adb shell settings put system user_rotation 0

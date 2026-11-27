@@ -28,16 +28,19 @@ public partial class MainActivity
     private ScrollView? _settingsScroll;
 
     // ---- 全屏子页（自管面板：非 AlertDialog——对话框浮动容器吃边，真机全屏仍缩半屏） ----
-    private FrameLayout? _crashOverlay;
-    private ScrollView? _crashScroll;
-    private TextView? _crashCleanBtn, _crashCloseBtn;
-    private FrameLayout? _diagOverlay;
-    private ScrollView? _diagScroll;
-    private TextView? _diagExportBtn, _diagCloseBtn;
+    // v26 原型重做（2026-11-27 真机反馈第9条）：运行统计/崩溃日志/自诊断三页并进设置页页签，独立弹层撤除
     private FrameLayout? _advOverlay;
     private FrameLayout? _licenseOverlay;
     private ScrollView? _licenseScroll;
     private TextView? _licenseCloseBtn;
+
+    // ---- 诊断页签（v26 原型：页头+返回、运行台账/崩溃日志/自诊断三页签、逐项检查行、导出日志） ----
+    private int _diagTab;                          // 当前页签：0=运行台账 1=崩溃日志 2=自诊断
+    private readonly List<TextView> _diagTabs = new();
+    private TextView? _diagBody;                   // 页签正文（台账/日志原文、自诊断逐项检查行）
+    private ScrollView? _diagBodyScroll;
+    private LinearLayout? _diagBtnRow;             // 页签操作行（崩溃日志=一键清理；自诊断/台账=导出日志）
+    private int _diagLoadSeq;                      // 异步装载代数：切页签即作废旧装载
 
     private ISharedPreferences _prefs = default!;
 
@@ -130,8 +133,6 @@ public partial class MainActivity
             _exitNo = null;
             _exitYes = null;
         }
-        CloseCrashOverlayOnly();
-        CloseDiagOverlayOnly();
         CloseLicenseOverlayOnly();
         CloseAdvancedOverlayOnly();
     }
@@ -148,12 +149,11 @@ public partial class MainActivity
         var slide = new TranslateAnimation(0f, 0f, 420f, 0f) { Duration = 220 };
         _settingsPanel.StartAnimation(slide);
         // 焦点必须看得见：弹出后下一帧把焦点直接放到面板第一个可选行
-        //（容器 RequestFocus 落空时焦点会留在底下的层里——真机「设置页光标选不中」根因）
+        //（容器 RequestFocus 落空时焦点会留在底下的层里——真机「设置页光标选不中」根因；
+        // v26 重做后可选行含开关行/诊断页签/操作钮，统一走 _settingsRows 显式序列）
         _settingsPanel.Post(() =>
         {
-            if (_settingsFlow is null) return;
-            for (int i = 0; i < _settingsFlow.ChildCount; i++)
-                if (_settingsFlow.GetChildAt(i) is View row && row.Focusable) { row.RequestFocus(); break; }
+            if (_settingsRows.Count > 0) _settingsRows[0].RequestFocus();
         });
     }
 
@@ -165,50 +165,255 @@ public partial class MainActivity
     }
 
     /// <summary>
-    /// 设置面板（真机反馈批#19，老板令「底部全宽流式、一行摆多项、说明收进帮助行、不留大面积留白」）：
-    /// 面板全宽贴底；行区用 FlowLayout 按内容从左往右摆，一行放得下几项摆几项、放不下才换行；
-    /// 键位说明收成底部常驻帮助行；内容多时行区封顶滚动。字号走 #68 语义字号令（Title/Item/Caption），间距走随档缩放的 Dp。
+    /// 设置页（v26 原型卡片式重做，2026-11-27 真机反馈第9条）：页头+返回、设置开关流式行、
+    /// 诊断卡片（运行台账/崩溃日志/自诊断三页签 + 逐项检查行 + 导出日志/一键清理）。
+    /// 原三个独立弹层页并进页签，字号走 #68 语义字号令，间距走随档缩放的 Dp。
     /// </summary>
     private LinearLayout BuildSettingsPanel()
     {
         var panel = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        panel.SetBackgroundColor(InkTranslucency.PanelSolidColor(this)); // 手机版整改令：近实色水墨底，亮画面上不叠字
+        panel.SetBackgroundColor(InkTranslucency.PanelSolidColor(this)); // 近实色水墨底，亮画面上不叠字
         panel.SetPadding(Dp(20), Dp(10), Dp(20), Dp(12));
         panel.Visibility = ViewStates.Gone;
 
-        // 行区 ScrollView：行多时整体可滚，面板高度不超出屏幕（滚动容器不截焦点）
-        var maxHeight = (int)(Resources!.DisplayMetrics!.HeightPixels * 0.9f);
-        _settingsScroll = new MaxHeightScrollView(this, maxHeight);
-        _settingsFlow = new FlowLayout(this, Dp(4), Dp(2));
-        _settingsScroll.AddView(_settingsFlow, new FrameLayout.LayoutParams(-1, -2));
-
-        // #19：说明收进底部帮助行（原每行下挂的操作提示统一收到这一行，全宽常驻不抢眼）
-        var help = new TextView(this) { Text = "点按切换 · 点 ✕ 或返回键收起", TextSize = UiScale.Caption };
-        help.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(help);
-        help.SetPadding(Dp(14), Dp(8), Dp(14), Dp(4));
-
-        // 手机版整改令 2026-11-27：设置改全屏页式（原贴底浮层是电视端口径）——标题行+整页行列表
-        var headRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-        headRow.SetGravity(GravityFlags.CenterVertical);
+        // 页头：返回 + 标题（v26 原型口径）
+        var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        head.SetGravity(GravityFlags.CenterVertical);
+        var back = new TextView(this) { Text = "←", TextSize = UiScale.Title };
+        back.SetTextColor(InkTranslucency.TextPrimary(this));
+        InkTranslucency.ApplyReadabilityShadow(back);
+        back.SetPadding(Dp(14), Dp(10), Dp(26), Dp(10));
+        back.Click += (_, _) => CloseSettingsPanel();
+        head.AddView(back);
         var headTitle = new TextView(this) { Text = "设置", TextSize = UiScale.Title };
         headTitle.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(headTitle);
-        headRow.AddView(headTitle);
-        var closeBtn = new TextView(this) { Text = "✕", TextSize = UiScale.Item };
-        closeBtn.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(closeBtn);
-        closeBtn.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
-        closeBtn.Click += (_, _) => CloseSettingsPanel();
-        headRow.AddView(new View(this), new LinearLayout.LayoutParams(0, 1) { Weight = 1f }); // 中间留白
-        headRow.AddView(closeBtn);
-        panel.AddView(headRow, new FrameLayout.LayoutParams(-1, -2));
+        head.AddView(headTitle);
+        panel.AddView(head, new FrameLayout.LayoutParams(-1, -2));
 
-        panel.AddView(_settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        // 整页滚动容器：开关行 + 诊断卡片
+        var pageScroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        pageScroll.AddView(page, new FrameLayout.LayoutParams(-1, -2));
+        panel.AddView(pageScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // 设置开关卡（流式行：一行摆多项）
+        _settingsScroll = new MaxHeightScrollView(this, int.MaxValue);
+        _settingsFlow = new FlowLayout(this, Dp(4), Dp(2));
+        _settingsScroll.AddView(_settingsFlow, new FrameLayout.LayoutParams(-1, -2));
+        page.AddView(_settingsScroll, new LinearLayout.LayoutParams(-1, -2));
+
+        // 诊断卡片：页签行 + 正文 + 操作行（v26 原型：运行台账/崩溃日志/自诊断）
+        var card = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        card.SetPadding(Dp(14), Dp(8), Dp(14), Dp(12));
+        var cardBg = new GradientDrawable();
+        cardBg.SetColor(Color.Argb(60, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+        cardBg.SetCornerRadius(Dp(12));
+        card.Background = cardBg;
+        var cardLp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) };
+        page.AddView(card, cardLp);
+
+        var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        string[] tabNames = { "运行台账", "崩溃日志", "自诊断" };
+        for (int i = 0; i < tabNames.Length; i++)
+        {
+            var tab = new TextView(this) { Text = tabNames[i], TextSize = UiScale.Item };
+            tab.SetPadding(Dp(16), Dp(8), Dp(16), Dp(8));
+            tab.Focusable = true;
+            int idx = i;
+            tab.Click += (_, _) => SwitchDiagTab(idx);
+            tabRow.AddView(tab);
+            _diagTabs.Add(tab);
+            _settingsRows.Add(tab); // 显式焦点导航覆盖页签（#61 口径）
+        }
+        card.AddView(tabRow, new LinearLayout.LayoutParams(-1, -2));
+
+        _diagBodyScroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
+        _diagBody = new TextView(this) { TextSize = UiScale.Caption };
+        _diagBody.SetTextIsSelectable(false);
+        _diagBody.Focusable = false; // 正文不抢焦点，焦点只在页签与按钮间转
+        _diagBody.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(_diagBody);
+        _diagBodyScroll.AddView(_diagBody);
+        card.AddView(_diagBodyScroll, new LinearLayout.LayoutParams(-1, Dp(300)) { TopMargin = Dp(6) });
+
+        _diagBtnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        card.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) });
+
+        // #19：说明收进底部帮助行
+        var help = new TextView(this) { Text = "点按切换 · 点 ← 或返回键收起", TextSize = UiScale.Caption };
+        help.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(help);
+        help.SetPadding(Dp(14), Dp(8), Dp(14), Dp(4));
         panel.AddView(help, new FrameLayout.LayoutParams(-1, -2));
+
         _root.AddView(panel, new FrameLayout.LayoutParams(-1, -1)); // 全屏页
+        SwitchDiagTab(0); // 默认落运行台账
         return panel;
     }
+
+    /// <summary>切诊断页签：高亮当前页签（v26 原型胶囊选中态）、换操作行、异步装正文。</summary>
+    private void SwitchDiagTab(int tab)
+    {
+        _diagTab = tab;
+        for (int i = 0; i < _diagTabs.Count; i++)
+        {
+            var t = _diagTabs[i];
+            bool selected = i == tab;
+            var pill = new GradientDrawable();
+            pill.SetCornerRadius(Dp(14));
+            pill.SetColor(selected ? Color.Argb(200, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB) : Color.Transparent);
+            t.Background = pill;
+            t.SetTextColor(selected
+                ? InkTranslucency.TextPrimary(this)
+                : Color.ParseColor(InkTranslucency.TextSecondary));
+            InkTranslucency.ApplyReadabilityShadow(t);
+        }
+        RefreshDiagButtons();
+        LoadDiagBody();
+    }
+
+    /// <summary>页签操作行重建：崩溃日志=一键清理（朱砂危险项）；运行台账/自诊断=导出日志。</summary>
+    private void RefreshDiagButtons()
+    {
+        if (_diagBtnRow is null) return;
+        _diagBtnRow.RemoveAllViews();
+        void AddBtn(string text, Action onClick, GradientDrawable focus)
+        {
+            var b = new TextView(this) { Text = text, Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+            b.SetPadding(Dp(20), Dp(12), Dp(20), Dp(12));
+            b.Focusable = true;
+            b.Click += (_, _) => onClick();
+            StyleOverlayButton(b, focus);
+            _diagBtnRow.AddView(b, new LinearLayout.LayoutParams(-2, -2) { RightMargin = Dp(10) });
+            _settingsRows.Add(b); // 显式焦点导航覆盖操作钮（#61 口径）
+        }
+        if (_diagTab == 1)
+        {
+            AddBtn("一键清理", () =>
+            {
+                try
+                {
+                    var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
+                    if (path.Exists()) System.IO.File.Delete(path.AbsolutePath!);
+                    ShowToast("崩溃日志已清空");
+                }
+                catch { ShowToast("清理失败，请重试"); }
+                LoadDiagBody();
+            }, InkTranslucency.AccentFocusDrawable());
+        }
+        else
+        {
+            AddBtn("导出日志", () =>
+            {
+                // 导出快照后台组装（#23 同条款：快照含 256KB 日志尾扫，不占主线程）
+                _ = Task.Run(() =>
+                {
+                    var path = DiagLog.Export(ApplicationContext!, BuildDiagSnapshot());
+                    CrashNet.Record(path is null ? "[诊断] 导出失败" : $"[诊断] 已导出：{path}");
+                    _main.Post(() => ShowToast(path is null ? "导出失败，请重试" : "已导出到文件管理器可见目录"));
+                });
+            }, InkTranslucency.FocusDrawable());
+        }
+    }
+
+    /// <summary>页签正文异步装载（#23 同条款：读盘+解析后台走，主线程只收结果；切页签作废旧装载）。</summary>
+    private void LoadDiagBody()
+    {
+        if (_diagBody is null) return;
+        int seq = ++_diagLoadSeq;
+        _diagBody.Text = _diagTab switch { 0 => "统计中…", 1 => "读取中…", _ => "诊断中…" };
+        _ = Task.Run(() =>
+        {
+            string text;
+            try
+            {
+                text = _diagTab switch
+                {
+                    0 => BuildRunStats(ReadLogTailSafe(1024 * 1024)),
+                    1 => ReadCrashTail(),
+                    _ => BuildDiagChecklist(),
+                };
+            }
+            catch (Exception ex) { text = "读取失败：" + ex.Message; }
+            _main.Post(() =>
+            {
+                if (seq == _diagLoadSeq && _settingsPanelOpen && _diagBody != null)
+                    _diagBody.Text = text;
+            });
+        });
+    }
+
+    /// <summary>台账尾扫安全读：文件没了（被清）按空账，不挡页签。</summary>
+    private string ReadLogTailSafe(int maxBytes)
+    {
+        var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
+        return path.Exists() ? ReadLogTail(path.AbsolutePath!, maxBytes) : "（暂无运行台账）";
+    }
+
+    /// <summary>崩溃日志尾扫：64KB 截尾视图。</summary>
+    private string ReadCrashTail()
+    {
+        var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
+        if (!path.Exists()) return "（暂无崩溃日志）";
+        var text = ReadLogTail(path.AbsolutePath!, 64 * 1024);
+        return text.Length > 16000 ? "…\n" + text[^16000..] : text;
+    }
+
+    /// <summary>自诊断逐项检查行（v26 原型：✓/! 前缀一行一项），数据全部来自现成公开接口。</summary>
+    private string BuildDiagChecklist()
+    {
+        var lines = new List<string>();
+        // 网络
+        try
+        {
+            var cm = GetSystemService(ConnectivityService) as Android.Net.ConnectivityManager;
+            lines.Add(cm?.ActiveNetwork != null
+                ? "✓ 网络连通 · DNS 解析正常"
+                : "! 网络不可用（无活动网络）");
+        }
+        catch (Exception ex) { lines.Add($"! 网络检查失败：{ex.Message}"); }
+        // 源订阅
+        if (!_subEnabled) lines.Add("– 源订阅未开启（设置行可开）");
+        else
+        {
+            var last = SubscriptionSourceStore.Shared.LastRefreshedAt;
+            lines.Add(last is { } t
+                ? $"✓ 源订阅可达 · 最近刷新 {LastRefreshLabel(t)}"
+                : "! 源订阅已开启 · 尚未完成首次刷新");
+        }
+        // 播放
+        lines.Add(_manager.Current is { } s
+            ? $"{(s.State == PlaybackState.Playing ? "✓" : "!")} 播放：{s.CurrentChannel?.Name ?? "-"} · 状态 {s.State} · 换源 {s.FailoverCount} 次 · 线路 {s.CurrentLineIndex + 1}/{s.LineCount}"
+            : "– 播放：当前无会话");
+        // 内核与内存
+        try
+        {
+            var am = (ActivityManager?)GetSystemService(ActivityService);
+            var mi = new ActivityManager.MemoryInfo();
+            am?.GetMemoryInfo(mi);
+            lines.Add($"✓ 内核：ExoPlayer（Media3）· 缓冲水位 {BufferPolicy.MaxWatermarkSeconds(mi.TotalMem)} 秒 · 总内存 {mi.TotalMem / (1024L * 1024L * 1024L)}GB");
+        }
+        catch (Exception ex) { lines.Add($"! 内核检查失败：{ex.Message}"); }
+        // 运行日志
+        string tail = "";
+        try { tail = DiagLog.ReadTail(System.IO.Path.Combine(FilesDir!.AbsolutePath!, "taolive_crash.log"), 256 * 1024); }
+        catch { }
+        int failCount = 0, crashCount = 0;
+        foreach (var line in tail.Split('\n'))
+        {
+            if (line.Contains("[ConnectFailure]", StringComparison.Ordinal) || line.Contains("(player error", StringComparison.Ordinal)) failCount++;
+            else if (line.Contains("未捕获异常", StringComparison.Ordinal)) crashCount++;
+        }
+        lines.Add(failCount == 0 && crashCount == 0
+            ? $"✓ 运行日志 {LogSizeLabel(tail.Length)} · 取流失败 0 条 · 未捕获异常 0 条"
+            : $"! 运行日志 {LogSizeLabel(tail.Length)} · 取流失败 {failCount} 条 · 未捕获异常 {crashCount} 条");
+        return string.Join("\n", lines);
+    }
+
+    /// <summary>订阅最近刷新时刻的相对文案（当天显时分，跨天显日期）。</summary>
+    private static string LastRefreshLabel(DateTime t) =>
+        DateTime.Now.Date == t.Date ? $"今天 {t:HH:mm}" : $"{t:MM-dd HH:mm}";
 
     /// <summary>
     /// 流式布局（真机反馈批#19）：子项按内容从左往右排，一行放不下才换行——设置行一行摆多项。
@@ -277,6 +482,10 @@ public partial class MainActivity
         _settingsFlow.RemoveAllViews();
         _settingsRows.Clear();
 
+        // v26 重做：诊断页签与操作钮也在显式导航序列里（_settingsRows），重建开关行后补回
+        _settingsRows.AddRange(_diagTabs);
+        RefreshDiagButtons(); // 操作钮随页签重建并入导航序列
+
         // #19 流式行：紧凑内边距（项间距自带），操作提示收进底部帮助行不再每行下挂
         void AddRow(string text, Action onClick, string color, Action? onLongClick = null)
         {
@@ -315,10 +524,8 @@ public partial class MainActivity
         AddRow($"预检握手：{(_precheckEnabled ? "开" : "关")}（预热同起同停）", TogglePrecheck, "#F7F5EE");
         // 内置订阅（老板 2026-11-26 拍板「只做内置订阅」）：开关默认关；长按=立即刷新合集
         AddRow($"源订阅：{(_subEnabled ? "开" : "关")}（自动收录公开源）", ToggleSubscription, "#F7F5EE", RefreshSubscriptionNow);
-        AddRow($"显示大小：{DisplaySizeLabel()}", CycleDisplaySize, "#F7F5EE");
-        AddRow("运行统计", ShowRunStatsPanel, "#C9D6E2");
-        AddRow("崩溃日志", ShowCrashLog, "#C9D6E2");
-        AddRow("自诊断", ShowDiagPanel, "#C9D6E2");
+        // 显示大小项已撤（老板 2026-11-27 拍板：尺寸跟系统「显示大小」走，App 内不再单设档位）
+        // 运行统计/崩溃日志/自诊断三行已撤（v26 原型重做：并进诊断卡片三页签）
         AddRow("进阶调优", ShowAdvancedTuningPanel, "#C9D6E2");
         AddRow("关于 · 开源许可", ShowLicensePanel, "#C9D6E2");
 
@@ -485,30 +692,8 @@ public partial class MainActivity
         }, SubBusyRecheckMs);
     }
 
-    // —— 显示大小（真机反馈批 #61 尺寸回抬令 2026-11-15 19:3x：中档定「肉眼最舒适」=基准 20sp，
-    // 三档整体重定标：大=2/3(24sp)、中=5/9(20sp)、小=1/3(12sp)，默认中；覆盖 #14 的 ×2/3 压缩口径） ——
-
-    private static readonly float[] DisplaySizeSteps = { 21f / 36f, 17f / 36f, 13f / 36f }; // #77 档位重定：大21/中17/小13（换算实值÷基准36）
-    private static readonly string[] DisplaySizeLabels = { "大", "中", "小" };
-
-    private static int DisplaySizeIndex(float f)
-    {
-        for (int i = 0; i < DisplaySizeSteps.Length; i++)
-            if (Math.Abs(DisplaySizeSteps[i] - f) < 0.01f) return i;
-        return 1; // 未知值回落「中」
-    }
-
-    private string DisplaySizeLabel() => DisplaySizeLabels[DisplaySizeIndex(
-        _prefs.GetFloat("ui_scale", 17f / 36f))];
-
-    /// <summary>大→中→小循环，档位记忆；界面重建即时生效——真机反馈批#15 原地换皮：会话跨 Recreate 存活，
-    /// 正在看的台不断流不重连。</summary>
-    private void CycleDisplaySize()
-    {
-        int next = (DisplaySizeIndex(_prefs.GetFloat("ui_scale", 17f / 36f)) + 1) % DisplaySizeSteps.Length;
-        _prefs.Edit()?.PutFloat("ui_scale", DisplaySizeSteps[next])?.Apply();
-        Recreate(); // 重建走 OnCreate 重定标，全套令牌按新档位重算
-    }
+    // —— 显示大小档位机制已撤（老板 2026-11-27 拍板：尺寸跟系统「显示大小」走，
+    // 文字档=中档基准×系统字体缩放、间距随密度，App 内不再单设档位与循环切换） ——
 
     // —— 崩溃日志全屏面板（自管：窗底透明+半透明水墨面板，不露 ROM 钢蓝灰） ——
 
@@ -549,111 +734,8 @@ public partial class MainActivity
             "统计范围：近期 1MB 台账（轮转两代封顶）";
     }
 
-    /// <summary>运行统计面板：只读聚合，无清理键防误操作；关闭键即回设置页。读盘解析走后台（#23）。</summary>
-    private void ShowRunStatsPanel()
-    {
-        EnforceSingleWindow(); // #64 窗口唯一令：开新先关旧
-        try
-        {
-            var path = new Java.IO.File(FilesDir, "taolive_crash.log");
-            if (!path.Exists()) { ShowToast("暂无运行台账"); return; }
-            var (box, pad) = BuildOverlayPanel("运行统计（近期）", "统计中…", out var scroll);
-            var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-            var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
-            close.SetPadding(pad, Dp(14), pad, Dp(14));
-            close.Click += (_, _) => CloseCrashPanel();
-            StyleOverlayButton(close, InkTranslucency.FocusDrawable());
-            int btnH = Dp(60); // #70 口径归一后实值直出：52dp 装不下 22sp 文字+28dp 内边距，抬到 60dp 保字完整
-            btns.AddView(close, new LinearLayout.LayoutParams(-1, btnH));
-            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
-
-            var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true }; // 吃掉触摸防穿透
-            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
-            _crashOverlay = overlay;
-            _crashScroll = scroll;
-            _crashCloseBtn = close;
-            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
-            CloseSettingsPanel();
-            close.RequestFocus();
-            // 读盘+解析后台走（#23）：1MB 尾扫不占主线程，读前先判文件还在（可能被一键清理删掉）
-            LoadOverlayBodyAsync(scroll, () =>
-                BuildRunStats(System.IO.File.Exists(path.AbsolutePath!) ? ReadLogTail(path.AbsolutePath!, 1024 * 1024) : "（暂无运行台账）"),
-                "统计中…", () => ReferenceEquals(_crashOverlay, overlay));
-        }
-        catch { ShowToast("统计读取失败"); }
-    }
-
-
-    private void ShowCrashLog()
-    {
-        EnforceSingleWindow(); // #64 窗口唯一令：开新先关旧
-        try
-        {
-            var path = new Java.IO.File(FilesDir, "taolive_crash.log");
-            if (!path.Exists()) { ShowToast("暂无崩溃日志"); return; } // 空态提示
-            var (box, pad) = BuildOverlayPanel($"崩溃日志（全屏）· {CrashNet.VersionTag()}", "读取中…", out var scroll);
-            var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-            var clean = new TextView(this) { Text = "一键清理", Gravity = GravityFlags.Center };
-            clean.SetPadding(pad, Dp(14), pad, Dp(14));
-            clean.Click += (_, _) =>
-            {
-                try { System.IO.File.Delete(path.AbsolutePath!); ShowToast("崩溃日志已清空"); }
-                catch { ShowToast("清理失败，请重试"); }
-                CloseCrashPanel();
-            };
-            var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
-            close.SetPadding(pad, Dp(14), pad, Dp(14));
-            close.Click += (_, _) => CloseCrashPanel();
-            clean.Id = View.GenerateViewId();
-            close.Id = View.GenerateViewId();
-            clean.NextFocusRightId = close.Id; // 左右键显式互指，不靠焦点搜索
-            close.NextFocusLeftId = clean.Id;
-            StyleOverlayButton(clean, InkTranslucency.AccentFocusDrawable()); // 一键清理=朱砂（危险项）
-            StyleOverlayButton(close, InkTranslucency.FocusDrawable()); // 关闭=纸白
-            int btnH = Dp(60); // 按钮行固定底栏，不论日志多少行按钮始终在屏幕底部；#70 口径归一后实值直出，抬到 60dp 保字完整
-            btns.AddView(clean, new LinearLayout.LayoutParams(0, btnH, 1f));
-            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
-            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
-
-            var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true }; // 吃掉触摸防穿透
-            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
-            _crashOverlay = overlay;
-            _crashScroll = scroll;
-            _crashCleanBtn = clean;
-            _crashCloseBtn = close;
-            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
-            CloseSettingsPanel(); // 打开日志页即收起设置页，两层页面不叠显
-            close.RequestFocus(); // 默认焦点落「关闭」——防误清日志
-            // 读盘后台走（#23）：64KB 尾扫+截断不占主线程
-            LoadOverlayBodyAsync(scroll, () =>
-            {
-                var text = ReadLogTail(path.AbsolutePath!, 64 * 1024);
-                if (text.Length > 16000) text = "…\n" + text[^16000..];
-                return text;
-            }, "读取中…", () => ReferenceEquals(_crashOverlay, overlay));
-        }
-        catch { ShowToast("日志读取失败"); }
-    }
-
-    private void CloseCrashPanel()
-    {
-        CloseCrashOverlayOnly();
-        OpenSettingsPanel();
-    }
-
-    /// <summary>#64 窗口唯一令：崩溃/运行统计面板纯关闭（不回设置页），供统一闸复用。</summary>
-    private void CloseCrashOverlayOnly()
-    {
-        if (_crashOverlay is null) return;
-        _root.RemoveView(_crashOverlay);
-        _crashOverlay.Dispose();
-        _crashOverlay = null;
-        _crashScroll = null;
-        _crashCleanBtn = null;
-        _crashCloseBtn = null;
-    }
+    /// <summary>运行统计/崩溃日志/自诊断独立弹层已撤（v26 原型重做：并进设置页诊断卡片三页签，
+    /// 见 SwitchDiagTab/LoadDiagBody/BuildDiagChecklist）。</summary>
 
     /// <summary>子页面板骨架：标题 + 权重铺满的滚动正文 + 统一内边距。按钮行由各页自挂（键位各不同）。</summary>
     private (LinearLayout Box, int Pad) BuildOverlayPanel(string title, string body, out ScrollView scroll)
@@ -677,28 +759,7 @@ public partial class MainActivity
         return (box, pad);
     }
 
-    /// <summary>
-    /// 日志正文后台装载（真机反馈批#23，老板令「一定不能卡线程」）：点开先出占位文案，
-    /// 读盘+解析全在后台线程，主线程只收结果刷新——运行统计/崩溃日志/自诊断三页共用。
-    /// 面板先开先关（读盘期间关闭）：回帖前校验面板还开着，关了就丢弃结果不碰已释放视图。
-    /// </summary>
-    private void LoadOverlayBodyAsync(ScrollView scroll, Func<string> build, string placeholder, Func<bool> panelOpen)
-    {
-        if (scroll.GetChildAt(0) is TextView bodyView) bodyView.Text = placeholder;
-        _ = Task.Run(() =>
-        {
-            string text;
-            try { text = build(); }
-            catch (Exception ex) { text = "读取失败：" + ex.Message; }
-            _main.Post(() =>
-            {
-                try { if (panelOpen() && scroll.GetChildAt(0) is TextView tv) tv.Text = text; }
-                catch { /* 面板已关：结果丢弃 */ }
-            });
-        });
-    }
-
-    /// <summary>自管面板按钮统一描边（崩溃日志/自诊断/进阶调优共用，ui-remote 归一条款）。</summary>
+    /// <summary>自管面板按钮统一描边（诊断页签操作钮/进阶调优/关于共用，ui-remote 归一条款）。</summary>
     private void StyleOverlayButton(TextView b, GradientDrawable focusDrawable)
     {
         var idleBg = new ColorDrawable(Color.Argb(96, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
@@ -712,74 +773,6 @@ public partial class MainActivity
             if (ev.HasFocus) { b.Background = focusDrawable; b.SetTextColor(InkTranslucency.TextPrimary(this)); }
             else if (b.Background == focusDrawable) { b.Background = idleBg; b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
         };
-    }
-
-    // —— 自诊断（S3 口径）：五类现成数据只读一页 + 导出 ——
-
-    private void ShowDiagPanel()
-    {
-        EnforceSingleWindow(); // #64 窗口唯一令：开新先关旧
-        try
-        {
-            var (box, pad) = BuildOverlayPanel("自诊断（只读）", "诊断中…", out var scroll);
-            var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-            var export = new TextView(this) { Text = "导出日志", Gravity = GravityFlags.Center };
-            export.SetPadding(pad, Dp(14), pad, Dp(14));
-            export.Click += (_, _) =>
-            {
-                // 导出快照后台组装（#23 同条款：快照含 256KB 日志尾扫，不占主线程）
-                _ = Task.Run(() =>
-                {
-                    var path = DiagLog.Export(ApplicationContext!, BuildDiagSnapshot());
-                    CrashNet.Record(path is null ? "[诊断] 导出失败" : $"[诊断] 已导出：{path}");
-                    _main.Post(() => ShowToast(path is null ? "导出失败，请重试" : "已导出到文件管理器可见目录"));
-                });
-            };
-            var close = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center };
-            close.SetPadding(pad, Dp(14), pad, Dp(14));
-            close.Click += (_, _) => CloseDiagPanel();
-            export.Id = View.GenerateViewId();
-            close.Id = View.GenerateViewId();
-            export.NextFocusRightId = close.Id;
-            close.NextFocusLeftId = export.Id;
-            StyleOverlayButton(export, InkTranslucency.FocusDrawable());
-            StyleOverlayButton(close, InkTranslucency.FocusDrawable());
-            int btnH = Dp(60); // #70 口径归一后实值直出：52dp 装不下 22sp 文字+28dp 内边距，抬到 60dp 保字完整
-            btns.AddView(export, new LinearLayout.LayoutParams(0, btnH, 1f));
-            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
-            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
-            var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
-            overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
-            _diagOverlay = overlay;
-            _diagScroll = scroll;
-            _diagExportBtn = export;
-            _diagCloseBtn = close;
-            _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
-            CloseSettingsPanel();
-            close.RequestFocus();
-            // 快照组装后台走（#23）：内存探测+256KB 日志尾扫+逐行统计不占主线程
-            LoadOverlayBodyAsync(scroll, BuildDiagSnapshot, "诊断中…", () => ReferenceEquals(_diagOverlay, overlay));
-        }
-        catch (Exception ex) { CrashNet.Record($"[诊断] 打开失败：{ex.Message}"); ShowToast("诊断打开失败"); }
-    }
-
-    private void CloseDiagPanel()
-    {
-        CloseDiagOverlayOnly();
-        OpenSettingsPanel();
-    }
-
-    /// <summary>#64 窗口唯一令：自诊断面板纯关闭（不回设置页），供统一闸复用。</summary>
-    private void CloseDiagOverlayOnly()
-    {
-        if (_diagOverlay is null) return;
-        _root.RemoveView(_diagOverlay);
-        _diagOverlay.Dispose();
-        _diagOverlay = null;
-        _diagScroll = null;
-        _diagExportBtn = null;
-        _diagCloseBtn = null;
     }
 
     // —— 关于面板（v47 开源合规）：Apache-2.0 许可文本只读一页，来源随包 Assets/NOTICE.txt ——

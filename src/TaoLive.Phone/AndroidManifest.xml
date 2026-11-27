@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.taolive.phone"
-    android:versionCode="1"
+    android:versionCode="110"
     android:versionName="1.0.0">
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
   <uses-permission android:name="android.permission.INTERNET" />
@@ -15,8 +15,9 @@
        主入口 Activity 不在清单声明（vc53 口径）：MainLauncher 特性已在壳层注册，
        清单再声明一次=两个启动器入口=桌面出两个图标（真机 11-15 老板镜实锤） -->
   <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-  <application android:label="TaoLive 手机版" android:icon="@mipmap/ic_launcher"
+  <application android:label="TaoLive" android:icon="@mipmap/ic_launcher"
                android:theme="@style/TaoLiveTheme"
+               android:enableOnBackInvokedCallback="true"
                android:usesCleartextTraffic="true">
     <!-- 后台保活前台服务（老板令 2026-11-27 #20）：切后台起、回前台撤 -->
     <service android:name="com.taolive.phone.KeepAliveService"

@@ -27,7 +27,7 @@ namespace TaoLive.Phone;
 /// 底层保留 2.0 事件/会话架构（PlaybackSessionManager + ExoPlayer 内核 + TextureView 挂面），
 /// 即「vc53 的皮，2.0 的骨」。操作逻辑：菜单键呼/收抽屉、上下换台、左右切页签、确认收藏、频道号直达。
 /// </summary>
-[Activity(Label = "TaoLive 手机版", MainLauncher = true, Exported = true,
+[Activity(Label = "TaoLive", MainLauncher = true, Exported = true,
     LaunchMode = LaunchMode.SingleTask,
     ScreenOrientation = ScreenOrientation.FullUser,
     ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.KeyboardHidden)]
@@ -121,15 +121,8 @@ public partial class MainActivity : Activity
     private string? _veilChannelName = "";   // #16：倒计时文案台名（#73 修：失败终态清空可空）
     private long _switchAtMs;                // #16：本台切换起点（出画耗时账起点）
     private static double RevealEtaMs = 3000; // #16：出画耗时指数均值（进程级自校准，倒计时基准）
-    private LinearLayout? _epgPanel;
-    private TextView? _epgNow;
-    private TextView? _epgNext;
-    private TextView? _epgWater; // 老板令 2026-11-17：节目单条挂实时水位（上下排列），与画面时刻同源同拍
     private TextView? _waterLevelText;       // 老板令 2026-11-16：列表页头「实时水位:XX秒」——当前会话内核攒着还没播的量
-    private bool _epgHasData;                // 当前台拉到过节目单（抽屉收起后据此重新亮出）
-    private Action? _epgHidePending;         // 7 秒自动收起任务
     private int _epgSeq;                     // 节目单代数：换台即作废旧拉取
-    private const int EpgAutoHideMs = 7000;
     private AlertDialog? _exitDialog;        // 退出确认（v1.0.9 用户拍板，vc22 水墨浮层样式）
     private TextView? _exitNo;
     private TextView? _exitYes;
@@ -141,7 +134,10 @@ public partial class MainActivity : Activity
         // 持久化设置（vc53 口径）：UI 缩放档 + 后台预热开关 + 进阶调优旋钮，启动装载
         //（缩放档须在 BuildRoot 前就位，全套令牌按档位重算）
         _prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
-        UiScale.Factor = _prefs.GetFloat("ui_scale", 17f / 36f); // #77 档位重定：默认中档=17sp
+        // 尺寸跟系统（老板 2026-11-27 拍板「跟着系统显示大小做三套，不单独给设置项」）：
+        // 文字档 = 中档基准 17sp × 系统字体缩放（系统「标准」=原中档；较大/较小随系统档等比）；
+        // 间距档乘密度，系统「显示大小」改密度即自动跟随。改系统档系统会重建 Activity，此处重装即生效。
+        UiScale.Factor = 17f / 36f * (Resources!.Configuration?.FontScale ?? 1f);
         // 手机版重定标（2026-11-27 真机整改令）：电视端「长边/1920」直接套手机（长边 2400→1.25）是
         // 「信息条文字巨大盖画面」的根因。改按原型 v13「基准 390px=1:1」：短边 dp 对 390——
         // 文字档与间距档同基准，间距档另乘密度转像素（热区不再跟文字档缩没）。
@@ -520,6 +516,7 @@ public partial class MainActivity : Activity
         BuildRoot();
         SetContentView(_root);
         ApplyImmersive(); // 手机版整改令 2026-11-27：沉浸式全屏（收状态栏/导航栏）
+        RegisterPredictiveBack(); // 2026-11-27 真机反馈第7条：接系统预测式返回（去「再次滑动返回」二次确认）
         ShowList();
         MergeSubscriptionChannels(silent: true); // 启动并入落盘档案里的订阅新收录频道（_precheck/_list 此刻均已就绪）
 
@@ -752,14 +749,30 @@ public partial class MainActivity : Activity
         base.OnResume();
         CrashNet.Record($"[生命周期] OnResume 回前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
         StartKeepAlive(); // 老板令 #20：会话期长驻（起停相撞会触发系统违规闪退，v7 走查实锤），只在退出时撤
+        // 切后台音画即停（2026-11-27 真机反馈第8条）：只恢复自己暂停的会话——用户手动暂停的不抢
+        if (_pausedForBackground)
+        {
+            _pausedForBackground = false;
+            try { _manager?.Current?.ResumePlayback(); CrashNet.Record("[生命周期] 回前台恢复播放（切后台曾暂停）"); }
+            catch (Exception ex) { CrashNet.Record($"[生命周期] 回前台恢复失败：{ex.Message}"); }
+        }
     }
 
     protected override void OnPause()
     {
         base.OnPause();
         CrashNet.Record($"[生命周期] OnPause 失去前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
+        // 切后台音画即停（2026-11-27 真机反馈第8条）：静音冻结出声出画，内核照常灌水位，切回续播
+        var cur = _manager?.Current;
+        if (cur is not null && cur.State == PlaybackState.Playing)
+        {
+            try { cur.PausePlayback(); _pausedForBackground = true; CrashNet.Record("[生命周期] 切后台暂停音画（内核照常缓冲）"); }
+            catch (Exception ex) { CrashNet.Record($"[生命周期] 切后台暂停失败：{ex.Message}"); }
+        }
         StartKeepAlive(); // 老板令 #20：切后台保活（已在跑则幂等跳过）
     }
+
+    private bool _pausedForBackground; // 切后台由本类暂停（区别于用户手动暂停），回前台只恢复这种
 
     // —— 后台保活（老板令 2026-11-27 #20「切后台要保活+满水位+切回续播」）——————
     // 前台服务只负责持有进程优先级：播放内核与看门狗泵在 Activity 里照常运转，
@@ -932,30 +945,7 @@ public partial class MainActivity : Activity
             TopMargin = UiScale.Px(48),
         });
 
-        // 3. 底部节目单（vc53：官方接口有数据才显示，没数据不硬造；
-        // v22 第 13 项·z 序修正：节目单条先入根布局，抽屉盖板永远压在其上，绝不叠字）
-        _epgPanel = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        _epgPanel.SetBackgroundColor(InkTranslucency.PanelColor(this));
-        _epgPanel.SetPadding(UiScale.Px(36), UiScale.Px(18), UiScale.Px(36), UiScale.Px(22)); // #15 尺寸令
-        _epgPanel.Visibility = ViewStates.Gone;
-        _epgNow = new TextView(this) { TextSize = UiScale.Item };
-        _epgNow.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(_epgNow);
-        // 老板令 2026-11-17：节目单条挂实时水位——上下排列（节目名+画面时刻 / 实时水位 / 接下来），
-        // 与抽屉页头同源同拍（同一 BufferedMsNow 读数），秒泵跟刷
-        _epgWater = new TextView(this) { TextSize = UiScale.Caption };
-        _epgWater.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(_epgWater);
-        _epgNext = new TextView(this) { TextSize = UiScale.Caption };
-        _epgNext.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(_epgNext);
-        _epgPanel.AddView(_epgNow);
-        _epgPanel.AddView(_epgWater);
-        _epgPanel.AddView(_epgNext);
-        _root.AddView(_epgPanel, new FrameLayout.LayoutParams(-2, -2)
-        {
-            Gravity = GravityFlags.Bottom | GravityFlags.Left,
-        });
+        // 3. 底部节目单条已拆（2026-11-27 真机反馈第10条：手机端只留控制条节目名行，节目信息走 RefreshControlBarInfo）
 
         // 4. 频道抽屉（vc53：水墨面板盖画面，宽度随内容、左贴、上下全高）
         // 手机版整改令 2026-11-27：抽屉底改近实色水墨（原 PanelColor 透明度 76 在亮台标上叠字不可读）；
@@ -1091,8 +1081,8 @@ public partial class MainActivity : Activity
         _listPage.Visibility = ViewStates.Visible;
         _onPlayerPage = false;
         UpdateScrim(); // 手机版整改令：抽屉开着亮遮罩（点外关闭）
+        ApplyListTopInset(); // 2026-11-27 真机反馈：列表页文字避开挖孔/状态栏（顶部安全区留白）
         UpdateWaterLevel(); // 老板令 2026-11-16：呼出即刷实时水位，不等下一拍
-        SuppressEpgForDrawer(); // v22 第 13 项：抽屉打开先收节目单条，叠字从根上清掉
         if (_list.Adapter is ChannelListAdapter adapter)
         {
             adapter.Refresh(_favorites, _tab);
@@ -1120,8 +1110,6 @@ public partial class MainActivity : Activity
         // 播放页已就绪而 Surface 就绪（返回再进场景）：补挂输出面
         if (_textureSurface is { } surface)
             _manager.Current?.AttachSurface(surface.Handle);
-        // v22 第 13 项：关抽屉后重新亮出节目单条（本台拉到过数据才亮），按 7 秒计时收起
-        if (_epgHasData) ShowEpgBar();
     }
 
     /// <summary>vc53 口径：退出确认弹窗开着=取消继续播放；列表开着=先收抽屉回画面（不强制起播，
@@ -1437,27 +1425,15 @@ public partial class MainActivity : Activity
         _veilCountdown = null;
     }
 
-    // —— 底部节目单（vc53 B 包第 14 项：官方接口，没数据不硬造） ———
+    // —— 节目信息（2026-11-27 真机反馈第10条：底部节目单条已拆，只留控制条节目名行）———
 
-    /// <summary>换台即刷新：先清空+隐藏旧节目单条，后台拉官方节目单，有数据才亮底部节目区并按 7 秒计时收起；
-    /// 失败/映射外/无数据静默隐藏（vc53 RefreshEpg 同口径）。
-    /// vc82 收编评估（2026-11-16）：不进调度器不过车道——节目单是换台即显的界面直拉路（当前壳序号作废旧账、
-    /// 结果回主线程泵），进调度器会被长轮次（预检轮 10 分钟级）压住晚到不可接受；请求自带 6 秒超时、
-    /// 失败静默、单请求低频，不构成抢网面。开机默认台焐热同理保持内联（开机链路顺序定死，不是后台路）。</summary>
+    /// <summary>换台即刷新：后台拉官方节目单，只喂控制条节目名行（RefreshControlBarInfo）；
+    /// 失败/映射外/无数据静默降级为只显画面时刻（vc53 RefreshEpg 同口径）。</summary>
     private void RefreshEpg(Channel ch)
     {
         int seq = ++_epgSeq;
-        _epgHasData = false;
-        CancelEpgAutoHide();
-        if (_epgPanel != null)
-        {
-            _epgNow!.Text = "";
-            _epgWater!.Text = ""; // 老板令 2026-11-17：换台清节目单条，水位行一并清
-            _epgNext!.Text = "";
-            _epgPanel.Visibility = ViewStates.Gone;
-        }
         _epgNowTitle = null;
-        _lastEpgClock = "";
+        RefreshControlBarInfo();
         _ = Task.Run(() =>
         {
             (CntvEpgClient.Entry Now, List<CntvEpgClient.Entry> Next)? result = null;
@@ -1465,59 +1441,11 @@ public partial class MainActivity : Activity
             catch { /* 官方接口失败按无数据，不硬造 */ }
             _main.Post(() =>
             {
-                if (seq != _epgSeq || _epgPanel is null) return; // 换台后旧节目单作废
-                if (result is null)
-                {
-                    // 老板令 2026-11-17 EPG 播放页联动：官方缺表降级出卡只显画面时刻（不再整条隐藏）；
-                    // _epgHasData 维持 false——缺表卡是一次性提示，抽屉收起后不复活
-                    _epgNowTitle = null;
-                    UpdateEpgClock();
-                    ShowEpgBar();
-                    return;
-                }
-                var (now, next) = result.Value;
-                string Clock(DateTime t) => t.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
-                // 老板令 2026-11-17 EPG 播放页联动：节目单条改显「当前节目名 + 画面时刻」，画面时刻随水位秒泵跟刷
-                _epgNowTitle = now.Title;
-                _epgHasData = true;
-                UpdateEpgClock();
-                var upcoming = next.Take(2).ToList();
-                _epgNext!.Text = upcoming.Count > 0
-                    ? string.Join("   ", upcoming.Select(p => $"{Clock(p.Start)} {p.Title}"))
-                    : "";
-                _epgNext.Visibility = upcoming.Count > 0 ? ViewStates.Visible : ViewStates.Gone;
-                ShowEpgBar();
+                if (seq != _epgSeq) return; // 换台后旧节目单作废
+                _epgNowTitle = result?.Now.Title;
+                RefreshControlBarInfo();
             });
         });
-    }
-
-    /// <summary>v22 第 12 项：节目单条亮出并按 7 秒无操作计时自动收起（换台刷新即重计）。</summary>
-    private void ShowEpgBar()
-    {
-        if (_epgPanel is null) return;
-        _epgPanel.Visibility = ViewStates.Visible;
-        CancelEpgAutoHide();
-        _epgHidePending = () =>
-        {
-            if (_epgPanel != null && !_listOpen) _epgPanel.Visibility = ViewStates.Gone;
-        };
-        _main.PostDelayed(_epgHidePending, EpgAutoHideMs);
-    }
-
-    private void CancelEpgAutoHide()
-    {
-        if (_epgHidePending != null)
-        {
-            _main.RemoveCallbacks(_epgHidePending);
-            _epgHidePending = null;
-        }
-    }
-
-    /// <summary>v22 第 13 项：抽屉打开先收节目单条（隐藏+停计时），节目单条压在抽屉下且不叠字。</summary>
-    private void SuppressEpgForDrawer()
-    {
-        CancelEpgAutoHide();
-        if (_epgPanel != null) _epgPanel.Visibility = ViewStates.Gone;
     }
 
     private void AttachSurfaceIfShown()
@@ -1563,16 +1491,17 @@ public partial class MainActivity : Activity
         _scrim.Visibility = need ? ViewStates.Visible : ViewStates.Gone;
     }
 
-    /// <summary>画面等比适配：视频区按 16:9 contain 居中（竖屏上下留边、横屏左右留边）。
-    /// 直播流主流 16:9，非 16:9 源按 16:9 框适配（v1 口径，真机验收后按需接内核视频尺寸回调）。</summary>
+    /// <summary>画面等比拉满（2026-11-27 真机反馈第5条）：竖屏满宽（高 16:9 上下黑边）、横屏满高（宽 16:9 外溢裁切）。
+    /// 直播流主流 16:9，非 16:9 源按 16:9 框适配（真机验收后按需接内核视频尺寸回调）。</summary>
     private void ApplyVideoAspect()
     {
         if (_videoView is null || _playerPage is null) return;
         int w = _playerPage.Width, h = _playerPage.Height;
         if (w <= 0 || h <= 0) return;
         const double target = 16.0 / 9.0;
-        double vh = w / target, vw = (double)w;
-        if (vh > h) { vh = h; vw = h * target; }
+        double vw, vh;
+        if (w >= h) { vh = h; vw = h * target; }   // 横屏：满高，宽按 16:9 外溢（左右裁切）
+        else { vw = w; vh = w / target; }          // 竖屏：满宽，高按 16:9（上下黑边）
         _videoView.LayoutParameters = new FrameLayout.LayoutParams((int)vw, (int)vh)
         { Gravity = GravityFlags.Center };
     }
@@ -1595,6 +1524,7 @@ public partial class MainActivity : Activity
         ApplyVideoAspect();
         RebuildControlBar();
         ApplyListWidth(_channels); // 定宽令 2026-11-27：竖屏全屏/横屏 480dp，转屏即定（不依赖内容）
+        PositionHud(); // vc110：指示条落位随转屏重算（竖屏顶部黑区/横屏右侧黑区）
         _main.Post(ApplyVideoAspect);
     }
 
@@ -1676,8 +1606,7 @@ public partial class MainActivity : Activity
     }
 
     private string _lastWaterText = ""; // 上一拍页头第二行文案（水位+画面时刻）：读数不可靠期间保持显示，不闪归零（vc85 水位跟手令）
-    private string _lastEpgClock = "";  // 上一拍节目单条画面时刻：读数不可靠期间保持显示（老板令 2026-11-17 EPG 播放页联动）
-    private string? _epgNowTitle;       // 当前节目名：null=官方缺表降级（节目单条只显画面时刻）
+    private string? _epgNowTitle;       // 当前节目名：null=官方缺表降级（控制条只显画面时刻）
 
     /// <summary>当前画面水位读数单点：无会话按 0 计；读数不可靠（重接/换票/准备期）返回 null，各显示点自行保持上一拍。</summary>
     private long? BufferedMsNow()
@@ -1711,24 +1640,8 @@ public partial class MainActivity : Activity
     private static string HeadlineLine(long bufferedMs) =>
         $"实时水位：{(int)Math.Round(bufferedMs / 1000.0)}秒 · 画面时刻：{PictureClock(bufferedMs)}";
 
-    /// <summary>播放页节目单条跟刷（老板令 2026-11-17 EPG 播放页联动）：当前节目名+画面时刻，
-    /// 官方缺表降级只显时刻；两读数与抽屉页头同源同拍，不错位。
-    /// 老板令 2026-11-17：节目单条再挂实时水位（上下排列），同一读数同拍跟刷。</summary>
-    private void UpdateEpgClock()
-    {
-        if (_epgNow is null) return;
-        long? bufferedMs = BufferedMsNow();
-        if (bufferedMs is null)
-        {
-            if (_lastEpgClock.Length > 0) _epgNow.Text = EpgNowLine(_lastEpgClock); // 读不出：保持上一拍
-            return;
-        }
-        _lastEpgClock = PictureClock(bufferedMs.Value);
-        _epgNow.Text = EpgNowLine(_lastEpgClock);
-        if (_epgWater is { } water) water.Text = $"实时水位：{(int)Math.Round(bufferedMs.Value / 1000.0)}秒";
-    }
-
-    private string EpgNowLine(string clock) => (_epgNowTitle is { } title ? $"{title}  ·  " : "") + $"画面时刻：{clock}";
+    /// <summary>控制条节目名行跟刷（2026-11-27 真机反馈第10条：底部节目单条已拆，节目名+画面时刻走控制条）。</summary>
+    private void UpdateEpgClock() => RefreshControlBarInfo();
 
     private bool _waterPumpRunning;
     private long? _stableSinceMs; // 水位连续高于 15 秒线的起算点（TickCount64 口径）
@@ -1780,7 +1693,7 @@ public partial class MainActivity : Activity
                 if (_watchdogStopped) return; // OnDestroy 后停泵：不泄漏 Activity
                 UpdateWaterStable(); // vc86：每拍驱动放行闸（在 UI 刷数之前，车道先知稳不稳）
                 if (_listOpen) UpdateWaterLevel();
-                else UpdateEpgClock(); // EPG 播放页联动令：抽屉关着时节目单条画面时刻秒级跟刷（抽屉开着节目单条已收起，无需刷）
+                else UpdateEpgClock(); // 控制条节目名行秒级跟刷（2026-11-27 第10条：底部节目单条已拆）
                 PumpWater();
             }, 1000);
         }
@@ -1861,61 +1774,7 @@ public partial class MainActivity : Activity
             }
         }
 
-        // 自诊断面板：返回/菜单=关闭；上下=滚动（单按近一屏、长按连滚）；左右=两钮移焦点；确认=点当前钮
-        if (_diagOverlay != null)
-        {
-            switch (keyCode)
-            {
-                case Keycode.Back or Keycode.Menu:
-                    CloseDiagPanel();
-                    return true;
-                case Keycode.DpadUp or Keycode.DpadDown when _diagScroll != null:
-                {
-                    int dir = keyCode == Keycode.DpadUp ? -1 : 1;
-                    if (e is { RepeatCount: 0 })
-                        _diagScroll.SmoothScrollBy(0, dir * (int)(_diagScroll.Height * 0.8f));
-                    else
-                        _diagScroll.ScrollBy(0, dir * Dp(56));
-                    return true;
-                }
-                case Keycode.DpadLeft or Keycode.DpadRight when _diagExportBtn != null && _diagCloseBtn != null:
-                    (CurrentFocus == _diagExportBtn ? _diagCloseBtn : _diagExportBtn).RequestFocus();
-                    return true;
-                case Keycode.DpadCenter or Keycode.Enter:
-                    (CurrentFocus as TextView)?.PerformClick();
-                    return true;
-                default:
-                    return true; // 不穿透，防误触底层键位
-            }
-        }
-
-        // 崩溃日志面板（自管全屏）：键位同自诊断——上下滚日志、左右移两钮、确认点当前钮、其余吞掉
-        if (_crashOverlay != null)
-        {
-            switch (keyCode)
-            {
-                case Keycode.Back or Keycode.Menu:
-                    CloseCrashPanel();
-                    return true;
-                case Keycode.DpadUp or Keycode.DpadDown when _crashScroll != null:
-                {
-                    int dir = keyCode == Keycode.DpadUp ? -1 : 1;
-                    if (e is { RepeatCount: 0 })
-                        _crashScroll.SmoothScrollBy(0, dir * (int)(_crashScroll.Height * 0.8f));
-                    else
-                        _crashScroll.ScrollBy(0, dir * Dp(56));
-                    return true;
-                }
-                case Keycode.DpadLeft or Keycode.DpadRight when _crashCleanBtn != null && _crashCloseBtn != null:
-                    (CurrentFocus == _crashCleanBtn ? _crashCloseBtn : _crashCleanBtn).RequestFocus();
-                    return true;
-                case Keycode.DpadCenter or Keycode.Enter:
-                    (CurrentFocus as TextView)?.PerformClick();
-                    return true;
-                default:
-                    return true; // 不穿透，防误触底层键位
-            }
-        }
+        // 自诊断/崩溃日志独立弹层已撤（v26 原型重做：并进设置页诊断卡片三页签，键位走设置面板分支）
 
         // 关于面板（v47 开源合规）：键位同自诊断——上下滚许可文本、确认点「关闭」、其余吞掉；单钮无左右移焦
         if (_licenseOverlay != null)
@@ -2046,8 +1905,7 @@ public partial class MainActivity : Activity
         {
             // 铁律：任何时刻最多一个层——设置面板开着才允许收起；列表/弹窗/其他面板开着时设置键不生效
             if (_settingsPanelOpen) ToggleSettingsPanel();
-            else if (_exitDialog == null && !_listOpen && _advOverlay == null && _diagOverlay == null
-                     && _crashOverlay == null && _licenseOverlay == null)
+            else if (_exitDialog == null && !_listOpen && _advOverlay == null && _licenseOverlay == null)
                 ToggleSettingsPanel();
             return true;
         }
@@ -2383,6 +2241,54 @@ public partial class MainActivity : Activity
             ? Math.Min(UiScale.Px(480), Resources.DisplayMetrics!.WidthPixels) // 横屏定宽 480dp，窄屏钳到屏宽
             : Resources.DisplayMetrics!.WidthPixels; // 竖屏固定全屏
         _listPage.LayoutParameters = new FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MatchParent, GravityFlags.Left);
+    }
+
+    /// <summary>列表页顶部安全区避让（2026-11-27 真机反馈：竖屏文字避开挖孔）：页头/页签/筛选框整体
+    /// 下移到挖孔与状态栏之下，至少留 12dp 呼吸边。每次呼出重算（转屏/分屏后 inset 会变）。</summary>
+    private void ApplyListTopInset()
+    {
+        int top = UiScale.Px(12);
+        if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } insets)
+        {
+            int cutout = insets.GetInsets(WindowInsets.Type.DisplayCutout()).Top;
+            int status = insets.GetInsets(WindowInsets.Type.StatusBars()).Top;
+            top = Math.Max(top, Math.Max(cutout, status));
+        }
+        _listPage.SetPadding(0, top, 0, 0);
+    }
+
+    // —— 预测式返回（2026-11-27 真机反馈第7条：去「再次滑动返回」二次确认，滑一次即走） ———
+
+    private Java.Lang.Object? _backCallback; // 持引用防 GC 回收（Java 侧注册的是代理对象）
+
+    /// <summary>API 33+ 注册系统返回回调：横屏=退全屏回竖屏，竖屏=退出确认（与返回键同路）；
+    /// 旧系统走 OnKeyDown 原路，行为一致。</summary>
+    private void RegisterPredictiveBack()
+    {
+        if (!OperatingSystem.IsAndroidVersionAtLeast(33)) return;
+        var callback = new BackInvokerCallback(HandleSystemBack);
+        _backCallback = callback;
+        OnBackInvokedDispatcher!.RegisterOnBackInvokedCallback(
+            Android.Window.IOnBackInvokedDispatcher.PriorityDefault, callback);
+    }
+
+    private void HandleSystemBack()
+    {
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+        if (landscape)
+        {
+            RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏退全屏回竖屏
+            ShowToast("竖屏");
+        }
+        else
+        {
+            ExitOrCollapseList(); // 竖屏：列表开着先收，播放页弹退出确认
+        }
+    }
+
+    private sealed class BackInvokerCallback(Action onBack) : Java.Lang.Object, Android.Window.IOnBackInvokedCallback
+    {
+        public void OnBackInvoked() => onBack();
     }
 
     /// <summary>健康点刷新节流（方案书收口批②：更新节流 5 秒）。只读账刷新展示，不写账。

@@ -25,7 +25,7 @@ namespace TaoLive.Phone;
 public partial class MainActivity
 {
     private LinearLayout? _controlBar;
-    private TextView? _lockBtn;
+    private LockIconView? _lockBtn;
     private TextView? _cbTitle;    // 控制条行1：台名
     private TextView? _cbReadout;  // 控制条行1：水位·画面时刻
     private TextView? _cbProgram;  // 控制条行2：节目单（横屏并入行1）
@@ -38,7 +38,9 @@ public partial class MainActivity
     private HudIconView? _hudIcon;
     private View? _hudFill;                    // 竖条填充（高度=音量/亮度比例）
     private Java.Lang.Runnable? _hudHide;
-    private const int HudTrackDp = 160;        // 竖条轨道高（dp，390 基准）
+    private const int HudTrackDp = 110;        // 竖条轨道高（dp，390 基准；vc110 老板令「悬浮指示条缩小」160→110）
+    private const int HudIconDp = 24;          // 指示图标边长（vc110 缩小 30→24）
+    private const int HudTrackWidthDp = 8;     // 竖条轨道宽（vc110 缩小 10→8）
     private AudioManager? _audio;
     private float _brightness = 0.5f;          // 0.05–1，持久记忆
     private Java.Lang.Runnable? _brightnessSave; // 亮度落盘防抖
@@ -53,8 +55,9 @@ public partial class MainActivity
 
         _gesture = new GestureDetector(this, new PhoneGestureListener(this));
 
-        // 手势挂视频载体：单击/滑动/长按全在这层（列表抽屉/面板开着时被盖住，天然不抢）
-        _videoView.Touch += (_, e) =>
+        // vc110 老板令「整屏高度都是触控区」：手势挂播放页整层（视频+黑边全收），
+        // 控制条/抽屉/面板开着时各自消费自己的触摸，天然不抢
+        _playerPage.Touch += (_, e) =>
         {
             e.Handled = _gesture!.OnTouchEvent(e.Event!);
         };
@@ -76,7 +79,7 @@ public partial class MainActivity
         col.SetPadding(UiScale.Px(28), UiScale.Px(20), UiScale.Px(28), UiScale.Px(20));
 
         _hudIcon = new HudIconView(this);
-        col.AddView(_hudIcon, new LinearLayout.LayoutParams(UiScale.Px(30), UiScale.Px(30)) { Gravity = GravityFlags.CenterHorizontal });
+        col.AddView(_hudIcon, new LinearLayout.LayoutParams(UiScale.Px(HudIconDp), UiScale.Px(HudIconDp)) { Gravity = GravityFlags.CenterHorizontal });
 
         var gap = new View(this);
         col.AddView(gap, new LinearLayout.LayoutParams(1, UiScale.Px(12)));
@@ -95,12 +98,39 @@ public partial class MainActivity
         track.AddView(_hudFill, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent, UiScale.Px(3)) { Gravity = GravityFlags.Bottom });
 
-        col.AddView(track, new LinearLayout.LayoutParams(UiScale.Px(10), UiScale.Px(HudTrackDp)));
+        col.AddView(track, new LinearLayout.LayoutParams(UiScale.Px(HudTrackWidthDp), UiScale.Px(HudTrackDp)));
         _hud.AddView(col);
         _hud.Visibility = ViewStates.Gone;
+        PositionHud();
         _playerPage.AddView(_hud, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
         { Gravity = GravityFlags.Center });
+    }
+
+    /// <summary>悬浮指示条落位（vc110 老板令「移到黑区显示，不压画面」）：竖屏=顶部黑区居中，
+    /// 横屏=右侧黑区竖向居中（画面满高后左右留黑边）。转屏重算。</summary>
+    internal void PositionHud()
+    {
+        if (_hud is null || _playerPage is null) return;
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+        var lp = _hud.LayoutParameters as FrameLayout.LayoutParams;
+        if (lp is null)
+        {
+            lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
+            _hud.LayoutParameters = lp;
+        }
+        if (landscape)
+        {
+            lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Right;
+            lp.RightMargin = UiScale.Px(16);
+        }
+        else
+        {
+            lp.Gravity = GravityFlags.CenterHorizontal | GravityFlags.Top;
+            lp.TopMargin = UiScale.Px(24);
+            lp.RightMargin = 0;
+        }
     }
 
     /// <summary>竖条悬浮指示：kind 选图标，fraction 0–1 定填充高；700ms 无操作自动收。</summary>
@@ -136,16 +166,6 @@ public partial class MainActivity
         _main.PostDelayed(_brightnessSave, 600);
     }
 
-    private void StepVolume(int dir)
-    {
-        if (_audio is null) return;
-        int max = _audio.GetStreamMaxVolume(Android.Media.Stream.Music);
-        int step = Math.Max(1, max / 10); // 老板令：一次 ±10（按 0–100 口径折算刻度）
-        int idx = Math.Clamp(_audio.GetStreamVolume(Android.Media.Stream.Music) + dir * step, 0, max);
-        // 老板令「直接用手机的」：音量指示交系统音量条，应用不自绘（2026-11-27）
-        _audio.SetStreamVolume(Android.Media.Stream.Music, idx, VolumeNotificationFlags.ShowUi);
-    }
-
     // —— 控制条（原型 v19–v26：三行结构/两端分组/单色图标 + 音量按钮） ———
 
     private void BuildControlBar()
@@ -172,7 +192,12 @@ public partial class MainActivity
 
         if (!landscape)
         {
-            _cbProgram = new TextView(this) { TextSize = UiScale.Caption, Ellipsize = TextUtils.TruncateAt.End };
+            _cbProgram = new TextView(this)
+            {
+                TextSize = UiScale.Caption,
+                Ellipsize = TextUtils.TruncateAt.End,
+                Gravity = GravityFlags.End, // vc110 老板令：节目名右对齐，右缘与「实时水位」读数对齐（不再像台名硬换行）
+            };
             _cbProgram.SetSingleLine(true);
             _cbProgram.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(_cbProgram);
@@ -183,7 +208,8 @@ public partial class MainActivity
             _cbProgram = null; // 横屏节目单并入信息行（v25），由 RefreshControlBarInfo 拼接
         }
 
-        // 按钮行：两端分组（v21）——左组切台、右组功能+音量；中间留白撑开
+        // 按钮行：两端分组（v21）——左组切台、右组功能；中间留白撑开
+        // vc110 老板令：音量加减按钮全删（横竖屏都删，音量走手势/系统键）
         var btnRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         btnRow.SetGravity(GravityFlags.CenterVertical);
         var left = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
@@ -210,48 +236,36 @@ public partial class MainActivity
 
         AddBtn(right, "☰", (_, _) => { HideControlBar(); ShowList(); });
         AddBtn(right, "⚙\uFE0E", (_, _) => { HideControlBar(); OpenSettingsPanel(); });
-        AddBtn(right, "⟳", (_, _) =>
+
+        // 翻转按钮（vc110 老板令：⟳ 换两枚图标——竖屏显「进全屏」、横屏显「返回竖屏」，自绘单色同风格）
+        var flipBtn = new FullscreenIconView(this)
+        {
+            Kind = landscape ? FullscreenIconView.IconKind.ExitFullscreen : FullscreenIconView.IconKind.EnterFullscreen,
+        };
+        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(44)); // 定高按钮：与文字钮同热区
+        flipBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
+        flipBtn.Click += (_, _) =>
         {
             bool land = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
             RequestedOrientation = land ? ScreenOrientation.SensorPortrait : ScreenOrientation.SensorLandscape;
             ShowToast(land ? "竖屏" : "横屏");
-        });
-        var lockBtn = new TextView(this) { Gravity = GravityFlags.Center, TextSize = UiScale.Item };
-        lockBtn.SetHeight(UiScale.Px(44));
-        lockBtn.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(lockBtn);
+        };
+        right.AddView(flipBtn);
+
+        // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
+        var lockBtn = new LockIconView(this);
+        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(44)); // 定高按钮：与文字钮同热区
         lockBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
         right.AddView(lockBtn);
 
-        if (!landscape)
-        {
-            // 竖屏：8 钮单行实测约 504dp > 390dp 基准可用宽，音量两钮被裁出屏（2026-11-27 走查实锤，一票重扣级）——
-            // 拆两行：行1 两端分组（左组切台 | 右组功能），行2 音量右对齐（与右组右缘对齐）；音量指示已改走系统音量条（2026-11-27 老板令）
-            btnRow.AddView(left);
-            var space = new View(this);
-            btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
-            btnRow.AddView(right);
-            _controlBar.AddView(btnRow);
-
-            var volRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-            volRow.SetGravity(GravityFlags.End);
-            AddBtn(volRow, "音量−", (_, _) => StepVolume(-1));
-            AddBtn(volRow, "音量+", (_, _) => StepVolume(1));
-            _controlBar.AddView(volRow);
-        }
-        else
-        {
-            // 横屏：可用宽约 914dp，8 钮单行两端分组放得下（v21/v26 口径不变）
-            AddBtn(right, "音量−", (_, _) => StepVolume(-1));
-            AddBtn(right, "音量+", (_, _) => StepVolume(1));
-            btnRow.AddView(left);
-            var space = new View(this);
-            btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
-            btnRow.AddView(right);
-            _controlBar.AddView(btnRow);
-        }
+        // vc110：音量按钮删除后竖屏 6 钮单行放得下，两行拆分口径退场
+        btnRow.AddView(left);
+        var space = new View(this);
+        btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
+        btnRow.AddView(right);
+        _controlBar.AddView(btnRow);
 
         RefreshLockButton();
         _controlBar.Visibility = ViewStates.Gone;
@@ -308,7 +322,7 @@ public partial class MainActivity
     }
 
     /// <summary>方向锁：锁=钉当前方向（横=SensorLandscape 竖=SensorPortrait），解锁=FullUser 随传感器；
-    /// 写偏好跨启动记忆。</summary>
+    /// 写偏好跨启动记忆。vc110：提示与图标配套三态（解锁/锁横屏/锁竖屏）。</summary>
     private void ToggleOrientationLock()
     {
         _orientationLocked = !_orientationLocked;
@@ -317,7 +331,12 @@ public partial class MainActivity
         editor?.Apply();
         ApplyOrientationLock();
         RefreshLockButton();
-        ShowToast(_orientationLocked ? "方向已锁定" : "方向已解锁");
+        if (!_orientationLocked) ShowToast("方向已解锁");
+        else
+        {
+            bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+            ShowToast(landscape ? "已锁定横屏" : "已锁定竖屏");
+        }
     }
 
     private void ApplyOrientationLock()
@@ -335,7 +354,15 @@ public partial class MainActivity
 
     private void RefreshLockButton()
     {
-        if (_lockBtn is { } b) b.Text = _orientationLocked ? "已锁" : "锁";
+        if (_lockBtn is { } b)
+        {
+            if (!_orientationLocked) b.Kind = LockIconView.IconKind.Unlocked;
+            else
+            {
+                bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+                b.Kind = landscape ? LockIconView.IconKind.LockLandscape : LockIconView.IconKind.LockPortrait;
+            }
+        }
     }
 
     /// <summary>控制条显收：单击画面切换，3 秒自动收；抽屉/面板开着不出。</summary>
@@ -373,12 +400,14 @@ public partial class MainActivity
         _main.PostDelayed(_controlBarHide, 3000);
     }
 
-    /// <summary>触屏手势监听（2026-11-27 整改令）：单击=控制条；左右滑=切台（左=上一台、右=下一台，
-    /// 老板令「左上右下」；慢拖 OnScroll 累计触发，不只认快滑）；上下滑按半区=亮度（左）/音量（右）；
-    /// 长按=收藏/取消当前台。滑动阈值 96dp。</summary>
+    /// <summary>触屏手势监听（2026-11-27 整改令 + vc110 老板令）：单击=控制条；左右滑=切台（左=上一台、右=下一台，
+    /// 老板令「左上右下」；慢拖 OnScroll 累计触发，不只认快滑）；上下滑按半区=亮度（左）/音量（右），
+    /// 行程按整屏高（vc110 老板令「行程=整屏高」）；边缘手势（vc110 老板令）：左边缘右滑=呼出列表页（横竖屏一致）、
+    /// 右边缘左滑=横屏退全屏/竖屏出退出确认；长按=收藏/取消当前台。滑动阈值 96dp。</summary>
     private sealed class PhoneGestureListener(MainActivity host) : GestureDetector.SimpleOnGestureListener
     {
         private const float SwipeMinDp = 96f;
+        private const float EdgeDp = 28f; // 边缘判定带宽：起点落在左右边缘此带宽内走边缘手势，不切台
 
         private float _startX, _startY, _lastY;
         private bool _fired;        // 本次手势已触发切台（一次滑动只切一台）
@@ -416,6 +445,28 @@ public partial class MainActivity
             });
         }
 
+        /// <summary>横向滑动分流：边缘手势优先（vc110），其余=切台。命中返回 true 已消费。</summary>
+        private bool HandleHorizontal(float dx, float dy)
+        {
+            if (!(Dp(Math.Abs(dx)) > SwipeMinDp && Math.Abs(dx) > Math.Abs(dy) * 1.2f)) return false;
+            float w = host.Resources!.DisplayMetrics!.WidthPixels;
+            bool fromLeft = _startX <= Dp(EdgeDp) && dx > 0;   // 左边缘右滑
+            bool fromRight = _startX >= w - Dp(EdgeDp) && dx < 0; // 右边缘左滑
+            if (!fromLeft && !fromRight) return false;
+            _fired = true;
+            host.RunOnUiThread(() =>
+            {
+                if (fromLeft) { host.HideControlBar(); host.ShowList(); }
+                else if (host.Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape)
+                {
+                    host.RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏：退全屏回竖屏
+                    host.ShowToast("竖屏");
+                }
+                else host.ConfirmExit(); // 竖屏：出退出确认（再确认才退）
+            });
+            return true;
+        }
+
         public override bool OnScroll(MotionEvent? e1, MotionEvent? e2, float distanceX, float distanceY)
         {
             if (e1 is null || e2 is null || _fired) return true;
@@ -424,6 +475,7 @@ public partial class MainActivity
 
             if (_vMode == 0)
             {
+                if (HandleHorizontal(dx, dy)) return true;
                 if (Dp(Math.Abs(dx)) > SwipeMinDp && Math.Abs(dx) > Math.Abs(dy) * 1.2f)
                 {
                     _fired = true;
@@ -439,7 +491,7 @@ public partial class MainActivity
 
             if (_vMode == 1)
             {
-                float delta = (_lastY - e2.GetY()) / (host.Resources!.DisplayMetrics!.HeightPixels * 0.6f); // 上滑增
+                float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels; // vc110：行程=整屏高
                 host.RunOnUiThread(() => host.SetBrightness(host._brightness + delta));
             }
             else if (_vMode == 2)
@@ -447,7 +499,7 @@ public partial class MainActivity
                 if (host._audio is { } audio)
                 {
                     int max = audio.GetStreamMaxVolume(Android.Media.Stream.Music);
-                    float delta = (_lastY - e2.GetY()) / (host.Resources!.DisplayMetrics!.HeightPixels * 0.6f) * max;
+                    float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels * max; // vc110：行程=整屏高
                     _volAccum += delta;
                     if (Math.Abs(_volAccum) >= 1f)
                     {
@@ -470,6 +522,7 @@ public partial class MainActivity
             if (e1 is null || e2 is null || _fired) return true;
             float dx = e2.GetX() - _startX;
             float dy = e2.GetY() - _startY;
+            if (HandleHorizontal(dx, dy)) return true;
             if (Dp(Math.Abs(dx)) < SwipeMinDp || Math.Abs(dx) < Math.Abs(dy)) return true;
             _fired = true;
             host.RunOnUiThread(() => host.SwitchChannel(dx < 0 ? -1 : 1)); // 左=上一台，右=下一台
@@ -530,6 +583,102 @@ public partial class MainActivity
                     canvas.DrawLine(w / 2f, h * 0.04f, w / 2f, h * 0.16f, _stroke);
                 }
             }
+        }
+    }
+
+    /// <summary>翻转按钮图标（vc110 老板令）：竖屏显「进全屏」（四角外扩+外向箭头）、横屏显「返回竖屏」
+    /// （四角内收+内向箭头），单色自绘，与 ☰ ⚙ 同风格同热区。</summary>
+    private sealed class FullscreenIconView : View
+    {
+        internal enum IconKind { EnterFullscreen, ExitFullscreen }
+        private IconKind _kind = IconKind.EnterFullscreen;
+        private readonly Paint _stroke = new(PaintFlags.AntiAlias) { StrokeCap = Paint.Cap.Round, StrokeJoin = Paint.Join.Round };
+
+        public FullscreenIconView(Context context) : base(context) => _stroke.SetStyle(Paint.Style.Stroke);
+
+        internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
+
+        protected override void OnDraw(Canvas? canvas)
+        {
+            if (canvas is null || Context is null) return;
+            _stroke.Color = InkTranslucency.TextPrimary(Context);
+            _stroke.StrokeWidth = Math.Max(Width, Height) * 0.08f;
+            float w = Width, h = Height;
+            float inset = w * 0.14f, len = w * 0.22f;
+            // 四角括号
+            canvas.DrawLines(new float[]
+            {
+                inset, inset + len, inset, inset,
+                inset, inset, inset + len, inset,
+                w - inset - len, inset, w - inset, inset,
+                w - inset, inset, w - inset, inset + len,
+                w - inset, h - inset - len, w - inset, h - inset,
+                w - inset, h - inset, w - inset - len, h - inset,
+                inset + len, h - inset, inset, h - inset,
+                inset, h - inset, inset, h - inset - len,
+            }, _stroke);
+            // 中央箭头：进全屏朝右上外扩、返回竖屏朝左下内收
+            float cx = w / 2f, cy = h / 2f, a = w * 0.15f;
+            if (_kind == IconKind.EnterFullscreen)
+            {
+                canvas.DrawLines(new float[]
+                {
+                    cx - a, cy + a, cx + a, cy - a,
+                    cx + a, cy - a, cx + a * 0.4f, cy - a,
+                    cx + a, cy - a, cx + a, cy - a * 0.4f,
+                }, _stroke);
+            }
+            else
+            {
+                canvas.DrawLines(new float[]
+                {
+                    cx + a, cy - a, cx - a, cy + a,
+                    cx - a, cy + a, cx - a * 0.4f, cy + a,
+                    cx - a, cy + a, cx - a, cy + a * 0.4f,
+                }, _stroke);
+            }
+        }
+    }
+
+    /// <summary>锁定按钮图标（vc110 老板令）：解锁=开锁（锁梁右腿翘起）、锁定横屏=横屏锁（锁+横条小屏）、
+    /// 锁定竖屏=竖屏锁（锁+竖条小屏），单色自绘，与 ☰ ⚙ 同风格同热区。</summary>
+    private sealed class LockIconView : View
+    {
+        internal enum IconKind { Unlocked, LockLandscape, LockPortrait }
+        private IconKind _kind = IconKind.Unlocked;
+        private readonly Paint _fill = new(PaintFlags.AntiAlias);
+        private readonly Paint _stroke = new(PaintFlags.AntiAlias) { StrokeCap = Paint.Cap.Round };
+
+        public LockIconView(Context context) : base(context) => _stroke.SetStyle(Paint.Style.Stroke);
+
+        internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
+
+        protected override void OnDraw(Canvas? canvas)
+        {
+            if (canvas is null || Context is null) return;
+            var color = InkTranslucency.TextPrimary(Context);
+            _fill.Color = color;
+            _stroke.Color = color;
+            _stroke.StrokeWidth = Math.Max(Width, Height) * 0.09f;
+            float w = Width, h = Height;
+            // 锁体：圆角矩形（居中偏下）
+            float bw = w * 0.42f, bh = h * 0.32f;
+            float bx = w * 0.42f - bw / 2, by = h * 0.54f;
+            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, bw * 0.2f, bw * 0.2f, _fill);
+            // 锁梁：拱形；解锁=右腿翘起离体，锁定=双腿扣到体上
+            float r = bw * 0.30f;
+            float scx = bx + bw / 2, scy = by;
+            canvas.DrawArc(scx - r, scy - r * 1.7f, scx + r, scy + r * 0.3f, 180f, 180f, false, _stroke);
+            canvas.DrawLine(scx - r, scy - r * 0.7f, scx - r, scy, _stroke);
+            if (_kind == IconKind.Unlocked)
+                canvas.DrawLine(scx + r, scy - r * 0.7f, scx + r, scy - r * 1.3f, _stroke); // 右腿翘起=开
+            else
+                canvas.DrawLine(scx + r, scy - r * 0.7f, scx + r, scy, _stroke);
+            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）
+            if (_kind == IconKind.LockLandscape)
+                canvas.DrawRoundRect(w * 0.76f, h * 0.44f, w * 0.94f, h * 0.62f, 2f, 2f, _fill);
+            else if (_kind == IconKind.LockPortrait)
+                canvas.DrawRoundRect(w * 0.80f, h * 0.36f, w * 0.94f, h * 0.64f, 2f, 2f, _fill);
         }
     }
 }

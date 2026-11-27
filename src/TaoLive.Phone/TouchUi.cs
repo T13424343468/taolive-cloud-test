@@ -1,5 +1,6 @@
 using Android.Content;
 using Android.Graphics;
+using Android.Graphics.Drawables;
 using Android.Content.PM;
 using Android.Media;
 using Android.OS;
@@ -15,7 +16,7 @@ namespace TaoLive.Phone;
 /// - 单击画面=控制条显收（3 秒自动收）；长按=收藏/取消当前台（口径不变）；
 /// - 切台手势纠正（老板令「左上右下」）：横屏左滑=上一台、右滑=下一台；竖屏同构左右滑
 ///   （上下滑让位亮度/音量手势——老板令「参考普通播放器做法」）；支持慢拖（OnScroll 累计）不只认快滑；
-/// - 亮度/音量手势：竖横屏均按左右半区——左半区上下滑=调亮度（持久记忆）、右半区上下滑=调音量，悬浮指示跟手；
+/// - 亮度/音量手势：竖横屏均按左右半区——左半区上下滑=调亮度（持久记忆）、右半区上下滑=调音量；指示=自绘竖条+单色图标跟手（2026-11-27 老板令「滑动还是要、样式也还是要有」）；控制条音量按钮走系统音量条（同日老板令「直接用手机的」）；
 /// - 控制条按原型 v19–v26 重构：三行（台名读数/节目单/按钮两端分组），横屏紧凑两行；
 ///   按钮单色文本图标（去 emoji 彩色呈现）；补音量按钮（老板令：一次 ±10）；
 /// - 方向锁持久化（taolive_prefs:orientation_lock）不变；屏幕亮度记忆（taolive_prefs:screen_brightness）。
@@ -33,9 +34,11 @@ public partial class MainActivity
     private GestureDetector? _gesture;
     private bool _orientationLocked; // 方向锁（持久化）：锁=钉当前方向，解锁=随传感器
 
-    private FrameLayout? _hud;                 // 亮度/音量悬浮指示
-    private TextView? _hudText;
+    private FrameLayout? _hud;                 // 亮度/音量手势悬浮指示（竖条+图标，普通播放器样式，2026-11-27 老板令）
+    private HudIconView? _hudIcon;
+    private View? _hudFill;                    // 竖条填充（高度=音量/亮度比例）
     private Java.Lang.Runnable? _hudHide;
+    private const int HudTrackDp = 160;        // 竖条轨道高（dp，390 基准）
     private AudioManager? _audio;
     private float _brightness = 0.5f;          // 0.05–1，持久记忆
     private Java.Lang.Runnable? _brightnessSave; // 亮度落盘防抖
@@ -60,32 +63,56 @@ public partial class MainActivity
         BuildControlBar();
     }
 
-    // —— 悬浮指示（亮度/音量/音量按钮共用） ————————————————————
+    // —— 亮度/音量（手势自绘竖条；音量按钮走系统音量条，2026-11-27 老板令） ————
 
     private void BuildHud()
     {
         _hud = new FrameLayout(this);
         _hud.SetBackgroundColor(InkTranslucency.PanelColorDeep(this));
-        _hudText = new TextView(this)
-        {
-            Gravity = GravityFlags.Center,
-            TextSize = UiScale.Item,
-        };
-        _hudText.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(_hudText);
-        int hpad = UiScale.Px(28), vpad = UiScale.Px(14);
-        _hudText.SetPadding(hpad, vpad, hpad, vpad);
-        _hud.AddView(_hudText);
+
+        // 竖排：图标在上、竖条在下（普通播放器通行样式，无文字）
+        var col = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
+        col.SetGravity(GravityFlags.Center);
+        col.SetPadding(UiScale.Px(28), UiScale.Px(20), UiScale.Px(28), UiScale.Px(20));
+
+        _hudIcon = new HudIconView(this);
+        col.AddView(_hudIcon, new LinearLayout.LayoutParams(UiScale.Px(30), UiScale.Px(30)) { Gravity = GravityFlags.CenterHorizontal });
+
+        var gap = new View(this);
+        col.AddView(gap, new LinearLayout.LayoutParams(1, UiScale.Px(12)));
+
+        var track = new FrameLayout(this);
+        var trackBg = new GradientDrawable();
+        int trackArgb = new Color(Color.ParseColor(InkTranslucency.TextSecondary)).ToArgb();
+        trackBg.SetColor(Color.Argb(70, (trackArgb >> 16) & 0xFF, (trackArgb >> 8) & 0xFF, trackArgb & 0xFF));
+        trackBg.SetCornerRadius(UiScale.Px(5));
+        track.Background = trackBg;
+
+        var fillBg = new GradientDrawable();
+        fillBg.SetColor(InkTranslucency.TextPrimary(this));
+        fillBg.SetCornerRadius(UiScale.Px(5));
+        _hudFill = new View(this) { Background = fillBg };
+        track.AddView(_hudFill, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, UiScale.Px(3)) { Gravity = GravityFlags.Bottom });
+
+        col.AddView(track, new LinearLayout.LayoutParams(UiScale.Px(10), UiScale.Px(HudTrackDp)));
+        _hud.AddView(col);
         _hud.Visibility = ViewStates.Gone;
         _playerPage.AddView(_hud, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
         { Gravity = GravityFlags.Center });
     }
 
-    private void ShowHud(string text)
+    /// <summary>竖条悬浮指示：kind 选图标，fraction 0–1 定填充高；700ms 无操作自动收。</summary>
+    private void ShowHudBar(HudIconView.IconKind kind, float fraction)
     {
-        if (_hud is null || _hudText is null) return;
-        _hudText.Text = text;
+        if (_hud is null || _hudIcon is null || _hudFill is null) return;
+        _hudIcon.SetKind(kind);
+        float f = Math.Clamp(fraction, 0f, 1f);
+        int fillH = Math.Max((int)(UiScale.Px(HudTrackDp) * f), UiScale.Px(3)); // 0 也留可见头
+        if (_hudFill.LayoutParameters is FrameLayout.LayoutParams lp) lp.Height = fillH;
+        else _hudFill.LayoutParameters = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, fillH) { Gravity = GravityFlags.Bottom };
         _hud.Visibility = ViewStates.Visible;
         if (_hudHide is { } old) _main.RemoveCallbacks(old);
         _hudHide = new Java.Lang.Runnable(() => _hud!.Visibility = ViewStates.Gone);
@@ -98,7 +125,7 @@ public partial class MainActivity
     {
         _brightness = Math.Clamp(value, 0.05f, 1f);
         try { if (Window?.Attributes is { } attr) attr.ScreenBrightness = _brightness; } catch { }
-        ShowHud($"亮度 {_brightness * 100f:F0}%");
+        ShowHudBar(HudIconView.IconKind.Sun, _brightness); // 亮度 0.05–1 直接作比例
         if (_brightnessSave is { } old) _main.RemoveCallbacks(old);
         _brightnessSave = new Java.Lang.Runnable(() =>
         {
@@ -115,8 +142,8 @@ public partial class MainActivity
         int max = _audio.GetStreamMaxVolume(Android.Media.Stream.Music);
         int step = Math.Max(1, max / 10); // 老板令：一次 ±10（按 0–100 口径折算刻度）
         int idx = Math.Clamp(_audio.GetStreamVolume(Android.Media.Stream.Music) + dir * step, 0, max);
-        _audio.SetStreamVolume(Android.Media.Stream.Music, idx, 0); // 0=不出系统音量条，用自绘 HUD
-        ShowHud($"音量 {idx * 100 / max}%");
+        // 老板令「直接用手机的」：音量指示交系统音量条，应用不自绘（2026-11-27）
+        _audio.SetStreamVolume(Android.Media.Stream.Music, idx, VolumeNotificationFlags.ShowUi);
     }
 
     // —— 控制条（原型 v19–v26：三行结构/两端分组/单色图标 + 音量按钮） ———
@@ -201,7 +228,7 @@ public partial class MainActivity
         if (!landscape)
         {
             // 竖屏：8 钮单行实测约 504dp > 390dp 基准可用宽，音量两钮被裁出屏（2026-11-27 走查实锤，一票重扣级）——
-            // 拆两行：行1 两端分组（左组切台 | 右组功能），行2 音量右对齐（与右组右缘对齐）；音量文字样式仍待老板裁定，此处不动文案
+            // 拆两行：行1 两端分组（左组切台 | 右组功能），行2 音量右对齐（与右组右缘对齐）；音量指示已改走系统音量条（2026-11-27 老板令）
             btnRow.AddView(left);
             var space = new View(this);
             btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
@@ -427,9 +454,10 @@ public partial class MainActivity
                         int step = (int)_volAccum;
                         _volAccum -= step;
                         int idx = Math.Clamp(audio.GetStreamVolume(Android.Media.Stream.Music) + step, 0, max);
+                        // 手势调音量：自绘竖条跟手（不出系统条，避免侧边条与手势指示打架）；按钮路径才走系统条
                         audio.SetStreamVolume(Android.Media.Stream.Music, idx, 0);
                         int idxFinal = idx;
-                        host.RunOnUiThread(() => host.ShowHud($"音量 {idxFinal * 100 / max}%"));
+                        host.RunOnUiThread(() => host.ShowHudBar(HudIconView.IconKind.Speaker, idxFinal / (float)max));
                     }
                 }
             }
@@ -446,6 +474,62 @@ public partial class MainActivity
             _fired = true;
             host.RunOnUiThread(() => host.SwitchChannel(dx < 0 ? -1 : 1)); // 左=上一台，右=下一台
             return true;
+        }
+    }
+
+    /// <summary>悬浮指示图标：单色自绘（喇叭/太阳），对齐 v22 去 emoji 口径（2026-11-27 老板令「样式也还是要有」）。</summary>
+    private sealed class HudIconView : View
+    {
+        internal enum IconKind { Speaker, Sun }
+        private IconKind _kind = IconKind.Speaker;
+        private readonly Paint _fill = new(PaintFlags.AntiAlias) { Color = Color.White };
+        private readonly Paint _stroke = new(PaintFlags.AntiAlias) { Color = Color.White, StrokeCap = Paint.Cap.Round };
+
+        public HudIconView(Context context) : base(context)
+        {
+            _fill.SetStyle(Paint.Style.Fill);
+            _stroke.SetStyle(Paint.Style.Stroke);
+        }
+
+        internal void SetKind(IconKind kind)
+        {
+            if (_kind == kind) return;
+            _kind = kind;
+            Invalidate();
+        }
+
+        protected override void OnDraw(Canvas? canvas)
+        {
+            if (canvas is null || Context is null) return;
+            var color = InkTranslucency.TextPrimary(Context);
+            _fill.Color = color;
+            _stroke.Color = color;
+            _stroke.StrokeWidth = Math.Max(Width, Height) * 0.09f;
+            float w = Width, h = Height;
+            if (_kind == IconKind.Speaker)
+            {
+                // 喇叭：小矩形音仓 + 外扩梯形号筒 + 一道声波弧
+                float bw = w * 0.26f, bh = h * 0.36f, cx = w * 0.30f, cy = h * 0.5f;
+                canvas.DrawRect(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2, _fill);
+                var horn = new Android.Graphics.Path();
+                horn.MoveTo(cx + bw / 2, cy - bh / 2);
+                horn.LineTo(w * 0.66f, h * 0.10f);
+                horn.LineTo(w * 0.66f, h * 0.90f);
+                horn.LineTo(cx + bw / 2, cy + bh / 2);
+                horn.Close();
+                canvas.DrawPath(horn, _fill);
+                canvas.DrawArc(w * 0.60f, h * 0.26f, w * 1.02f, h * 0.74f, -48f, 96f, false, _stroke);
+            }
+            else
+            {
+                // 太阳：圆心 + 八向光线
+                canvas.DrawCircle(w / 2f, h / 2f, h * 0.22f, _fill);
+                for (int i = 0; i < 8; i++)
+                {
+                    canvas.Rotate(45f, w / 2f, h / 2f);
+                    canvas.DrawLine(w / 2f, h * 0.04f, w / 2f, h * 0.16f, _stroke);
+                }
+            }
         }
     }
 }

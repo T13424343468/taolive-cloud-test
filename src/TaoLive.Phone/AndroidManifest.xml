@@ -7,6 +7,10 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- 老板令 2026-11-27 #20「切后台要保活」：前台服务持有进程，后台继续灌满水位、切回无缝续播 -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <!-- 手机口径：明文直播源放行 + 全屏主题（水墨深底，与电视端同源）；
        主入口 Activity 不在清单声明（vc53 口径）：MainLauncher 特性已在壳层注册，
        清单再声明一次=两个启动器入口=桌面出两个图标（真机 11-15 老板镜实锤） -->
@@ -14,5 +18,9 @@
   <application android:label="TaoLive 手机版" android:icon="@mipmap/ic_launcher"
                android:theme="@style/TaoLiveTheme"
                android:usesCleartextTraffic="true">
+    <!-- 后台保活前台服务（老板令 2026-11-27 #20）：切后台起、回前台撤 -->
+    <service android:name="com.taolive.phone.KeepAliveService"
+             android:exported="false"
+             android:foregroundServiceType="mediaPlayback" />
   </application>
 </manifest>

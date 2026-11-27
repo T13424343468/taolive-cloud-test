@@ -753,12 +753,47 @@ public partial class MainActivity : Activity
     {
         base.OnResume();
         CrashNet.Record($"[生命周期] OnResume 回前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
+        StopKeepAlive(); // 老板令 #20：回前台即撤保活，画面原样接续
     }
 
     protected override void OnPause()
     {
         base.OnPause();
         CrashNet.Record($"[生命周期] OnPause 失去前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
+        StartKeepAlive(); // 老板令 #20：切后台即起前台服务，进程不死、水位照灌
+    }
+
+    // —— 后台保活（老板令 2026-11-27 #20「切后台要保活+满水位+切回续播」）——————
+    // 前台服务只负责持有进程优先级：播放内核与看门狗泵在 Activity 里照常运转，
+    // 后台继续拉流灌水位；服务不碰播放器，切回时画面从水位接续点原样续播。
+
+    private bool _keepAliveOn; // 保活服务在跑（防重复起/撤）
+
+    private void StartKeepAlive()
+    {
+        if (_keepAliveOn || _manager?.Current?.CurrentChannel is null) return; // 没在播不起
+        var intent = new Intent(this, typeof(KeepAliveService));
+        intent.PutExtra(KeepAliveService.ExtraChannel, _manager.Current.CurrentChannel!.Name);
+        try
+        {
+            if (OperatingSystem.IsAndroidVersionAtLeast(26)) StartForegroundService(intent);
+            else StartService(intent);
+            _keepAliveOn = true;
+            CrashNet.Record("[生命周期] 后台保活服务起（前台服务持有进程，水位照灌）");
+        }
+        catch (Exception ex)
+        {
+            _keepAliveOn = false;
+            CrashNet.Record($"[生命周期] 后台保活服务起失败（不挡播放）：{ex.GetType().Name}");
+        }
+    }
+
+    private void StopKeepAlive()
+    {
+        if (!_keepAliveOn) return;
+        try { StopService(new Intent(this, typeof(KeepAliveService))); } catch { }
+        _keepAliveOn = false;
+        CrashNet.Record("[生命周期] 后台保活服务撤（回前台）");
     }
 
     /// <summary>
@@ -782,6 +817,7 @@ public partial class MainActivity : Activity
     protected override void OnDestroy()
     {
         // 生命周期收尾（闪退镜黄⑦⑧⑨ 11-15）：停看门狗泵、清数字提交回调、停预检循环
+        StopKeepAlive(); // 老板令 #20：退出应用保活服务必撤，不留常驻通知
         WatchSeal(); // 观看时长记账（刀三）：退壳封账
         _watchLedger.FlushNow(); // 立落（退出关键点口径）：有脏必落盘，防进程先死文件没写完
         _watchdogStopped = true;
@@ -831,6 +867,9 @@ public partial class MainActivity : Activity
         // 不渲染（列表开着换台画面黑的根因，vc53 LiveTextureView 优先同口径）；Surface 经
         // SurfaceTexture 自建，挂面仍走会话契约 AttachSurface(IntPtr of Surface)。
         _playerPage = new FrameLayout(this);
+        // 老板令 2026-11-27（截图令）：画面四边留边全黑——原透出水墨深底 #2B333B 发灰，
+        // 观感像「没铺满」；播放页垫纯黑，与视频黑边融为一体（根布局水墨底只管开机露底，不动）
+        _playerPage.SetBackgroundColor(Color.Black);
         _videoView = new TextureView(this);
         _playerPage.AddView(_videoView, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));

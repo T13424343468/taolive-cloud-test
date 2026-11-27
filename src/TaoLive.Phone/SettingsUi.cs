@@ -175,15 +175,10 @@ public partial class MainActivity
         panel.SetPadding(Dp(20), SafeTopInset(Dp(10)), Dp(20), Dp(12)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
         panel.Visibility = ViewStates.Gone;
 
-        // 页头：返回 + 标题（v26 原型口径）
+        // 页头：标题（v26 原型口径）。vc117 令11（2026-11-28 老板拍板）：左上角「←」全删，
+        // 统一底部「关闭」行收页（返回键口径不变）。
         var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         head.SetGravity(GravityFlags.CenterVertical);
-        var back = new TextView(this) { Text = "←", TextSize = UiScale.Title };
-        back.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(back);
-        back.SetPadding(Dp(14), Dp(10), Dp(26), Dp(10));
-        back.Click += (_, _) => CloseSettingsPanel();
-        head.AddView(back);
         var headTitle = new TextView(this) { Text = "设置", TextSize = UiScale.Title };
         headTitle.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(headTitle);
@@ -195,6 +190,13 @@ public partial class MainActivity
         var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
         pageScroll.AddView(page, new FrameLayout.LayoutParams(-1, -2));
         panel.AddView(pageScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        // vc117 令11：底部「关闭」行收页（页头「←」已删，统一收口；返回键口径不变）
+        _settingsCloseRow = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+        _settingsCloseRow.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
+        _settingsCloseRow.Click += (_, _) => CloseSettingsPanel();
+        StyleOverlayButton(_settingsCloseRow);
+        panel.AddView(_settingsCloseRow, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(10) });
 
         // 设置开关卡（流式行：一行摆多项）
         _settingsScroll = new MaxHeightScrollView(this, int.MaxValue);
@@ -251,7 +253,7 @@ public partial class MainActivity
                 _main.Post(() => ShowToast(path is null ? "导出失败，请重试" : "已导出到文件管理器可见目录"));
             });
         };
-        StyleOverlayButton(b, InkTranslucency.FocusDrawable());
+        StyleOverlayButton(b);
         _diagBtnRow.AddView(b, new LinearLayout.LayoutParams(-2, -2));
         _settingsRows.Add(b); // 显式焦点导航覆盖操作钮（#61 口径）
     }
@@ -525,6 +527,7 @@ public partial class MainActivity
         // v26 重做：诊断页签与操作钮也在显式导航序列里（_settingsRows），重建开关行后补回
         _settingsRows.AddRange(_diagTabs);
         RefreshDiagButtons(); // 操作钮随页签重建并入导航序列
+        if (_settingsCloseRow != null) _settingsRows.Add(_settingsCloseRow); // vc117 令11：底部关闭行入导航尾位
 
         // —— vc113 原型对照令（03 节设置页定稿）：分组卡片+真实 switch 控件——
         // 开关组卡片（即时生效）+ 入口组卡片（逐级进入），两组卡片分隔；行=标题+副标题+右缘控件/箭头。
@@ -539,7 +542,7 @@ public partial class MainActivity
             bg.SetStroke(Dp(1), Color.ParseColor("#3A444D")); // 原型 --line 作描边
             bg.SetCornerRadius(Dp(12));
             card.Background = bg;
-            var lp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(8) };
+            var lp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(40) }; // vc117 令15：块间 40dp
             _settingsFlow!.AddView(card, lp);
             return card;
         }
@@ -573,7 +576,8 @@ public partial class MainActivity
             }
             var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             row.SetGravity(GravityFlags.CenterVertical);
-            row.SetPadding(Dp(12), Dp(14), Dp(12), Dp(14)); // 原型 14/12 内距，行高 ≥48 触控目标
+            // vc117 令15：行间 20dp（行上下留白撑开行距）+ 卡片留白加大（左右 12→20，内容离描边更远）
+            row.SetPadding(Dp(20), Dp(20), Dp(20), Dp(20));
             var txt = new LinearLayout(this) { Orientation = Orientation.Vertical };
             var n = new TextView(this) { Text = title, TextSize = UiScale.Item };
             n.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -582,7 +586,7 @@ public partial class MainActivity
             var d = new TextView(this) { Text = subtitle, TextSize = UiScale.Caption };
             d.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(d);
-            txt.AddView(d, new LinearLayout.LayoutParams(-2, -2) { TopMargin = Dp(2) });
+            txt.AddView(d, new LinearLayout.LayoutParams(-2, -2) { TopMargin = Dp(10) }); // vc117 令15：行内标题→说明 10dp
             row.AddView(txt, new LinearLayout.LayoutParams(0, -2, 1f));
             card.AddView(row);
             BindPressFeedback(row);
@@ -648,6 +652,9 @@ public partial class MainActivity
 
     /// <summary>当前面板可聚焦行（添加序=卡片视觉序：从左到右、从上到下；vc113 原型对照令：行改卡片容器 View）。</summary>
     private readonly List<View> _settingsRows = new();
+
+    /// <summary>vc117 令11：设置页底部「关闭」行（面板只建一次；重建行序列时补回导航尾位）。</summary>
+    private TextView? _settingsCloseRow;
 
     /// <summary>焦点落到指定行并滚入可视区。</summary>
     private void FocusSettingsRow(int idx)
@@ -869,10 +876,24 @@ public partial class MainActivity
         return (box, pad);
     }
 
-    /// <summary>自管面板按钮统一描边（诊断页签操作钮/进阶调优/关于共用，ui-remote 归一条款）。</summary>
-    private void StyleOverlayButton(TextView b, GradientDrawable focusDrawable)
+    /// <summary>自管面板按钮统一皮（vc117 老板令 2026-11-28：文字按钮也上圆角线框——静默态墨色托底+细线框、
+    /// 聚焦态同构提亮，圆角口径一致；诊断页签操作钮/进阶调优/关于/各子页关闭行共用，ui-remote 归一条款）。</summary>
+    private void StyleOverlayButton(TextView b, bool accent = false)
     {
-        var idleBg = new ColorDrawable(Color.Argb(96, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+        // accent=改动性按钮（如一键还原默认）：线框与提亮走朱砂；普通按钮走纸白
+        byte cr = accent ? InkTranslucency.AccentR : InkTranslucency.PaperR;
+        byte cg = accent ? InkTranslucency.AccentG : InkTranslucency.PaperG;
+        byte cb = accent ? InkTranslucency.AccentB : InkTranslucency.PaperB;
+        GradientDrawable Skin(int fillAlpha, int strokeAlpha)
+        {
+            var d = new GradientDrawable();
+            d.SetColor(Color.Argb(fillAlpha, cr, cg, cb));
+            d.SetStroke(1, Color.Argb(strokeAlpha, cr, cg, cb));
+            d.SetCornerRadius(Dp(10)); // 圆角线框口径与档位弹层选项行胶囊一致
+            return d;
+        }
+        var idleBg = Skin(36, 64); // 静默：淡墨托底+细线框（档位弹层未选中行同构）
+        var focusBg = Skin(InkTranslucency.FocusFillAlpha, InkTranslucency.FocusStrokeAlpha); // 聚焦：提亮
         b.Focusable = true;
         b.Clickable = true;
         b.Background = idleBg;
@@ -880,8 +901,8 @@ public partial class MainActivity
         InkTranslucency.ApplyReadabilityShadow(b);
         b.FocusChange += (_, ev) =>
         {
-            if (ev.HasFocus) { b.Background = focusDrawable; b.SetTextColor(InkTranslucency.TextPrimary(this)); }
-            else if (b.Background == focusDrawable) { b.Background = idleBg; b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
+            if (ev.HasFocus) { b.Background = focusBg; b.SetTextColor(InkTranslucency.TextPrimary(this)); }
+            else if (b.Background == focusBg) { b.Background = idleBg; b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
         };
     }
 
@@ -910,7 +931,7 @@ public partial class MainActivity
             close.SetPadding(pad, Dp(14), pad, Dp(14));
             close.Click += (_, _) => CloseLicensePanel();
             close.Id = View.GenerateViewId();
-            StyleOverlayButton(close, InkTranslucency.FocusDrawable());
+            StyleOverlayButton(close);
             int btnH = Dp(60); // #70 口径归一后实值直出：52dp 装不下 22sp 文字+28dp 内边距，抬到 60dp 保字完整
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
             box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad });
@@ -963,15 +984,9 @@ public partial class MainActivity
             box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
-            // topbar：返回 + 标题 + 三常驻钮（📄📁🗑）
+            // topbar：标题 + 三常驻钮（📄📁🗑）。vc117 令11：左上角「←」全删，统一底部「关闭」行收页
             var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             head.SetGravity(GravityFlags.CenterVertical);
-            var back = new TextView(this) { Text = "←", TextSize = UiScale.Title };
-            back.SetTextColor(InkTranslucency.TextPrimary(this));
-            InkTranslucency.ApplyReadabilityShadow(back);
-            back.SetPadding(Dp(14), Dp(10), Dp(26), Dp(10));
-            back.Click += (_, _) => CloseDiagPanel();
-            head.AddView(back);
             var title = new TextView(this) { Text = "诊断日志", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
@@ -1009,6 +1024,13 @@ public partial class MainActivity
             _diagBtnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             box.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) });
 
+            // vc117 令11：底部「关闭」行收页（页头「←」已删，统一收口；返回键口径不变）
+            var diagClose = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+            diagClose.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
+            diagClose.Click += (_, _) => CloseDiagPanel();
+            StyleOverlayButton(diagClose);
+            box.AddView(diagClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(10) });
+
             _diagOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
             CloseSettingsPanel();
@@ -1023,7 +1045,7 @@ public partial class MainActivity
     {
         var b = new TextView(this) { Text = glyph, TextSize = UiScale.Item, ContentDescription = desc, Gravity = GravityFlags.Center };
         b.SetPadding(Dp(18), Dp(10), Dp(18), Dp(10));
-        StyleOverlayButton(b, InkTranslucency.FocusDrawable());
+        StyleOverlayButton(b);
         b.Click += (_, _) => onClick();
         return b;
     }
@@ -1084,14 +1106,9 @@ public partial class MainActivity
             box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
+            // vc117 令11：页头「←」删，标题起头；底部统一「关闭」行收页
             var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             head.SetGravity(GravityFlags.CenterVertical);
-            var back = new TextView(this) { Text = "←", TextSize = UiScale.Title };
-            back.SetTextColor(InkTranslucency.TextPrimary(this));
-            InkTranslucency.ApplyReadabilityShadow(back);
-            back.SetPadding(Dp(14), Dp(10), Dp(26), Dp(10));
-            back.Click += (_, _) => CloseStatsPanel();
-            head.AddView(back);
             var title = new TextView(this) { Text = "运行统计（近期）", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
@@ -1104,6 +1121,13 @@ public partial class MainActivity
             var scroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
             scroll.AddView(body);
             box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+            // vc117 令11：底部「关闭」行收页（返回键口径不变）
+            var statsClose = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+            statsClose.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
+            statsClose.Click += (_, _) => CloseStatsPanel();
+            StyleOverlayButton(statsClose);
+            box.AddView(statsClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(10) });
 
             _statsOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1264,7 +1288,7 @@ public partial class MainActivity
                 row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(4));
                 row.Focusable = true;
                 InkTranslucency.ApplyReadabilityShadow(row);
-                row.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur, Refresh);
+                row.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur);
                 body.AddView(row);
 
                 var sub = new TextView(this) { Text = desc, TextSize = UiScale.Caption };
@@ -1350,8 +1374,8 @@ public partial class MainActivity
             close.Id = View.GenerateViewId();
             reset.NextFocusRightId = close.Id;
             close.NextFocusLeftId = reset.Id;
-            StyleOverlayButton(reset, InkTranslucency.AccentFocusDrawable()); // 还原=朱砂（改动性按钮）
-            StyleOverlayButton(close, InkTranslucency.FocusDrawable());
+            StyleOverlayButton(reset, accent: true); // 还原=朱砂（改动性按钮）
+            StyleOverlayButton(close);
             int btnH = Dp(60); // #70 口径归一后实值直出：52dp 装不下 22sp 文字+28dp 内边距，抬到 60dp 保字完整
             btns.AddView(reset, new LinearLayout.LayoutParams(0, btnH, 1f));
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
@@ -1370,16 +1394,21 @@ public partial class MainActivity
 
     /// <summary>
     /// vc111 v10 原型：底部档位弹层——单选、当前档高亮、点选即生效、点遮罩收层。
-    /// 挂 _root 顶层（盖住进阶调优面板），窗口唯一令随 CloseAdvancedOverlayOnly 一并收。
+    /// 挂 _root 顶层；vc117 令12：弹层与底层进阶调优页互斥——弹层挂顶后收底层页，
+    /// 收层（点选/点遮罩/返回键）回进阶调优页重建（重建即读到新值）。
     /// </summary>
-    private void ShowGearSheet(string title, int[] steps, Func<int, string> gearLabel, Action<int> set, Func<int> cur, Action refresh)
+    private void ShowGearSheet(string title, int[] steps, Func<int, string> gearLabel, Action<int> set, Func<int> cur)
     {
         CloseAdvGearSheetOnly(); // 窗口唯一令同口径：先收旧层
         try
         {
             var overlay = new FrameLayout(this) { Clickable = true };
             overlay.SetBackgroundColor(Color.Argb(140, 0, 0, 0)); // 遮罩：点即收层
-            overlay.Click += (_, _) => CloseAdvGearSheetOnly();
+            overlay.Click += (_, _) =>
+            {
+                CloseAdvGearSheetOnly();
+                ShowAdvancedTuningPanel(); // vc117 令12：收层回进阶调优页
+            };
 
             var sheet = new LinearLayout(this) { Orientation = Orientation.Vertical };
             // vc116⑯：档位弹层与底页隔断——底色加深至 216、描边+四角圆角 14dp、左右/底部 margin 12dp（仍半透明口径）
@@ -1429,8 +1458,9 @@ public partial class MainActivity
                 {
                     set(val);
                     SaveAdvancedTuning();
-                    refresh(); // 原位刷新行文案，不整页重建
+                    // vc117 令12：底层页已随弹层收起，refresh 闭包失效——收层后重建进阶调优页即读到新值
                     CloseAdvGearSheetOnly();
+                    ShowAdvancedTuningPanel();
                 };
                 sheet.AddView(opt, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(6) }); // vc116⑯：选项行间距，治零间距贴死
             }
@@ -1439,6 +1469,7 @@ public partial class MainActivity
             { Gravity = GravityFlags.Bottom, LeftMargin = Dp(12), RightMargin = Dp(12), BottomMargin = Dp(12) }); // vc116⑯：弹层与底页隔断
             _advGearOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
+            CloseAdvPanelOnly(); // vc117 令12：弹层挂顶后收底层进阶调优页（互斥，同屏只留一层）
         }
         catch (Exception ex) { CrashNet.Record($"[进阶调优] 档位弹层打开失败：{ex.Message}"); }
     }
@@ -1453,6 +1484,12 @@ public partial class MainActivity
     private void CloseAdvancedOverlayOnly()
     {
         CloseAdvGearSheetOnly(); // 档位弹层随面板一并收（幂等）
+        CloseAdvPanelOnly();
+    }
+
+    /// <summary>vc117 令12：进阶调优面板纯关闭（不碰档位弹层）——档位弹层与底层页互斥，弹层挂顶时先收底层页。</summary>
+    private void CloseAdvPanelOnly()
+    {
         if (_advOverlay is null) return;
         _root.RemoveView(_advOverlay);
         _advOverlay.Dispose();

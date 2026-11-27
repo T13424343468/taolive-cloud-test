@@ -353,7 +353,85 @@ public class HotSwitchV2Tests
         Assert.Equal(2, player.SeekBackCalls.Count); // 新台重新有回退名额
     }
 
-    // ---- 降档软着陆 ----
+    // ---- vc117 水位修复 A：静默重接补库存（先开画后补库存口径落地） ----
+
+    [Fact]
+    public void Silent_refetch_seeks_back_once_when_water_below_target_after_open()
+    {
+        var clock = new FixedClock(DateTimeOffset.Parse("2026-11-28T00:00:00Z"));
+        var player = new LoggingPlayer { BufferedMs = 2_000 }; // 慢源 1 秒开画后水位仅 2 秒
+        var session = new PlaybackSession(player, clock);
+        session.ChangeChannel(MakeChannel("c1", "https://s/a.m3u8", "https://s/b.m3u8"));
+        session.NotifyFirstFrame(); // Playing
+        session.CheckProactiveFailover(); // 泵一次：水位 2s<7s 补库目标 → 静默重接
+        Assert.Single(player.SeekBackCalls); // 重接一次
+        Assert.Equal(PlaybackSession.MicrolagSeekBackMs, player.SeekBackCalls[0]);
+        Assert.Equal(PlaybackState.Playing, session.State); // 静默：存量续播不进 Reconnecting
+        session.CheckProactiveFailover(); // 第二拍：名额已用，不再重接（原口径「重接一次」）
+        Assert.Single(player.SeekBackCalls);
+    }
+
+    [Fact]
+    public void Silent_refetch_skips_when_water_already_at_target()
+    {
+        var clock = new FixedClock(DateTimeOffset.Parse("2026-11-28T00:00:00Z"));
+        var player = new LoggingPlayer { BufferedMs = 20_000 }; // 快源水位已过补库目标
+        var session = new PlaybackSession(player, clock);
+        session.ChangeChannel(MakeChannel("c1", "https://s/a.m3u8", "https://s/b.m3u8"));
+        session.NotifyFirstFrame();
+        session.CheckProactiveFailover();
+        Assert.Empty(player.SeekBackCalls); // 水位达标不重接（不白吃 10 秒延迟）
+        player.BufferedMs = 3_000; // 之后再跌破也不补（名额已因达标销掉）
+        session.CheckProactiveFailover();
+        Assert.Empty(player.SeekBackCalls);
+    }
+
+    // ---- vc117 水位修复 B：慢灌源放宽 _inventoryEverFilled 闸 ----
+
+    [Fact]
+    public void Slow_fill_low_water_trips_proactive_without_ever_filled_gate()
+    {
+        var clock = new FixedClock(DateTimeOffset.Parse("2026-11-28T00:00:00Z"));
+        var player = new LoggingPlayer { BufferedMs = 3_000 }; // 从没攒满过库存的慢灌线
+        var session = new PlaybackSession(player, clock) { SoftLandingEnabled = true };
+        session.ChangeChannel(MakeChannel("c1", "https://s/a.m3u8", "https://s/b.m3u8", "https://s/c.m3u8"));
+        session.NotifyFirstFrame();
+        object? aligned = null;
+        session.AlignedSwitched += (_, reason) => aligned = reason;
+        // 慢灌：每拍水位微涨（线活着=读数在涨），但始终低于 7 秒线；满一窗（10 秒）即放宽闸坐实
+        for (int i = 0; i < 7 && aligned is null; i++)
+        {
+            clock.Advance(TimeSpan.FromSeconds(2));
+            player.BufferedMs += 200;
+            session.CheckWatchdog(); // 采样进度（灌速账：读数在涨=线活着）
+            session.CheckProactiveFailover();
+        }
+        Assert.Equal("proactive soft landing", aligned); // 不再要求「曾攒满过」
+        Assert.Equal(1, session.CurrentLineIndex); // 预防性切下一路
+    }
+
+    [Fact]
+    public void Slow_fill_gate_does_not_trip_before_wait_window()
+    {
+        var clock = new FixedClock(DateTimeOffset.Parse("2026-11-28T00:00:00Z"));
+        var player = new LoggingPlayer { BufferedMs = 3_000 };
+        var session = new PlaybackSession(player, clock) { SoftLandingEnabled = true };
+        session.ChangeChannel(MakeChannel("c1", "https://s/a.m3u8", "https://s/b.m3u8", "https://s/c.m3u8"));
+        session.NotifyFirstFrame();
+        object? aligned = null;
+        session.AlignedSwitched += (_, reason) => aligned = reason;
+        // 低水位不满一窗（4 秒 < 10 秒）：单次抖动不切，等趋势
+        for (int i = 0; i < 2; i++)
+        {
+            clock.Advance(TimeSpan.FromSeconds(2));
+            player.BufferedMs += 200;
+            session.CheckWatchdog();
+            session.CheckProactiveFailover();
+        }
+        Assert.Null(aligned); // 窗未满不介入
+        Assert.Equal(PlaybackState.Playing, session.State);
+    }
+
 
     [Fact]
     public void Proactive_trip_with_soft_landing_uses_aligned_switch_without_failover_account()

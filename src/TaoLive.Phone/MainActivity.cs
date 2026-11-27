@@ -142,16 +142,23 @@ public partial class MainActivity : Activity
         //（缩放档须在 BuildRoot 前就位，全套令牌按档位重算）
         _prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
         // 尺寸跟系统（老板 2026-11-27 拍板「跟着系统显示大小做三套，不单独给设置项」）：
-        // 文字档 = 中档基准 17sp × 系统字体缩放（系统「标准」=原中档；较大/较小随系统档等比）；
-        // 间距档乘密度，系统「显示大小」改密度即自动跟随。改系统档系统会重建 Activity，此处重装即生效。
-        UiScale.Factor = 17f / 36f * (Resources!.Configuration?.FontScale ?? 1f);
-        // 手机版重定标（2026-11-27 真机整改令）：电视端「长边/1920」直接套手机（长边 2400→1.25）是
-        // 「信息条文字巨大盖画面」的根因。改按原型 v13「基准 390px=1:1」：短边 dp 对 390——
-        // 文字档与间距档同基准，间距档另乘密度转像素（热区不再跟文字档缩没）。
+        // 文字档 = 中档基准 17sp（系统字体缩放由 sp 渲染层自乘，Factor 不再重复乘）。
+        UiScale.Factor = 17f / 36f;
+        // vc117 全元素比例换算令（2026-11-28 老板拍板）：所有界面元素统一按屏幕比例换算——
+        // 分辨率比例项=短边px/(390×首启密度)；系统显示大小跟随项=当前密度/首启密度。
+        // 首启密度拍板存档（ui_density_ref）：首启时的系统档=「中」基准（老板「目前这个作为中」口径），
+        // 此后系统改显示大小（密度变）→ 界面等比跟随；换设备/分辨率 → 比例项跟随短边。
         var dm = Resources!.DisplayMetrics!;
-        float shortEdgeDp = Math.Min(dm.WidthPixels, dm.HeightPixels) / dm.Density;
-        UiScale.ScreenScale = shortEdgeDp / 390f;
-        UiScale.PxScale = shortEdgeDp / 390f * dm.Density;
+        float densRef = _prefs.GetFloat("ui_density_ref", 0f);
+        if (densRef <= 0f)
+        {
+            densRef = dm.Density; // 首启拍板：当前系统档=「中」
+            _prefs.Edit()!.PutFloat("ui_density_ref", densRef)!.Apply();
+        }
+        UiScale.DensityRef = densRef;
+        UiScale.SystemScale = dm.Density / densRef;
+        UiScale.ScreenScale = Math.Min(dm.WidthPixels, dm.HeightPixels) / (390f * densRef);
+        UiScale.PxScale = UiScale.ScreenScale * UiScale.SystemScale; // 令17：间距/线框盒/图标与文字同一套比例
         // 收口批④开关合流：预热与预检共车道只留预检开关，预热（开机全量预热+换台邻台预取+开机默认台焐热）
         // 一律随 _precheckEnabled 同起同停——两个开关管同一条车道必出一个死开关（方案书收口批④原文）。
         // vc105 老板令：以 93 为基线——读盘复活恢复（默认开），vc101 硬关口径作废。
@@ -758,6 +765,8 @@ public partial class MainActivity : Activity
     {
         base.OnResume();
         CrashNet.Record($"[生命周期] OnResume 回前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
+        PlaybackSession.BackgroundHold = false; // vc117 后台出声根治：回前台先撤冻结旗，自愈/换源恢复
+        _isBackgrounded = false; // vc117：泵与静默重连同闸回前台撤
         StartKeepAlive(); // 老板令 #20：会话期长驻（起停相撞会触发系统违规闪退，v7 走查实锤），只在退出时撤
         // 切后台音画即停（2026-11-27 真机反馈第8条）：只恢复自己暂停的会话——用户手动暂停的不抢
         if (_pausedForBackground)
@@ -772,6 +781,8 @@ public partial class MainActivity : Activity
     {
         base.OnPause();
         CrashNet.Record($"[生命周期] OnPause 失去前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
+        PlaybackSession.BackgroundHold = true; // vc117 后台出声根治：后台冻结期自愈/换源不发起，回前台撤
+        _isBackgrounded = true; // vc117：泵与静默重连同闸置位
         // 切后台音画即停（2026-11-27 真机反馈第8条）：静音冻结出声出画，内核照常灌水位，切回续播。
         // vc112 口径放宽：Buffering（攒流期）也冻结——防「返回=退后台」后门开在后台自动出声；回前台 OnResume 统一续播
         var cur = _manager?.Current;
@@ -784,6 +795,7 @@ public partial class MainActivity : Activity
     }
 
     private bool _pausedForBackground; // 切后台由本类暂停（区别于用户手动暂停），回前台只恢复这种
+    private bool _isBackgrounded; // vc117 后台出声根治：后台冻结旗（OnPause 置/OnResume 撤），泵与静默重连同闸
 
     // —— 后台保活（老板令 2026-11-27 #20「切后台要保活+满水位+切回续播」）——————
     // 前台服务只负责持有进程优先级：播放内核与看门狗泵在 Activity 里照常运转，
@@ -926,25 +938,22 @@ public partial class MainActivity : Activity
         _loadingPanel.Visibility = ViewStates.Gone;
         _playerPage.AddView(_loadingPanel, new FrameLayout.LayoutParams(-1, -1));
 
-        // 失败终态驻留空态（方案书 v77，白屏镜红②）：非瞬时，进失败态显示、离失败态即隐；
-        // vc113 原型对照令（v31 retry-tag）：警示橙框横幅——cinw 14% 橙底 + cin 描边 + 12 圆角，
-        // 贴底铺宽（left/right/bottom 16），文案三件套含「立即重试 / 打开频道列表」可点链接（azure 蓝）。
+        // 失败终态驻留空态（方案书 v77，白屏镜红②）：非瞬时，进失败态显示、离失败态即隐。
+        // vc117 令4（2026-11-28 老板拍板）：改胶囊样式挂顶部挖孔区（竖屏）——文案精炼三件套
+        // （信号中断 · 自动重试中 · 立即重试/打开列表），可点链接保留（azure 蓝）；
+        // 横屏由 ShowEmptyState 按令5 挂左侧挖孔区（文字靠左往下换行）。
         _emptyState = new TextView(this) { Gravity = GravityFlags.CenterVertical };
         _emptyState.SetTextColor(InkTranslucency.TextPrimary(this));
-        _emptyState.TextSize = UiScale.Item;
-        var emptyBg = new GradientDrawable();
-        emptyBg.SetColor(Color.Transparent); // vc116⑪：全透明填充（界面元素统一皮），警示橙描边保留
-        emptyBg.SetStroke(UiScale.Px(1), Color.ParseColor("#E07856")); // 原型 --cin 描边
-        emptyBg.SetCornerRadius(UiScale.Px(12));
-        _emptyState.Background = emptyBg;
+        _emptyState.TextSize = UiScale.Caption;
+        _emptyState.Background = InkTranslucency.PillBackground(this); // 令4：胶囊皮（与提示胶囊同款）
         InkTranslucency.ApplyReadabilityShadow(_emptyState);
-        _emptyState.SetPadding(UiScale.Px(28), UiScale.Px(24), UiScale.Px(28), UiScale.Px(24)); // #15 尺寸令：随档缩放
+        _emptyState.SetPadding(UiScale.Px(20), UiScale.Px(10), UiScale.Px(20), UiScale.Px(10));
         _emptyState.MovementMethod = Android.Text.Method.LinkMovementMethod.Instance; // 可点链接（立即重试/打开频道列表）
         _emptyState.SetHighlightColor(Color.Transparent); // 链接按压不糊底（绑定 HighlightColor 只读，走 Setter）
         _emptyState.Visibility = ViewStates.Invisible;
         _playerPage.AddView(_emptyState, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
-        { Gravity = GravityFlags.Bottom, LeftMargin = UiScale.Px(16), RightMargin = UiScale.Px(16), BottomMargin = UiScale.Px(16) });
+            ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
+        { Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal, TopMargin = UiScale.Px(48) });
 
         _root.AddView(_playerPage, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
@@ -994,23 +1003,28 @@ public partial class MainActivity : Activity
         // 页头右侧常驻 ✕ 关闭（与设置面板同款），返回键口径不变
         var titleStretch = new Space(this); // 标题与右侧钮之间弹性撑开，钮顶到右缘
         titleRow.AddView(titleStretch, new LinearLayout.LayoutParams(0, 1, 1f));
-        // vc116⑧ 页头钮统一皮：⟳ 刷新/✕ 关闭改定尺寸线框钮——40×40 定尺寸、图标居中、OutlineBox 描边、
-        // 垂直居中、间距 8dp（旧纯文字加 padding 撑热区退场）
+        // vc116⑧ 页头钮统一皮：⟳ 刷新/✕ 关闭改定尺寸线框钮——定尺寸、图标居中、OutlineBox 描边、
+        // 垂直居中、间距 8dp（旧纯文字加 padding 撑热区退场）。
+        // vc117 令16（2026-11-28 老板拍板）：线框盒统一 36dp 稍小、图标占盒 55% 稍大、始终正中间
+        // （IncludeFontPadding=false 消字形基线偏移，⟳ 不再偏下偏小）。
         Android.Graphics.Drawables.Drawable HeaderBtnBg() =>
             InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha);
-        var listRefresh = new TextView(this) { Text = "⟳", TextSize = UiScale.Title, Gravity = GravityFlags.Center };
-        listRefresh.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(listRefresh);
-        listRefresh.Background = HeaderBtnBg();
-        listRefresh.Click += (_, _) => RefreshChannelList();
-        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(40))
+        TextView HeaderBtn(string glyph, Action onClick)
+        {
+            var b = new TextView(this) { Text = glyph, Gravity = GravityFlags.Center };
+            b.TextSize = UiScale.Title; // 图标稍大：36dp 盒内 Title 字号，占比 0.55+
+            b.SetIncludeFontPadding(false); // 令16：去字形基线偏移，图标垂直正中间
+            b.SetTextColor(InkTranslucency.TextPrimary(this));
+            InkTranslucency.ApplyReadabilityShadow(b);
+            b.Background = HeaderBtnBg();
+            b.Click += (_, _) => onClick();
+            return b;
+        }
+        var listRefresh = HeaderBtn("⟳", RefreshChannelList);
+        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(UiScale.Px(36), UiScale.Px(36))
         { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(8) });
-        var drawerClose = new TextView(this) { Text = "✕", TextSize = UiScale.Title, Gravity = GravityFlags.Center };
-        drawerClose.SetTextColor(InkTranslucency.TextPrimary(this));
-        InkTranslucency.ApplyReadabilityShadow(drawerClose);
-        drawerClose.Background = HeaderBtnBg();
-        drawerClose.Click += (_, _) => ShowPlayer();
-        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(40))
+        var drawerClose = HeaderBtn("✕", ShowPlayer);
+        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(UiScale.Px(36), UiScale.Px(36))
         { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(8) });
         header.AddView(titleRow);
         _listPage.AddView(header);
@@ -1062,7 +1076,7 @@ public partial class MainActivity : Activity
         filterBox.SetHintTextColor(Color.ParseColor("#8894A0"));
         filterBox.SetBackgroundResource(0); // 去系统下划线底
         filterBox.Background = InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha); // vc116⑨：全透明+圆角线框（界面元素统一皮）
-        filterBox.SetPadding(UiScale.Px(24), UiScale.Px(12), UiScale.Px(24), UiScale.Px(12));
+        filterBox.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12)); // vc117 令6：内距 24→8，文字与列表行内容同边线（框 16+内 8=24dp）
         filterBox.TextChanged += (_, e) =>
         {
             if (_list?.Adapter is ChannelListAdapter adapter)
@@ -1278,6 +1292,8 @@ public partial class MainActivity : Activity
     {
         _main.Post(() =>
         {
+            // vc117 后台出声根治令：后台冻结期静默重连不发起（重连=重播内核=后台出声后门），回前台再续
+            if (_isBackgrounded) return;
             var cur = _manager.Current;
             if (cur is null || cur.State != PlaybackState.Failed) return;
             if (!_manager.TryManualRetry(cur.CurrentChannel?.Id ?? string.Empty, out _)) return;
@@ -1607,6 +1623,9 @@ public partial class MainActivity : Activity
     ///   备源耗尽即全线路不可达终态（空态文案接管），全程递进不原地打转。</summary>
     private void PumpAudioOnlyGuard()
     {
+        // vc117 后台出声根治令（2026-11-28 老板拍板）：后台冻结期只出声兜底不发起——
+        // 它的三条出路（同源重建/切线/换源）全都会重播内核，后台发起=后台出声后门。
+        if (_isBackgrounded) return;
         if (_manager.Current is not { } cur
             || cur.State != PlaybackState.Playing
             || cur.CurrentChannel is not { } ch)
@@ -1771,17 +1790,23 @@ public partial class MainActivity : Activity
 
         // vc112：退出确认弹窗已整删（返回=停播攒流退后台），无弹窗按键接管
 
+        // vc117 令12：档位弹层与底层页互斥——弹层开着时底层进阶调优页已收，须独立接住：
+        // 返回/菜单=收弹层回进阶调优页；其余键不穿透，防误触底层键位
+        if (_advGearOverlay != null)
+        {
+            if (keyCode is Keycode.Back or Keycode.Menu)
+            {
+                CloseAdvGearSheetOnly();
+                ShowAdvancedTuningPanel();
+            }
+            return true;
+        }
+
         // 进阶调优面板：返回/菜单=关闭；确认=点当前行；
         // 方向键必须放行（return false）——系统焦点导航在 Activity 消费之后才走，这里吞掉光标就冻结（真机实锤 1.0.9）；
         // 其余键不穿透，防误触底层键位。
         if (_advOverlay != null)
         {
-            // vc111 档位弹层：开着时返回/菜单=只收弹层，其余不穿透
-            if (_advGearOverlay != null)
-            {
-                if (keyCode is Keycode.Back or Keycode.Menu) CloseAdvGearSheetOnly();
-                return true;
-            }
             switch (keyCode)
             {
                 case Keycode.Back or Keycode.Menu:
@@ -1932,7 +1957,7 @@ public partial class MainActivity : Activity
         {
             // 铁律：任何时刻最多一个层——设置面板开着才允许收起；列表/其他面板开着时设置键不生效
             if (_settingsPanelOpen) ToggleSettingsPanel();
-            else if (!_listOpen && _advOverlay == null && _licenseOverlay == null)
+            else if (!_listOpen && _advOverlay == null && _advGearOverlay == null && _licenseOverlay == null)
                 ToggleSettingsPanel();
             return true;
         }
@@ -2204,15 +2229,18 @@ public partial class MainActivity : Activity
     /// 胶囊包孔，页内元素让到胶囊底缘之下即可，至少留 12dp 呼吸边）。每次呼出重算（转屏/分屏后 inset 会变）。</summary>
     private void ApplyListTopInset()
     {
+        ReadCutoutGeometry(); // vc117 老板令：避让前先取准孔位，不拿旧几何算胶囊底缘
         int top = UiScale.Px(12);
         if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } insets)
         {
             int cutout = insets.GetInsets(WindowInsets.Type.DisplayCutout()).Top;
             int status = insets.GetInsets(WindowInsets.Type.StatusBars()).Top;
-            // 胶囊显示区底缘：孔底 + 半个胶囊高（胶囊垂直居中包孔）+ 呼吸边；无孔信息退回状态栏口径
+            // 胶囊显示区底缘：孔底 + 半个胶囊高（胶囊垂直居中包孔）+ 呼吸边；无孔信息退回状态栏口径。
+            // vc117 令13（2026-11-28 老板拍板）：无孔兜底再吃胶囊自身高度（顶距 24+半高），状态胶囊
+            // 不再压进页头 ⟳/✕ 按钮——此前 status=0 时页头只让 20dp，胶囊正好叠上按钮。
             int pillBottom = _cutoutHoleW > 0
                 ? Math.Max(cutout, _cutoutHoleCenterY + UiScale.Px(24))
-                : Math.Max(cutout, status);
+                : Math.Max(Math.Max(cutout, status), UiScale.Px(24) + UiScale.Px(28));
             top = Math.Max(top, pillBottom + UiScale.Px(8));
         }
         _listPage.SetPadding(0, top, 0, 0);
@@ -2229,6 +2257,29 @@ public partial class MainActivity : Activity
             return Math.Max(basePx, Math.Max(cutout, status) + UiScale.Px(8));
         }
         return basePx;
+    }
+
+    /// <summary>vc117 令19/20（2026-11-28 老板拍板）：底部圆角安全边（px）——API 31+ 实时读系统圆角几何
+    /// （四角半径+圆心坐标），取底部两角半径最大值 + 8dp 间距；拿不到走 24dp 兜底。
+    /// 令20 全局口径：所有贴底界面（控制条/列表页/设置面板/子页面）一开始就避让圆角区并留间距，
+    /// 不是哪个页面被裁了再单独补。转屏后 insets 变化由调用点重算。</summary>
+    internal int BottomCornerSafePx()
+    {
+        int fallback = UiScale.Px(24);
+        if (!OperatingSystem.IsAndroidVersionAtLeast(31)) return fallback;
+        try
+        {
+            var insets = Window!.DecorView!.RootWindowInsets;
+            if (insets is null) return fallback;
+            int maxR = 0;
+            foreach (var pos in new[] { Android.Views.RoundedCornerPosition.BottomLeft, Android.Views.RoundedCornerPosition.BottomRight })
+            {
+                var rc = insets.GetRoundedCorner((int)pos);
+                if (rc is { } c) maxR = Math.Max(maxR, c.Radius);
+            }
+            return maxR > 0 ? maxR + UiScale.Px(8) : fallback;
+        }
+        catch { return fallback; }
     }
 
     // —— 预测式返回（2026-11-27 真机反馈第7条：去「再次滑动返回」二次确认，滑一次即走） ———
@@ -2368,30 +2419,71 @@ public partial class MainActivity : Activity
     }
 
     /// <summary>胶囊包孔定位（v28 定稿：胶囊包住摄像头孔）：孔中心对齐胶囊中心，孔宽=中段空档；
-    /// 无挖孔信息走顶部居中兜底。每次亮条重算（转屏/分屏后孔位会变）。</summary>
-    private void PositionToastPill()
+    /// 无挖孔信息走顶部居中兜底。每次亮条重算（转屏/分屏后孔位会变）。
+    /// vc117 令6（2026-11-28 老板拍板）：横屏改挂左侧挖孔区——文字靠左、往下换行（竖排两行），
+    /// 不再横着盖画面；竖屏维持包孔口径。令14：亮胶囊前按当前开着的页面避让——列表/设置面板
+    /// 已把内容顶到胶囊区之下（ApplyListTopInset/SafeTopInset），播放页横屏左上无元素，互不遮挡。
+    /// vc117 老板令（2026-11-28）：避让定位不许闪烁——onPositioned 在终位落定后回调
+    /// （竖屏包孔分支在 Post 对齐后回调，其余分支定位即终位同步回调），亮相时机由调用方掌握。</summary>
+    private void PositionToastPill(Action? onPositioned = null)
     {
         ReadCutoutGeometry();
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         var lp = _toast.LayoutParameters as FrameLayout.LayoutParams;
-        if (lp is null) return;
-        if (_cutoutHoleW > 0)
+        if (lp is null) { onPositioned?.Invoke(); return; }
+        if (landscape)
         {
+            // 令6 横屏：左侧挖孔区竖排——主文案在上、副文案在下，靠左对齐往下换行
+            _toast.Orientation = Orientation.Vertical;
+            _toast.SetGravity(GravityFlags.Top | GravityFlags.Left);
+            _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 0); // 竖排无中段空档
+            int leftSafe = UiScale.Px(16), topSafe = UiScale.Px(12);
+            if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } ins)
+            {
+                var cut = ins.GetInsets(WindowInsets.Type.DisplayCutout());
+                leftSafe = Math.Max(leftSafe, cut.Left + UiScale.Px(8));
+                topSafe = Math.Max(topSafe, cut.Top + UiScale.Px(8));
+            }
+            _toastLeft.SetMaxLines(3); // 横屏竖排给三行余量，靠左往下换行
+            lp.Gravity = GravityFlags.Top | GravityFlags.Left;
+            lp.LeftMargin = leftSafe;
+            lp.TopMargin = topSafe;
+            _toast.TranslationX = 0;
+            _toast.TranslationY = 0;
+            onPositioned?.Invoke();
+        }
+        else if (_cutoutHoleW > 0)
+        {
+            _toast.Orientation = Orientation.Horizontal; // 竖屏回横排包孔
+            _toast.SetGravity(GravityFlags.CenterVertical);
+            _toastLeft.SetMaxLines(2);
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(_cutoutHoleW, 1);
             lp.Gravity = GravityFlags.Top; // 左上起摆，TranslationX 精确对孔心
+            lp.LeftMargin = 0;
+            lp.TopMargin = 0;
             _toast.Post(() =>
             {
                 int pw = _toast.Width, ph = _toast.Height;
-                if (pw <= 0) return;
-                _toast.TranslationX = _cutoutHoleCenterX - pw / 2f;
-                _toast.TranslationY = _cutoutHoleCenterY - ph / 2f;
+                if (pw > 0)
+                {
+                    _toast.TranslationX = _cutoutHoleCenterX - pw / 2f;
+                    _toast.TranslationY = _cutoutHoleCenterY - ph / 2f;
+                }
+                onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
             });
         }
         else
         {
+            _toast.Orientation = Orientation.Horizontal;
+            _toast.SetGravity(GravityFlags.CenterVertical);
+            _toastLeft.SetMaxLines(2);
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 1);
             lp.Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal;
+            lp.LeftMargin = 0;
+            lp.TopMargin = 0;
             _toast.TranslationX = 0;
             _toast.TranslationY = 0;
+            onPositioned?.Invoke();
         }
         _toast.LayoutParameters = lp;
     }
@@ -2402,8 +2494,10 @@ public partial class MainActivity : Activity
     {
         _toastLeft.Text = text;
         _toast.Background = InkTranslucency.PillBackground(this); // vc116：全透明+胶囊描边（界面元素统一皮）
-        _toast.Visibility = ViewStates.Visible;
-        PositionToastPill();
+        // vc117 老板令（2026-11-28）：避让定位不许闪烁——要么不出现，出现就在终位。
+        // 先隐形定位，竖屏包孔在 Post 对齐后、其余定位即终位，落定才亮相。
+        _toast.Visibility = ViewStates.Invisible;
+        PositionToastPill(() => _toast.Visibility = ViewStates.Visible);
         _main.RemoveCallbacks(_toastHide);
         _main.PostDelayed(_toastHide, 2200);
     }
@@ -2413,7 +2507,29 @@ public partial class MainActivity : Activity
     private void ShowEmptyState()
     {
         HideControlBar(); // vc115 A1：失败横幅与控制条互斥，横幅出场先收控制条
+        ReadCutoutGeometry(); // vc117 老板令：亮相前先取准孔位，不拿上次亮条留的旧几何错位
         _emptyState.TextFormatted = BuildEmptyStateText();
+        // vc117 令4/5：胶囊挂位——竖屏顶部挖孔区居中（孔下 8dp），横屏左侧挖孔区文字靠左往下换行
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+        var lp = _emptyState.LayoutParameters as FrameLayout.LayoutParams;
+        if (lp is not null)
+        {
+            if (landscape)
+            {
+                lp.Gravity = GravityFlags.Top | GravityFlags.Left;
+                lp.LeftMargin = UiScale.Px(16);
+                lp.TopMargin = UiScale.Px(12);
+                _emptyState.SetMaxWidth(UiScale.Px(220)); // 横屏窄栏，逼文字往下换行
+            }
+            else
+            {
+                lp.Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal;
+                lp.LeftMargin = 0;
+                lp.TopMargin = _cutoutHoleW > 0 ? _cutoutHoleCenterY + UiScale.Px(24) : UiScale.Px(48);
+                _emptyState.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.86f));
+            }
+            _emptyState.LayoutParameters = lp;
+        }
         _emptyState.Visibility = ViewStates.Visible;
         // 长播无源退级提示（老板 2026-11-17 拍板，归文案项一并落）：空态满 5 分钟起如实报已等
         // 时长并建议检查网络——自愈慢轮+重探在后台自动复活，不用用户盯屏干等；离开空态即停表撤字。
@@ -2421,18 +2537,17 @@ public partial class MainActivity : Activity
         _main.PostDelayed(_emptyHintTick, 30_000);
     }
 
-    /// <summary>失败终态文案装配单点（vc113 原型对照令 v31 retry-tag）：
-    /// 「信号中断，正在自动重试（第 X/6 次）——已自动换线尝试；也可 立即重试 或 打开频道列表」，
+    /// <summary>失败终态文案装配单点（vc113 原型对照令 v31 retry-tag）。
+    /// vc117 令4 文案精炼（2026-11-28 老板拍板）：「信号中断 · 自动重试中（X/6）· 立即重试 · 打开列表」，
     /// 重试次数读会话自愈账（PlaybackSession.SelfHealAttempts，封顶 6）；extra=退级提示附加行。</summary>
     private SpannableStringBuilder BuildEmptyStateText(string? extra = null)
     {
         var session = _manager.Current;
         int attempts = session?.SelfHealAttempts ?? 0;
-        var ssb = new SpannableStringBuilder(
-            $"{EmptyStateLead}（第 {attempts}/{PlaybackSession.SelfHealMaxAttempts} 次）——已自动换线尝试；也可 ");
+        var ssb = new SpannableStringBuilder($"信号中断 · 自动重试中（{attempts}/{PlaybackSession.SelfHealMaxAttempts}）\n");
         AppendEmptyLink(ssb, "立即重试", RetryFromEmptyState);
-        ssb.Append(" 或 ");
-        AppendEmptyLink(ssb, "打开频道列表", () => { HideEmptyState(); ShowList(); });
+        ssb.Append(" · ");
+        AppendEmptyLink(ssb, "打开列表", () => { HideEmptyState(); ShowList(); });
         if (!string.IsNullOrEmpty(extra)) ssb.Append($"\n{extra}");
         return ssb;
     }
@@ -2713,7 +2828,7 @@ public partial class MainActivity : Activity
             h.Num.SetPadding(0, 0, UiScale.Px(32), 0);
             h.Line.AddView(h.Num);
 
-            h.Star = new TextView(ctx);
+            h.Star = new TextView(ctx) { Gravity = GravityFlags.CenterVertical }; // vc117 令6：收藏点垂直居中
             Style(h.Star, "#F0C563", UiScale.Item);
             InkTranslucency.ApplyReadabilityShadow(h.Star);
             h.Star.SetPadding(0, 0, UiScale.Px(24), 0);
@@ -2744,7 +2859,7 @@ public partial class MainActivity : Activity
             var pillLp = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = UiScale.Px(12), Gravity = GravityFlags.CenterVertical };
             h.Line.AddView(h.Pill, pillLp);
 
-            h.Dot = new TextView(ctx);
+            h.Dot = new TextView(ctx) { Gravity = GravityFlags.CenterVertical }; // vc117 令6：状态点垂直居中
             h.Dot.SetPadding(UiScale.Px(24), 0, 0, 0);
             InkTranslucency.ApplyReadabilityShadow(h.Dot);
             h.Line.AddView(h.Dot);
@@ -2808,7 +2923,8 @@ public partial class MainActivity : Activity
             h.Name.Text = ch.Name;
             Style(h.Name, isCur ? "#FFFFFF" : InkTranslucency.TextSecondary, UiScale.Item);
             h.Name.Typeface = isCur ? Typeface.DefaultBold! : Typeface.Default!; // 复用件必须显式回置，防上一行粗体残留
-            // vc115 D2：当前台改 deep #3D6E9E 描边（原型 .chan-row.current），去棕色 Accent 填充
+            // vc115 D2：当前台改 deep #3D6E9E 描边（原型 .chan-row.current），去棕色 Accent 填充。
+            // vc117 令6：描边内收 8dp（行内距口径）——描边盒与行内容同边线，不再凸出到台标/编号外侧
             if (isCur)
             {
                 var curBg = new Android.Graphics.Drawables.GradientDrawable();
@@ -2816,7 +2932,7 @@ public partial class MainActivity : Activity
                 curBg.SetColor(Color.Transparent);
                 curBg.SetStroke(UiScale.Px(1), Color.ParseColor("#3D6E9E"));
                 curBg.SetCornerRadius(UiScale.Px(12));
-                h.Line.Background = curBg;
+                h.Line.Background = new Android.Graphics.Drawables.InsetDrawable(curBg, UiScale.Px(8), 0, UiScale.Px(8), 0);
             }
             else
             {

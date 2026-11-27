@@ -16,13 +16,23 @@ public static class UiScale
     public const float SpecBase = 20f; // #68 语义字号令：中档实字号基准（#61 拍板「中档=20sp」）
     public static float Factor { get; set; } = 17f / 36f; // 默认「中」=基准 17sp（#77 档位重定 2026-11-15 老板定值：大21/中17/小13=换算实值÷基准36；存量档位值不匹配走回落「中」）
 
-    /// <summary>手机版重定标（2026-11-27 真机整改令）：文字档按「短边 390dp=基准 1:1」（原型 v13 口径）——
-    /// 电视端 1920px 长边定标直接套手机（长边 2400px→ScreenScale=1.25）是「信息条文字巨大盖画面」的根因，
-    /// 手机改按短边 dp 对 390 基准，档位照常叠加。OnCreate 装载。</summary>
+    /// <summary>vc117 全元素比例换算令（2026-11-28 老板拍板）：所有界面元素（文字/间距/线框盒/图标/圆角）
+    /// 统一按屏幕比例换算——短边像素对 390 基准（分辨率比例项），不再分文字/间距两套口径。
+    /// ScreenScale=短边px/(390×首启密度)：纯分辨率比例，密度不进比例项。</summary>
     public static float ScreenScale { get; set; } = 1f;
 
-    /// <summary>手机版间距档（2026-11-27 真机整改令）：Px 入参按「390dp 基准 1:1」的 dp 值计，
-    /// 乘密度转像素——间距不再跟文字档走（电视端 Px=裸px×Scale 在手机上会缩到不可点的热区）。
+    /// <summary>vc117 跟随系统显示大小令（2026-11-28 老板拍板「应该根据系统设置变化」）：
+    /// 系统显示大小改密度，界面等比跟随——SystemScale=当前密度/首启密度（首启时系统档=「中」基准）。
+    /// 系统小档→界面缩小、标准=中、大档=放大，三套档随系统走，不单独给设置项（2026-11-27 口径沿用）。</summary>
+    public static float SystemScale { get; set; } = 1f;
+
+    /// <summary>首启密度基准（vc117）：首启时拍板存档（ui_density_ref），此后系统显示大小怎么改都以它为「中」。
+    /// OnCreate 装载；存量安装首启即拍当前档，与老板「目前这个作为中」口径一致。</summary>
+    public static float DensityRef { get; set; } = 1f;
+
+    /// <summary>手机版间距档（2026-11-27 真机整改令）：Px 入参按「390dp 基准 1:1」的 dp 值计。
+    /// vc117 起统一口径：PxScale=ScreenScale×SystemScale——间距/线框盒/图标与文字同一套比例换算
+    /// （分辨率比例×系统显示大小跟随），密度不再单独进间距（热区由 390 基准设计值保证可点）。
     /// OnCreate 装载。</summary>
     public static float PxScale { get; set; } = 1f;
 

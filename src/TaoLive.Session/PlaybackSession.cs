@@ -38,6 +38,7 @@ public sealed class PlaybackSession
     // 单调钟记账；0 读数按「无读数」不判趋势（IPlayer 契约），冷却窗防横跳。
     private int _lowInventoryRounds;
     private long _lowInventoryLastAtMs;
+    private long? _lowInventorySinceMs; // vc117 水位修复 B：本轮低水位起点（连续低水位时长账，放宽闸判据用）
     private long? _lastFailoverAtMs; // 可空：无账=从未切过，不占冷却窗（初值 0 会把开机头 60 秒全锁死）
     // vc67 预防介入上限：慢网盒子（带宽<流码率）库存常态低位，预防切换每冷却窗烧一条线，
     // 几分钟烧光全队列→「出音一会又信号中断，全线路不可达」。上限内坏线照切；到顶后预防退场，
@@ -350,6 +351,7 @@ public sealed class PlaybackSession
         _ticketRetrySinceMs = null;
         _slowGraceCount = 0; // vc86：新一轮起播慢连宽限重新给满（不背旧台旧轮账）
         _microlagSeekAtMs = null; // 微卡回退防振铃账随新起播清零（同欠载账口径）
+        _silentRefetchDone = false; // vc117 水位修复 A：补库存名额随新起播重记（每线路一次）
         Transition(PlaybackState.Buffering, "start requested");
         MarkBlindZoneIfAny(p.Endpoint); // 盲区标记（微卡修法三条③）：非 .m3u8 直流源天然贴边，实测账降权不给头名
         MarkEndpointStarted(); // vc87 票账降权：端点起播打点
@@ -399,6 +401,7 @@ public sealed class PlaybackSession
         _smoothnessTimes.Clear(); // vc70：平稳疑点账同口径，换台清零不跟人走
         _videoStallTimes.Clear(); // vc87：停滞账同口径清零
         _microlagSeekAtMs = null; // 微卡回退防振铃账随换台清零（同口径）
+        _silentRefetchDone = false; // vc117 水位修复 A：补库存名额随换台重记（每线路一次）
         _lastFailoverAtMs = null; // vc96 P3：预防介入冷却账随换台清零，不跟人走（同限速账口径）
         Transition(PlaybackState.Buffering, "change channel");
         MarkBlindZoneIfAny(_queue[0]); // 盲区标记（微卡修法三条③）：同口径，换台起播首路即标
@@ -484,6 +487,7 @@ public sealed class PlaybackSession
         _smoothnessTimes.Clear(); // vc70：平稳账随线清零
         _videoStallTimes.Clear(); // vc87：停滞账同口径清零
         _microlagSeekAtMs = null; // 微卡回退防振铃账随线清零（同口径）
+        _silentRefetchDone = false; // vc117 水位修复 A：补库存名额随线重记（每线路一次）
         Transition(PlaybackState.Buffering, bufferingTag);
         MarkEndpointStarted(); // vc87 票账降权：端点起播打点
         _player.Play(new PlaybackParams(startedChannel, _queue[endpointIndex], _preferLowLatency));
@@ -583,6 +587,12 @@ public sealed class PlaybackSession
 
     private long? _microlagSeekAtMs; // 最近一次微卡回退记账（单调钟，null=从未回退）
 
+    private bool _silentRefetchDone; // vc117 水位修复 A：本线路已静默重接补过库存（每线路一次，原口径「重接一次」）
+
+    /// <summary>vc117 水位修复 B：慢灌源低水位放宽闸等待窗（毫秒）——读数在涨（线活着）但水位
+    /// 持续低于库存线满此时长，也允许预防介入换线，不再要求「曾攒满过库存」。</summary>
+    public const int SlowFillProactiveWaitMs = 10_000;
+
     /// <summary>微卡回退尝试：仅盲区直流源（URL 不含 .m3u8，与内核盲区档同判据）且不在防振铃窗内时
     /// 向内核回退 <see cref="MicrolagSeekBackMs"/> 并保持 Playing（内核存量续播，不进 Reconnecting）；
     /// 返回 false=不回退（非盲区/窗内重复），调用方照旧升级自救。</summary>
@@ -594,6 +604,35 @@ public sealed class PlaybackSession
         if (_microlagSeekAtMs is { } last && nowMs - last < MicrolagSeekBackoffMs) return false;
         _microlagSeekAtMs = nowMs;
         _player.SeekBack(MicrolagSeekBackMs);
+        return true;
+    }
+
+    /// <summary>
+    /// 静默重接补库存（vc117 水位修复 A，2026-11-28 老板拍板「落」）：SilentRefetch 档「先开画后补库存」
+    /// 的补库存半边此前只有口径没有执行点（BufferPolicy 库存两档注释），慢源 1 秒强制开画后水位仅
+    /// 1~2 秒且无人补给，一秒就追到直播边缘出画。开画后（Playing）水位低于补库目标
+    /// （<see cref="BufferInventory.TargetMs"/>）且不在防振铃窗内时，静默回退一次（内核存量续播，
+    /// 不进 Reconnecting），把退过的段补进库存——延迟 10~30 秒属老板确认取舍（vc53 00:52 拍板）。
+    /// 与微卡回退共用防振铃账（回退类动作 30 秒窗内最多一次，防连环回退原地打转）；
+    /// 每线路最多一次（原口径「重接一次」），起播/换台/换线重记。返回是否执行了重接。</summary>
+    private bool TrySilentRefetch()
+    {
+        if (_silentRefetchDone) return false;
+        if (CurrentEndpoint is not { } endpoint) return false;
+        if (BufferInventory.Default != BufferInventory.Mode.SilentRefetch) return false; // 只在补库存档生效
+        long bufferedMs = _player.BufferedMs;
+        if (bufferedMs <= 0) return false; // 无读数不判（IPlayer 契约：无数≠见底）
+        if (bufferedMs >= BufferInventory.TargetMs)
+        {
+            _silentRefetchDone = true; // 水位已过补库目标：无需重接，记账免再判
+            return false;
+        }
+        long nowMs = _clock.NowMs;
+        if (_microlagSeekAtMs is { } last && nowMs - last < MicrolagSeekBackoffMs) return false; // 防振铃窗共用
+        _silentRefetchDone = true;
+        _microlagSeekAtMs = nowMs;
+        _player.SeekBack(MicrolagSeekBackMs);
+        SessionTrace.Emit($"[补库存] {DescribeChannel()} 开画后水位 {bufferedMs}ms<{BufferInventory.TargetMs}ms，静默回退 {MicrolagSeekBackMs / 1000}s 重接补库存（先开画后补库存口径落地）");
         return true;
     }
 
@@ -672,6 +711,10 @@ public sealed class PlaybackSession
         long nowMs = _clock.NowMs;
         SampleBufferProgress(nowMs);
         ProbeFillRate(nowMs); // vc89 灌速探针：起播期采样灌速，弱线提前焐热备线票
+        // vc117 后台出声根治令（2026-11-28 老板拍板）：后台冻结期自愈慢轮/轻试探活一律不发起——
+        // 壳层 OnPause 置 BackgroundHold，回前台 OnResume 撤；后台期间 Failed 挂起等回前台再续，
+        // 防「返回=退后台」后门：后台自动重试把音频又拉起来（真机实锤 vc112 放宽后仍出声）。
+        if (BackgroundHold) return false;
         // vc82 第三刀「全断不装死」（老板真机实锤：半分钟整个信号中断挂起，装死等按键）：
         // Failed 态且自愈慢轮到点——退避节奏自动重试（从头慢轮整条队列），不静默挂起。
         if (_state == PlaybackState.Failed
@@ -918,8 +961,10 @@ public sealed class PlaybackSession
         if (!_active || _state != PlaybackState.Playing)
         {
             _lowInventoryRounds = 0;
+            _lowInventorySinceMs = null;
             return false;
         }
+        TrySilentRefetch(); // vc117 水位修复 A：静默重接补库存（不依赖备线，先于备线闸；幂等由自身账把住）
         if (_endpointIndex + 1 >= _queue.Count)
         {
             return false; // 没有备线，无从预防（最后一根线由看门狗兜底）
@@ -954,25 +999,38 @@ public sealed class PlaybackSession
 
         long bufferedMs = _player.BufferedMs;
         bool lowInventory = bufferedMs > 0 && bufferedMs < ProactiveInventoryFloor.TotalMilliseconds;
+        bool slowFillTripped = false; // vc117 水位修复 B：慢灌源放宽闸判据（下文坐实）
         if (!lowInventory)
         {
             _lowInventoryRounds = 0; // 库存回线：趋势账清零
+            _lowInventorySinceMs = null;
             if (bufferedMs >= ProactiveInventoryFloor.TotalMilliseconds)
             {
                 _inventoryEverFilled = true; // vc68 误烧闸：库存攒满过线，本线路取得「预防介入资格」
             }
         }
-        else if (_lowInventoryRounds == 0 || nowMs - _lowInventoryLastAtMs >= 1000)
+        else
         {
-            _lowInventoryRounds++;
-            _lowInventoryLastAtMs = nowMs;
+            _lowInventorySinceMs ??= nowMs; // 低水位起点（连续低水位时长账）
+            if (_lowInventoryRounds == 0 || nowMs - _lowInventoryLastAtMs >= 1000)
+            {
+                _lowInventoryRounds++;
+                _lowInventoryLastAtMs = nowMs;
+            }
+            // vc117 水位修复 B（2026-11-28 老板拍板「落」）：放宽 _inventoryEverFilled 闸——慢灌源
+            // （读数在涨=线活着，只是灌得慢）连续满一窗水位仍低于库存线时，也允许预防介入换线，
+            // 不再要求「曾攒满过」；零进度死线仍交看门狗干库秒切（FastDrainWindow）管辖，口径不变。
+            bool flowing = _lastBufferProgressAtMs is { } t && nowMs - t < 3_000;
+            slowFillTripped = flowing && nowMs - _lowInventorySinceMs.Value >= SlowFillProactiveWaitMs;
         }
-        bool inventoryTripped = lowInventory && _inventoryEverFilled && _lowInventoryRounds >= 2;
+        bool inventoryTripped = (lowInventory && _inventoryEverFilled && _lowInventoryRounds >= 2)
+            || slowFillTripped;
         if (!churnTripped && !inventoryTripped && !smoothnessTripped && !stallTripped)
         {
             return false; // 四条判据都没坐实：单次抖动不切，等趋势
         }
         _lowInventoryRounds = 0;
+        _lowInventorySinceMs = null; // vc117 水位修复 B：低水位时长账随介入清零，新线重新起账
         _proactiveCount++; // vc67：预防介入记账，到顶退场（慢网烧线病根）
         // 预防打点（老板令 #24/#26）：主动介入的账面依据——命中哪条判据、账面多少、切前是第几路线
         string basis = stallTripped
@@ -981,6 +1039,8 @@ public sealed class PlaybackSession
             ? $"滚动窗 {StallChurnWindow.TotalMinutes:0}min 内卡流 {_stallTimes.Count} 次（满 {StallChurnThreshold} 次）"
             : smoothnessTripped
                 ? $"滚动窗 {SmoothnessSuspectWindow.TotalSeconds:0}s 内平稳疑点 {_smoothnessTimes.Count} 次（满 {SmoothnessSuspectThreshold} 次，慢帧流坏线）"
+                : slowFillTripped
+                ? $"慢灌低水位 {bufferedMs}ms 持续 {SlowFillProactiveWaitMs / 1000}s（线活着灌不动，放宽闸介入）"
                 : $"库存 {bufferedMs}ms 连续 2 拍低于 {(int)ProactiveInventoryFloor.TotalMilliseconds}ms";
         SessionTrace.Emit($"[预防] {DescribeChannel()} {basis}，预防性换源（原线路 {CurrentLineIndex + 1}/{LineCount}，不等卡流超时）");
         _stallTimes.Clear(); // 介入一次清一次账：新线重新起账，老账不跟去新线
@@ -1157,8 +1217,22 @@ public sealed class PlaybackSession
         }
     }
 
+    /// <summary>vc117 后台出声根治令（2026-11-28 老板拍板）：后台冻结旗——壳层 OnPause 置位、OnResume 撤。
+    /// 置位期间：看门狗自愈不发起（CheckWatchdog 直落）、换源自救只停不播（TryFailover 短路）——
+    /// 后台期间任何路径都不得把播放内核重新拉起来出声。</summary>
+    public static volatile bool BackgroundHold;
+
     private void TryFailover(string reason)
     {
+        // vc117 后台出声根治：后台冻结期换源自救只停内核+排自愈账，不 Play（防后台出声）；
+        // 回前台 OnResume 撤旗后，自愈慢轮/用户重试照常续。
+        if (BackgroundHold)
+        {
+            _player.Stop();
+            ScheduleSelfHeal();
+            SessionTrace.Emit($"[后台冻结] {DescribeChannel()} 换源自救挂起（{reason}）：后台不重播，回前台续");
+            return;
+        }
         var next = _endpointIndex + 1;
         if (_channel is null || next >= _queue.Count)
         {

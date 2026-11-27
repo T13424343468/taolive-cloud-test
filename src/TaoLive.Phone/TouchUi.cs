@@ -16,10 +16,11 @@ namespace TaoLive.Phone;
 /// - 单击画面=控制条显收（3 秒自动收）；长按=收藏/取消当前台（口径不变）；
 /// - 切台手势纠正（老板令「左上右下」）：横屏左滑=上一台、右滑=下一台；竖屏同构左右滑
 ///   （上下滑让位亮度/音量手势——老板令「参考普通播放器做法」）；支持慢拖（OnScroll 累计）不只认快滑；
-/// - 亮度/音量手势：竖横屏均按左右半区——左半区上下滑=调亮度（持久记忆）、右半区上下滑=调音量；指示=自绘竖条+单色图标跟手（2026-11-27 老板令「滑动还是要、样式也还是要有」）；控制条音量按钮走系统音量条（同日老板令「直接用手机的」）；
+/// - 亮度/音量手势：竖横屏均按左右半区——左半区上下滑=调亮度、右半区上下滑=调音量；指示=自绘竖条+单色图标跟手（2026-11-27 老板令「滑动还是要、样式也还是要有」）；控制条音量按钮走系统音量条（同日老板令「直接用手机的」）；
+///   vc117 老板令「出画不提亮」：应用不再主动改亮度——启动/出画保持当前亮度原样，仅手势调亮时从当前实际亮度起步（原「持久记忆+启动强制套用」整组撤除）。
 /// - 控制条按原型 v19–v26 重构：三行（台名读数/节目单/按钮两端分组），vc116 统一信息分块令：横竖屏同构三行；
 ///   按钮单色文本图标（去 emoji 彩色呈现）；补音量按钮（老板令：一次 ±10）；
-/// - 方向锁持久化（taolive_prefs:orientation_lock）不变；屏幕亮度记忆（taolive_prefs:screen_brightness）。
+/// - 方向锁持久化（taolive_prefs:orientation_lock）不变。
 /// 底层零改动：换台走既有 PlayAt/SwitchToCurrent，收藏走既有 ToggleFavoriteOnCurrent，设置走既有 OpenSettingsPanel。
 /// </summary>
 public partial class MainActivity
@@ -48,15 +49,13 @@ public partial class MainActivity
     private const int HudIconDp = 16;          // 指示图标边长（v31 原型口径：太阳 SVG 16×16）
     private const int HudTrackWidthDp = 5;     // 竖条轨道宽（v31 老板令：系统滚动条式细条 5×120，不占画面）
     private AudioManager? _audio;
-    private float _brightness = 0.5f;          // 0.05–1，持久记忆
-    private Java.Lang.Runnable? _brightnessSave; // 亮度落盘防抖
+    private float _brightness = 0.5f;          // 0.05–1 手势工作值：起点=当前实际亮度（vc117 老板令「出画不提亮」，不再持久记忆）
 
     /// <summary>触屏层装配（BuildRoot 末尾调用）：手势挂视频面，控制条挂播放页。</summary>
     private void BuildTouchLayer()
     {
         _orientationLocked = _prefs.GetBoolean("orientation_lock", false);
-        _brightness = Math.Clamp(_prefs.GetFloat("screen_brightness", 0.5f), 0.05f, 1f);
-        try { if (Window?.Attributes is { } attr) attr.ScreenBrightness = _brightness; } catch { }
+        _brightness = ReadCurrentBrightness(); // vc117 老板令「出画不提亮」：启动不套用任何亮度，当前是什么就保持什么
         _audio = (AudioManager?)GetSystemService(AudioService);
 
         _gesture = new GestureDetector(this, new PhoneGestureListener(this));
@@ -158,19 +157,30 @@ public partial class MainActivity
 
     // —— 亮度/音量（手势与按钮共用单点） ————————————————————
 
+    /// <summary>读当前实际亮度（vc117 老板令「出画不提亮」）：窗口有覆写用窗口值，否则取系统亮度，兜底 0.5；只读不改。</summary>
+    private float ReadCurrentBrightness()
+    {
+        try
+        {
+            if (Window?.Attributes is { } attr && attr.ScreenBrightness >= 0f)
+                return Math.Clamp(attr.ScreenBrightness, 0.05f, 1f);
+        }
+        catch { }
+        try
+        {
+            int v = global::Android.Provider.Settings.System.GetInt(ContentResolver!,
+                global::Android.Provider.Settings.System.ScreenBrightness, 128);
+            return Math.Clamp(v / 255f, 0.05f, 1f);
+        }
+        catch { }
+        return 0.5f;
+    }
+
     private void SetBrightness(float value)
     {
         _brightness = Math.Clamp(value, 0.05f, 1f);
         try { if (Window?.Attributes is { } attr) attr.ScreenBrightness = _brightness; } catch { }
         ShowHudBar(HudIconView.IconKind.Sun, _brightness); // 亮度 0.05–1 直接作比例
-        if (_brightnessSave is { } old) _main.RemoveCallbacks(old);
-        _brightnessSave = new Java.Lang.Runnable(() =>
-        {
-            var ed = _prefs.Edit();
-            ed?.PutFloat("screen_brightness", _brightness);
-            ed?.Apply();
-        });
-        _main.PostDelayed(_brightnessSave, 600);
     }
 
     // —— 控制条（原型 v19–v26：三行结构/两端分组/单色图标 + 音量按钮） ———
@@ -180,7 +190,9 @@ public partial class MainActivity
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         _controlBar = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
         _controlBar.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc111 老板令：全页面统一电视端水墨透光（原近实色 232 闷画面）
-        _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), UiScale.Px(10));
+        // vc117 令2①+8+19/20（2026-11-28 老板拍板）：控制条贴底，底边距吃圆角安全边（圆角半径+8dp，
+        // 拿不到走 24dp 兜底）——大圆角屏不再裁掉按钮，一开始就避让不留角部裁切。
+        _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), Math.Max(UiScale.Px(10), BottomCornerSafePx()));
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
         // 行3 水位+接下来），信息分块不再横屏特判；全部单行不换行、读数段完整不截断。
@@ -236,8 +248,7 @@ public partial class MainActivity
         View AddIcon(LinearLayout into, BarIconView.IconKind kind, EventHandler click)
         {
             var b = new BarIconView(this) { Kind = kind, Clickable = true };
-            b.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
-            b.Background = BarButtonBackground();
+            b.Background = BarButtonBackground(); // 令16：36dp 定尺寸盒自带热区，旧文字钮 padding 退场
             b.Click += click;
             // vc116④：相邻按钮统一 8dp 间距（首钮贴组首不留头距）
             into.AddView(b, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = into.ChildCount > 0 ? UiScale.Px(8) : 0 });
@@ -256,9 +267,8 @@ public partial class MainActivity
             Kind = landscape ? FullscreenIconView.IconKind.ExitFullscreen : FullscreenIconView.IconKind.EnterFullscreen,
             Clickable = true,
         };
-        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(44))
-        { LeftMargin = UiScale.Px(8) }; // 定高按钮：与文字钮同热区；vc116④ 相邻按钮 8dp 间距
-        flipBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
+        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(36))
+        { LeftMargin = UiScale.Px(8) }; // 令16：36dp 定尺寸盒（原 44dp），图标居中稍大
         flipBtn.Background = BarButtonBackground(); // vc116②：线框皮，按压态强描边
         flipBtn.Click += (_, _) =>
         {
@@ -270,9 +280,8 @@ public partial class MainActivity
 
         // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
         var lockBtn = new LockIconView(this) { Clickable = true };
-        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(44))
-        { LeftMargin = UiScale.Px(8) }; // 定高按钮：与文字钮同热区；vc116④ 相邻按钮 8dp 间距
-        lockBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
+        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(36))
+        { LeftMargin = UiScale.Px(8) }; // 令16：36dp 定尺寸盒（原 44dp），图标居中稍大
         lockBtn.Background = BarButtonBackground(); // vc116②：线框皮，按压态强描边
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
@@ -447,7 +456,8 @@ public partial class MainActivity
         private float _startX, _startY, _lastY;
         private bool _fired;        // 本次手势已触发切台（一次滑动只切一台）
         private int _vMode;         // 0=未定 1=亮度 2=音量
-        private float _volAccum;    // 音量连续调整累计（刻度）
+        private int _volStart;      // vc117 令10：手势入模时的起点音量档（绝对映射锚点）
+        private int _volLast = -1;  // vc117 令10：上一拍已设档（同档不重复设值/亮条）
 
         private float Dp(float px) => px / host.Resources!.DisplayMetrics!.Density;
 
@@ -461,7 +471,7 @@ public partial class MainActivity
             }
             _fired = false;
             _vMode = 0;
-            _volAccum = 0f;
+            _volLast = -1; // vc117 令10：新手势重置上一拍档位
             return true; // 接收后续手势事件
         }
 
@@ -521,6 +531,9 @@ public partial class MainActivity
                 {
                     bool leftHalf = _startX < host.Resources!.DisplayMetrics!.WidthPixels / 2f;
                     _vMode = leftHalf ? 1 : 2; // 左半区亮度、右半区音量
+                    if (_vMode == 1) host.RunOnUiThread(() => host._brightness = host.ReadCurrentBrightness()); // vc117：入模即同步当前实际亮度，起手不跳变
+                    if (_vMode == 2 && host._audio is { } a)
+                        _volStart = a.GetStreamVolume(Android.Media.Stream.Music); // vc117 令10：入模记起点音量，绝对映射不跳变
                     _lastY = _startY; // v28 定稿②：入模即从起点全额结算，起手行程不吞（滑 1 得 1）
                 }
             }
@@ -534,16 +547,18 @@ public partial class MainActivity
             {
                 if (host._audio is { } audio)
                 {
+                    // vc117 令10（2026-11-28 老板拍板）：音量改跟手绝对映射——手指位置直接定音量档
+                    // （起点档 + 行程比例×满档），对齐系统音量滑动手感，不跳变；累计步进口径退场。
                     int max = audio.GetStreamMaxVolume(Android.Media.Stream.Music);
-                    float delta = (_lastY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels * max; // 行程=整屏高
-                    _volAccum += delta;
-                    if (Math.Abs(_volAccum) >= 1f)
+                    float travel = (_startY - e2.GetY()) / host.Resources!.DisplayMetrics!.HeightPixels;
+                    int idx = Math.Clamp((int)Math.Round(_volStart + travel * max), 0, max);
+                    if (idx != _volLast)
                     {
-                        int step = (int)_volAccum;
-                        _volAccum -= step;
-                        int idx = Math.Clamp(audio.GetStreamVolume(Android.Media.Stream.Music) + step, 0, max);
-                        // v28 定稿⑤：音量直接走系统音量条（系统音量面板即参照，应用不自制音量 UI）
-                        audio.SetStreamVolume(Android.Media.Stream.Music, idx, VolumeNotificationFlags.ShowUi); // 弹系统音量条
+                        _volLast = idx;
+                        // vc117 令9：音量与亮度同一套自绘竖条 HUD（同位置同样式，图标区分太阳/喇叭），
+                        // 系统音量条退场（ShowUi 旗改 0 静默设值）
+                        audio.SetStreamVolume(Android.Media.Stream.Music, idx, (VolumeNotificationFlags)0);
+                        host.RunOnUiThread(() => host.ShowHudBar(HudIconView.IconKind.Speaker, max <= 0 ? 0 : (float)idx / max));
                     }
                 }
             }
@@ -651,17 +666,17 @@ public partial class MainActivity
 
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
-        // 与 FullscreenIconView 同口径：量死 44dp 见方热区，防默认测量撑满整行。
+        // vc117 令16（2026-11-28 老板拍板）：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(44);
+            int side = UiScale.Px(36);
             SetMeasuredDimension(side, side);
         }
 
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            float side = Android.Util.TypedValue.ApplyDimension(Android.Util.ComplexUnitType.Sp, IconGlyph, Context.Resources!.DisplayMetrics);
+            float side = Math.Min(Width, Height) * 0.58f; // 令16：图标占盒 58%，几何正中间
             canvas.Save();
             canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
             DrawIcon(canvas, side);
@@ -742,19 +757,19 @@ public partial class MainActivity
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
         // vc111 真机修（老板截图第1条）：自绘视图不量尺寸会被系统撑满整行剩余宽度——
-        // 图标拉成巨大白块、锁定钮挤出屏外。量死 44dp 见方（与文字钮同热区），OnDraw 按方图绘制自然居中。
+        // 图标拉成巨大白块、锁定钮挤出屏外。量死见方（与文字钮同热区），OnDraw 按方图绘制自然居中。
+        // vc117 令16：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(44);
+            int side = UiScale.Px(36);
             SetMeasuredDimension(side, side);
         }
 
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            // vc112 老板令「图标统一+调大」：绘制区按 IconGlyph 字号换算成 px（与 TextSize=sp 渲染同尺寸），
-            // 居中平移后按 side 见方绘制——与文字图标（◀▶☰⚙）观感一致
-            float side = Android.Util.TypedValue.ApplyDimension(Android.Util.ComplexUnitType.Sp, IconGlyph, Context.Resources!.DisplayMetrics); // sp→px（ScaledDensity API 34 起废弃，走 TypedValue 同口径）
+            // 令16：图标占盒 58%（原 IconGlyph 字号≈48%），居中平移后按 side 见方绘制——几何正中间
+            float side = Math.Min(Width, Height) * 0.58f;
             canvas.Save();
             canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
             DrawIcon(canvas, side);
@@ -815,19 +830,19 @@ public partial class MainActivity
 
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
-        // vc111 真机修（老板截图第1条）：同 FullscreenIconView——量死 44dp 见方，防默认测量撑满整行。
+        // vc111 真机修（老板截图第1条）：同 FullscreenIconView——量死见方，防默认测量撑满整行。
+        // vc117 令16：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(44);
+            int side = UiScale.Px(36);
             SetMeasuredDimension(side, side);
         }
 
         protected override void OnDraw(Canvas? canvas)
         {
             if (canvas is null || Context is null) return;
-            // vc112 老板令「图标统一+调大」：绘制区按 IconGlyph 字号换算成 px（与 TextSize=sp 渲染同尺寸），
-            // 居中平移后按 side 见方绘制；锁体改线条风（描边），与全屏图标同风格
-            float side = Android.Util.TypedValue.ApplyDimension(Android.Util.ComplexUnitType.Sp, IconGlyph, Context.Resources!.DisplayMetrics); // sp→px（ScaledDensity API 34 起废弃，走 TypedValue 同口径）
+            // 令16：图标占盒 58%（原 IconGlyph 字号≈48%），居中平移后按 side 见方绘制；锁体线条风不变
+            float side = Math.Min(Width, Height) * 0.58f;
             canvas.Save();
             canvas.Translate((Width - side) / 2f, (Height - side) / 2f);
             DrawIcon(canvas, side);

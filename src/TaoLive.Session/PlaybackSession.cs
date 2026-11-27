@@ -726,8 +726,9 @@ public sealed class PlaybackSession
                 // 补触发原因+已等时长，断流自救链路（含误杀嫌疑对账）可查。vc67：带上进度口径（快切/慢灌让路）。
                 SessionTrace.Emit($"[看门狗] {DescribeChannel()} 起播超时 {nowMs - started}ms≥{windowMs}ms（原线路 {CurrentLineIndex + 1}/{LineCount}，{_watchdogLastBufferedMs}ms 存货）");
                 // 老板令 2026-11-17 慢源宽限 B（vc86）：open-timeout 与内核超时同账——预算未满先原地宽限重试，
-                // 12s 内核超时先到时宽限在报错路径吃掉，此处兜住竞速里看门狗先到的另一半（F1 修）
-                if (_state == PlaybackState.Buffering && TrySlowConnectGrace("open timeout"))
+                // 12s 内核超时先到时宽限在报错路径吃掉，此处兜住竞速里看门狗先到的另一半（F1 修）。
+                // vc104 宽限不重启：看门狗路径内核还在拉，只重计窗续攒，不扔货不重放（restartPlayer: false）
+                if (_state == PlaybackState.Buffering && TrySlowConnectGrace("open timeout", restartPlayer: false))
                 {
                     return true;
                 }
@@ -751,13 +752,15 @@ public sealed class PlaybackSession
         return false;
     }
 
-    /// <summary>vc67 慢灌放宽窗（起播）：首帧门槛×3（7×3=21 秒；vc89 随门槛 7 秒改倍率×3——
-    /// 窗值保持 21 秒不变：vc66 真机出画基线 13-16 秒，×7=21 秒盖住基线留 5 秒余量的口径平移，
-    /// 仍&lt;慢恢复窗 24 秒，三窗次序不打架）。
-    /// ×3 定标依据：基线 16 秒 ÷ 门槛 7 秒 ≈ 2.3，×3 取整留余。</summary>
+    /// <summary>vc104 慢灌放宽窗（起播）——门槛联动根修：vc103 首帧门槛回退 1 秒后，旧公式
+    /// FirstFrameGate(写死 7s)×3=21 秒与出画门槛脱钩（门槛已 1 秒，窗仍 21 秒，慢死源白等）。
+    /// 改为 max(OpenTimeout 8s, 出画门槛×3)：默认档 SilentRefetch 门槛 1 秒×3=3 秒 &lt; 8 秒，
+    /// 窗值=8 秒与判死钟同账——慢灌让路不再超过兜底超时，慢而通的证明时间交给宽限不重启（本版第二刀）。
+    /// 若未来门槛调回 7 秒（StartFull 档），窗自动回 21 秒口径，公式不再写死。</summary>
     /// <remarks>口径：慢灌源带宽 ≥1/3 流码率即灌得到。</remarks>
-    public static readonly TimeSpan SlowStartWindow =
-        TimeSpan.FromMilliseconds(PrefetchCurve.FirstFrameGate.TotalMilliseconds * 3);
+    public static readonly TimeSpan SlowStartWindow = TimeSpan.FromMilliseconds(Math.Max(
+        PrefetchCurve.OpenTimeout.TotalMilliseconds,
+        BufferInventory.FirstFrameOpenMs(BufferInventory.Default) * 3));
 
     /// <summary>vc67 慢灌放宽窗（重灌）：卡后重入门槛 12s×2=24 秒——重灌要满 12 秒媒体，带宽 ≥1/2 流码率即灌得到。</summary>
     public static readonly TimeSpan SlowRecoveryWindow =
@@ -1089,8 +1092,11 @@ public sealed class PlaybackSession
         !string.IsNullOrEmpty(code) && code.Contains("timeout", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>慢连宽限原语（vc86 老板令）：Failed 落账后回 Buffering 原地重试本线（坏票宽限同骨架），
-    /// 看门狗窗随 Buffering 重计；预算耗尽返回 false 走既有换源。</summary>
-    private bool TrySlowConnectGrace(string reason)
+    /// 看门狗窗随 Buffering 重计；预算耗尽返回 false 走既有换源。
+    /// vc104 第二刀（老板令「宽限不重启」）：restartPlayer=false 时（看门狗路径）内核还活着——
+    /// 不 Transition、不 _player.Play()、不 MarkEndpointStarted，只重计宽限窗续攒，货不扔；
+    /// 内核错误路径（restartPlayer=true 默认）内核已死必须重放，照原骨架。</summary>
+    private bool TrySlowConnectGrace(string reason, bool restartPlayer = true)
     {
         if (_channel is null || CurrentEndpoint is null || _queue.Count == 0) return false;
         // vc87 进度闸（老板拍板「三方案一次到位」，坏票 6 秒循环病灶根修）：宽限前先补采样进度账——
@@ -1104,6 +1110,13 @@ public sealed class PlaybackSession
         if (_slowGraceCount >= SlowConnectGraceBudget) return false; // vc86 预算闸（方案 v2 F2）：封顶 2 次后放行走既有换源，真死不无限原地打转
         _slowGraceCount++;
         SessionTrace.Emit($"[慢连] {DescribeChannel()} 超时先原地宽限重试（{_slowGraceCount}/{SlowConnectGraceBudget}，线 {CurrentLineIndex + 1}/{LineCount}，{reason}）——慢而通不切线");
+        if (!restartPlayer)
+        {
+            // vc104 宽限不重启（看门狗路径）：内核在拉，只重计 Buffering 窗续攒，不扔货不重放
+            _bufferingSinceMs = _clock.NowMs;
+            SlowGraceStarted?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
         if (_state != PlaybackState.Failed) // 内核报错路径已在 OnPlayerError 落过 Failed，重复落账属非法迁移（矩阵 Failed→Failed）
         {
             Transition(PlaybackState.Failed, $"slow grace {reason}"); // 看门狗路径：Buffering→Failed 落账再回 Buffering，照坏票宽限骨架

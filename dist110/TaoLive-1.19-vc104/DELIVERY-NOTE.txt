@@ -1,0 +1,36 @@
+TaoLive TV 1.19 vc104 交付说明
+================================
+
+包名: com.taolive.tv
+版本: versionCode 104 / versionName 1.19
+APK: com.taolive.tv-Signed.apk (22,318,466 字节)
+SHA256: 5898b98ea5fcc16292aff2ed50c8f2dd2f89d84ab34ddf5c3f178f4461148afb
+全测: 406/406 绿 (Release)
+
+本次改动（vc104，以 93 为基线重建）
+--------------------------------
+老板令：先把 93 出给我，然后以 93 为基线开工清单所有，出一个新版。
+vc93 原包已先行交付；本包 = 当前树（已含 vc94~vc103 全部缺陷修复）+ 以下三刀：
+
+一、恢复热备深水档
+  vc101 拆除的双实例并行攒流回归（ServiceCollectionExtensions hotStandbyEnabled: true），
+  PrepareStandby/SetStartupGate(StartFull)/StandbyAccumulateWindow 15s 全链路恢复。
+  慢片竞速保持拆除（RacingHttpDataSource.RecordSlowSegment 纯记账，不回滚）。
+
+二、三刀根修
+  1. SlowStartWindow 门槛联动：慢灌放宽窗由 FirstFrameGate(写死 7s)×3=21s 改为
+     max(OpenTimeout 8s, 出画门槛×3)——vc103 门槛回退 1 秒后窗与门槛脱钩的病根拔除，
+     门槛动窗跟着动，公式不再写死。
+  2. 宽限不重启：TrySlowConnectGrace 增加 restartPlayer 参数。看门狗路径（内核还在拉）
+     传 false——不 Transition、不 _player.Play()、不 MarkEndpointStarted，只重计
+     Buffering 窗续攒，货不扔；内核错误路径（内核已死）保持重放。
+  3. 出画门槛保险丝：看门狗链 8s 判死 → 宽限不重启续攒（预算 2 次封顶）→ 换线 →
+     自愈 6 档 → 不可达终态，无限黑屏已封死。
+
+三、版本锚 104/1.19
+  csproj ApplicationVersion + AndroidManifest versionCode/versionName 两处同步。
+
+验证
+----
+- aapt2 badging 亲验：versionCode='104' versionName='1.19'
+- dotnet test：406/406 通过（含热备恢复后 HotSwitch 全链路）

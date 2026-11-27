@@ -21,10 +21,11 @@ public static class ServiceCollectionExtensions
             var dispatcher = sp.GetService<IMainThreadDispatcher>() ?? new ImmediateMainThreadDispatcher();
             if (kernelFactory is not null)
             {
-                // vc101 老板令「并发整个都不要了」：热备双实例并行攒流拆除，退回纯单会话（换台走既有串行链路）
+                // vc104 老板令：以 93 为基线重建——恢复热备深水档（vc101 拆除的双实例并行攒流回归）；
+                // 慢片竞速保持拆除（RacingHttpDataSource.RecordSlowSegment 纯记账，不回滚）
                 return new PlaybackSessionManager(
                     () => new PlaybackSession(kernelFactory(), clock), dispatcher,
-                    onSwitchingChannel, hotStandbyEnabled: false);
+                    onSwitchingChannel, hotStandbyEnabled: true);
             }
             var player = sp.GetRequiredService<IPlayer>();
             return new PlaybackSessionManager(() => new PlaybackSession(player, clock), dispatcher);

@@ -105,8 +105,9 @@ public class SessionFailoverTests
     [Fact]
     public void Watchdog_slow_filling_source_gets_extended_window()
     {
-        // vc67 进度感知：慢灌源（内核存货在涨、到不了 3 秒首帧门槛）不被零增长判死窗切，
-        // 放宽到首帧门槛×7=21 秒——vc66 真机出画基线 13-16 秒，×5=15 秒盖不住 16 秒尾巴（差 1 秒误杀）。
+        // vc104 门槛联动根修：慢灌窗改 max(OpenTimeout, 出画门槛×3)=8s 与判死钟同账——
+        // 慢灌源不再靠放宽窗让路（vc103 门槛回退 1 秒后旧 21s 窗与门槛脱钩，慢死源白等），
+        // 改由「宽限不重启」续攒：窗到点不切线不重放不扔货，只重计窗继续灌，预算 2 次封顶。
         var clock = new FixedClock(T0);
         var player = new LoggingPlayer();
         var session = new PlaybackSession(player, clock);
@@ -115,30 +116,22 @@ public class SessionFailoverTests
 
         player.BufferedMs = 1_000; // 缓冲在灌（>0 有增长）
         clock.Advance(TimeSpan.FromSeconds(3));
-        Assert.False(session.CheckWatchdog()); // 判死窗 12 秒内不切，慢灌源不切
+        Assert.False(session.CheckWatchdog()); // 判死窗 8 秒内不切，慢灌源不切
         Assert.Equal(PlaybackState.Buffering, session.State);
         Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url);
 
         player.BufferedMs = 2_000; // 继续在灌
-        clock.Advance(TimeSpan.FromSeconds(9)); // 累计 12s：有增长→慢灌窗 21s 让路
-        Assert.False(session.CheckWatchdog());
+        clock.Advance(TimeSpan.FromSeconds(9)); // 累计 12s：窗到点，有进度→宽限不重启 1/2（不切线不重放）
+        Assert.True(session.CheckWatchdog());
+        Assert.Equal(PlaybackState.Buffering, session.State);
         Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url);
 
-        clock.Advance(TimeSpan.FromSeconds(6)); // 累计 18s：6 秒无增长→零增长判死窗 12s 到点（vc86 宽限 B：先原地重试）
+        clock.Advance(TimeSpan.FromSeconds(8)); // 累计 20s：窗重计后再到点→宽限 2/2，仍原地续攒
         Assert.True(session.CheckWatchdog());
-        Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url); // 宽限 1/2：慢灌窗内到不了的源先原地重试
+        Assert.Equal(PlaybackState.Buffering, session.State);
+        Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url);
 
-        clock.Advance(TimeSpan.FromSeconds(12)); // 累计 30s：宽限回 Buffering 清进度账，重放存货 2000ms 记新增长→慢灌窗 21s 让路
-        Assert.False(session.CheckWatchdog());
-
-        clock.Advance(TimeSpan.FromSeconds(9)); // 累计 39s：增长账变陈（>3s 无新增长）→零增长窗 12s 到点
-        Assert.True(session.CheckWatchdog());
-        Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url); // 宽限 2/2
-
-        clock.Advance(TimeSpan.FromSeconds(12)); // 累计 51s：同口径回灌让路
-        Assert.False(session.CheckWatchdog());
-
-        clock.Advance(TimeSpan.FromSeconds(9)); // 累计 60s：预算耗尽，该切还得切
+        clock.Advance(TimeSpan.FromSeconds(8)); // 累计 28s：预算耗尽，该切还得切
         Assert.True(session.CheckWatchdog());
         Assert.Equal("https://s/b.m3u8", session.CurrentEndpoint?.Url);
     }
@@ -170,16 +163,18 @@ public class SessionFailoverTests
     public void Watchdog_windows_stay_consistent_with_gates()
     {
         // vc66/vc67/vc68 三次同款死局的防复发闸：门槛动，窗必须跟着动——推导式+不变量断言双保险。
-        Assert.True(PlaybackSession.DefaultOpenTimeout > PrefetchCurve.FirstFrameGate,
-            "判死窗必须>首帧门槛：窗≤门槛起播必被误杀（刀二判死窗 8 秒仍盖住门槛 7 秒）");
+        // vc104 门槛联动根修：慢灌窗改 max(OpenTimeout, 出画门槛×3)，与判死钟同账（默认档 1s×3=3s<8s，窗=8s）。
+        Assert.True(PlaybackSession.DefaultOpenTimeout >= PrefetchCurve.FirstFrameGate,
+            "判死窗必须≥首帧门槛：窗<门槛起播必被误杀（vc103 门槛回退 1 秒后判死窗 8 秒仍盖住）");
         Assert.True(PlaybackSession.DefaultOpenTimeout >= TimeSpan.FromSeconds(8),
             "判死窗必须盖过内核 Media3 默认连接超时 8 秒（vc68 真机实锤；刀二收 8 秒=同值赛跑，零进度真死殊途同归都走换源）");
-        Assert.True(PlaybackSession.SlowStartWindow > PlaybackSession.DefaultOpenTimeout,
-            "慢灌窗必须>判死窗：慢热源要有证明时间（查活续期放宽到 21 秒，8 秒兜底只咬零进度）");
+        Assert.True(PlaybackSession.SlowStartWindow >= PlaybackSession.DefaultOpenTimeout,
+            "慢灌窗必须≥判死窗（vc104 联动公式）：慢热源证明时间交给宽限不重启，窗不再超兜底超时");
         Assert.True(PlaybackSession.SlowRecoveryWindow > PlaybackSession.SlowStartWindow,
             "重灌窗必须>慢灌窗：重灌要满 12 秒媒体，比首帧更久");
-        Assert.Equal(PrefetchCurve.FirstFrameGate.TotalMilliseconds * 3,
-            PlaybackSession.SlowStartWindow.TotalMilliseconds); // vc89：门槛 7s×3=21s 口径平移（原 3s×7 同值），三窗次序不打架
+        Assert.Equal(Math.Max(PrefetchCurve.OpenTimeout.TotalMilliseconds,
+                BufferInventory.FirstFrameOpenMs(BufferInventory.Default) * 3),
+            PlaybackSession.SlowStartWindow.TotalMilliseconds); // vc104：max(8s, 出画门槛×3) 联动公式，门槛动窗跟着动
         Assert.Equal(PrefetchCurve.OpenTimeout, PlaybackSession.DefaultOpenTimeout); // 刀二：12 秒收 8 秒（老板 2026-11-25 九件套定稿）
     }
 

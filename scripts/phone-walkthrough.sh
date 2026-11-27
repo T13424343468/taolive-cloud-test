@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# TaoLive 手机版逐屏走查出图 v6（制度：视觉模型比对与评分制度 2026-11-26）
-# v6 改法（对照 v5 实拍缺陷，vc108 走查复盘）：
-#   ① 浮层关闭一律 keyevent 4（返回键）——v5「点面板外」坐标实测点在面板内（设置面板顶部贴靠非贴底，
-#      (540,480) 落在「源订阅」行上；抽屉全屏后无面板外），设置/抽屉从未被脚本关上（00-back 拍到面板开着的根因）。
-#   ② 05 进阶调优改直点「进阶调优」（v5 只上滑 300px 没滚出内容，且从未点过入口；坐标自 ui-settings-portrait.xml 实证）。
-#   ③ 06 崩溃日志 tap_text 加坐标兜底 (867,651)（同上实证；uiautomator 对视频页偶发超时）。
-#   ④ HUD 拖长到 3s + 拖中三连拍（0.9/1.5/2.1s）+ 落指 0.3s 内补拍——v5 单拍 0.8s 疑时机错过（连续两版未出图）。
-#   ⑤ 03c 抽屉关闭改 keyevent 4（vc109 定宽令：竖屏全屏无遮罩可点；横屏 480dp 定宽后返回键同样可靠）。
+# TaoLive 手机版逐屏走查出图 v7（制度：视觉模型比对与评分制度 2026-11-26）
+# v7 改法（对照 v6 实拍缺陷，vc122 云测 run 46075783452 复盘）：
+#   ① 根因修复：v6 在 03c 按返回键关抽屉，但 03 抽屉根本没开（控制条 3s 窗口已过，点 ☰ 落空），
+#      vc112 拍板口径「播放页返回=停播攒流退后台」生效 → 应用退到桌面，此后 04~17 共 20+ 张全拍到
+#      桌面/Google/Chrome，走查整段白测。v7 加 ensure_fg()：每段开始前核对前台，掉前台即 am start 拉回。
+#   ② 抽屉打开加验证：点 ☰ 后 dump 查「全部」页签，没开就重显控制条再点一次（v6 盲点）。
+#   ③ 17 退出确认框整段重写：vc112 已删退出确认弹窗（返回=退后台），v6 还在等一个不存在的弹窗；
+#      v7 改拍「返回退后台」真实态，拍完 ensure_fg 拉回。
+# v6 改法：浮层关闭一律 keyevent 4；05 直点「进阶调优」；06 坐标兜底；HUD 拖 3s 三连拍；03c 返回键关抽屉。
 # v5 改法：横屏坐标转置；HUD 起终点改视频带内；设置滚动起点改面板内容区。
-# v3 改法：控制条按钮源码推算坐标直点；HUD 手势进行中快拍；退出确认走真实返回键；dump 带 timeout；证据补传 walk/*.xml。
-# 必截状态：正常/加载/失败/退出确认/换台信息条/亮度HUD/音量HUD/极端数据(83台) × 横竖屏。
+# v3 改法：控制条按钮源码推算坐标直点；HUD 手势进行中快拍；dump 带 timeout；证据补传 walk/*.xml。
+# 必截状态：正常/加载/失败/换台信息条/亮度HUD/音量HUD/极端数据(83台) × 横竖屏；退后台态（vc112）。
 set -u
 OUT=${1:-walk}
 mkdir -p "$OUT"
@@ -24,6 +25,39 @@ echo "SCREEN ${W}x${H}" > "$OUT/screen.txt"
 # —— 控制条按钮坐标（源码推算，1080x2400@420dpi） ——
 P_BAR_Y=2189; P_VOL_Y=2311
 L_BAR_Y=991
+ACT="com.taolive.phone/crc64b53a6f6c1e1300c1.MainActivity"
+
+# ensure_fg：vc112 返回=退后台，走查任何一步都可能把应用按回桌面；每段开始前核对并拉回
+ensure_fg() {
+  local resumed
+  resumed=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 'ResumedActivity' || true)
+  case "$resumed" in
+    *taolive*) echo "FG ok" ;;
+    *)
+      echo "FG lost -> relaunch"
+      adb shell am start -n "$ACT" >/dev/null 2>&1
+      sleep 4
+      ;;
+  esac
+}
+
+# open_drawer：重显控制条→点 ☰→dump 验证「全部」页签在，没开重试一次
+open_drawer() { # $1=☰x  $2=☰y
+  local try=1
+  while [ $try -le 2 ]; do
+    adb shell input tap "$CX" "$CY"; sleep 0.8
+    adb shell input tap "$1" "$2"
+    sleep 2
+    if timeout 10 adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 \
+       && timeout 6 adb shell cat /sdcard/ui.xml 2>/dev/null | grep -qF 'text="全部"'; then
+      echo "DRAWER open (try $try)"
+      return 0
+    fi
+    echo "DRAWER miss (try $try)"
+    try=$((try+1))
+  done
+  return 1
+}
 
 # tap_text：uiautomator 找文本控件中心点击（带 timeout 防挂死；重试2次）；失败可带坐标兜底
 tap_text() {
@@ -63,16 +97,16 @@ SHOT 01-play-portrait
 adb shell input tap "$CX" "$CY"; sleep 0.8
 SHOT 02-controls-portrait
 
-# —— 竖屏：抽屉（83台全量=极端数据）——坐标直点 ☰，不依赖 dump ——
-adb shell input tap 504 $P_BAR_Y
-sleep 2.5
+# —— 竖屏：抽屉（83台全量=极端数据）——v7：open_drawer 带验证重试 ——
+open_drawer 504 $P_BAR_Y
 SHOT 03-drawer-portrait
 dump_ui ui-drawer-portrait.xml
 adb shell input swipe 324 $((H*3/4)) 324 $((H/4)) 600; sleep 1.2
 SHOT 03b-drawer-scrolled
-# 关抽屉：返回键（v6：竖屏全屏无面板外可点；源码 Back=ExitOrCollapseList 先收抽屉）
+# 关抽屉：返回键（抽屉开着=收抽屉；万一没开，vc112 返回=退后台，下一段 ensure_fg 兜底拉回）
 adb shell input keyevent 4; sleep 1.5
 SHOT 03c-drawer-closed
+ensure_fg
 
 # —— 竖屏：设置页（坐标直点 ⚙） ——
 adb shell input tap "$CX" "$CY"; sleep 0.8
@@ -89,8 +123,9 @@ adb shell input keyevent 4; sleep 1.2   # 收进阶子页回设置
 tap_text "崩溃日志" 867 651 || true
 sleep 1
 SHOT 06-diagnostics
-adb shell input keyevent 4; sleep 1.5   # 收诊断页（v6：返回键，v5 点「面板外」实测点在面板内）
+adb shell input keyevent 4; sleep 1.5   # 收诊断页（返回键）
 SHOT 06b-settings-closed
+ensure_fg
 
 # —— 竖屏：换台信息条（左滑=上一台） ——
 adb shell input swipe $((W*4/5)) "$CY" $((W/5)) "$CY" 300
@@ -124,38 +159,41 @@ sleep 0.3
 SHOT 13b-hud-volume-late
 sleep 2
 
-# —— 退出确认框（真实返回键：播放页 Back=ConfirmExit；再按 Back=取消） ——
+# —— 返回退后台（vc112 拍板：播放页 Back=停播攒流退后台，确认弹窗已删；v6 在等不存在的弹窗） ——
 adb shell input keyevent 4
 sleep 1.5
-SHOT 17-exit-dialog
-dump_ui ui-exit-dialog.xml
-adb shell input keyevent 4
-sleep 1.5
-SHOT 17b-exit-dialog-dismissed
+SHOT 17-back-background
+dump_ui ui-back-background.xml
+ensure_fg
+sleep 1
+SHOT 17b-recovered-play
 
 # —— 横屏段：系统旋转口径（可靠），应用 OnConfigurationChanged 重建 ——
 L_CX=$((H/2)); L_CY=$((W/2))
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1
 sleep 4
+ensure_fg
 SHOT 07-play-landscape
 adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 SHOT 08-controls-landscape
 
-adb shell input tap 1346 $L_BAR_Y
-sleep 2.5
+open_drawer 1346 $L_BAR_Y
 SHOT 09-drawer-landscape
-adb shell input keyevent 4; sleep 1.5   # 关抽屉（v6：返回键）
+adb shell input keyevent 4; sleep 1.5   # 关抽屉（返回键）
+ensure_fg
 
 adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 adb shell input tap 1498 $L_BAR_Y
 sleep 2
 SHOT 10-settings-landscape
-adb shell input keyevent 4; sleep 1.5   # 收设置（v6：返回键，v5 横屏「点外」同样点在面板内）
+adb shell input keyevent 4; sleep 1.5   # 收设置（返回键）
+ensure_fg
 
 # 转回竖屏
 adb shell settings put system user_rotation 0
 sleep 4
+ensure_fg
 SHOT 00-back-portrait
 
 # —— 失败态（断网切台，等失败终态） ——
@@ -168,6 +206,7 @@ adb shell svc wifi enable 2>/dev/null; adb shell svc data enable 2>/dev/null
 sleep 10
 
 # —— 加载态（恢复网络后切台瞬间） ——
+ensure_fg
 adb shell input swipe $((W*4/5)) "$CY" $((W/5)) "$CY" 300
 sleep 1
 SHOT 15-loading

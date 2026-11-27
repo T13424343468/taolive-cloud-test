@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# TaoLive 手机版逐屏走查出图 v5（制度：视觉模型比对与评分制度 2026-11-26）
-# v5 改法（对照 v4 实拍缺陷）：
-#   ① 横屏段坐标转置修正——W,H 按竖屏读数，横屏中心=(H/2,W/2)；v4 用竖屏中心 (540,1200) 落横屏屏幕外，08 控制条/09 抽屉全没出（脚本缺陷）。
-#   ② HUD 滑动起终点改视频带内（y 1450→950，幅度 500px>96dp 阈值）——v4 起点 y=1600 在视频带（896–1503）外没落 TextureView。
-#   ③ 设置页进阶滚动起点改面板内容区（y=700→400）——v4 起点在面板外没滚出进阶内容。
-# v3 改法（对照 v2 实拍缺陷）：
-#   ① 控制条按钮改「源码布局推算坐标」直点——uiautomator dump 对视频页常空/超时，且控制条 3s 自动收起，
-#      dump 再点必 miss（v2 抽屉/设置全没打开的根因）。坐标按 1080x2400@420dpi、UiScale 手机重定标
-#      （PxScale=2.769、按钮定高 122px、左右内距 50px）推算，音量行右对齐。
-#   ② HUD 改「手势进行中快拍」——ShowHud 700ms 自隐，v2 手势结束再拍必空；改后台慢拖 2s、拖中 0.8s 快拍。
-#   ③ 退出确认走真实返回键（keyevent 4，源码：播放页 Back=ExitOrCollapseList→ConfirmExit；再按 Back=取消）。
-#   ④ 浮层点外关闭按实际方位：抽屉左贴→点右侧遮罩；设置面板贴底全宽→点上半屏遮罩。
-#   ⑤ dump 一律带 timeout 防视频页挂死；证据补传 walk/*.xml（工作流同步加匹配式）。
+# TaoLive 手机版逐屏走查出图 v6（制度：视觉模型比对与评分制度 2026-11-26）
+# v6 改法（对照 v5 实拍缺陷，vc108 走查复盘）：
+#   ① 浮层关闭一律 keyevent 4（返回键）——v5「点面板外」坐标实测点在面板内（设置面板顶部贴靠非贴底，
+#      (540,480) 落在「源订阅」行上；抽屉全屏后无面板外），设置/抽屉从未被脚本关上（00-back 拍到面板开着的根因）。
+#   ② 05 进阶调优改直点「进阶调优」（v5 只上滑 300px 没滚出内容，且从未点过入口；坐标自 ui-settings-portrait.xml 实证）。
+#   ③ 06 崩溃日志 tap_text 加坐标兜底 (867,651)（同上实证；uiautomator 对视频页偶发超时）。
+#   ④ HUD 拖长到 3s + 拖中三连拍（0.9/1.5/2.1s）+ 落指 0.3s 内补拍——v5 单拍 0.8s 疑时机错过（连续两版未出图）。
+#   ⑤ 03c 抽屉关闭改 keyevent 4（vc109 定宽令：竖屏全屏无遮罩可点；横屏 480dp 定宽后返回键同样可靠）。
+# v5 改法：横屏坐标转置；HUD 起终点改视频带内；设置滚动起点改面板内容区。
+# v3 改法：控制条按钮源码推算坐标直点；HUD 手势进行中快拍；退出确认走真实返回键；dump 带 timeout；证据补传 walk/*.xml。
 # 必截状态：正常/加载/失败/退出确认/换台信息条/亮度HUD/音量HUD/极端数据(83台) × 横竖屏。
 set -u
 OUT=${1:-walk}
@@ -25,14 +22,12 @@ echo "SCREEN ${W}x${H}"
 echo "SCREEN ${W}x${H}" > "$OUT/screen.txt"
 
 # —— 控制条按钮坐标（源码推算，1080x2400@420dpi） ——
-# 竖屏：行1 [◀120 ▶272 | ☰504 ⚙656 ⟳808 锁960] y=2189；行2 音量 [−680 +915] y=2311（右对齐）
-# 横屏：单行8钮 y=991 [◀120 ▶272 | ☰1346 ⚙1498 ⟳1650 锁1802 音量−1998 音量+2236]
 P_BAR_Y=2189; P_VOL_Y=2311
 L_BAR_Y=991
 
-# tap_text：uiautomator 找文本控件中心点击（带 timeout 防挂死；重试2次）；失败返回1
+# tap_text：uiautomator 找文本控件中心点击（带 timeout 防挂死；重试2次）；失败可带坐标兜底
 tap_text() {
-  local text="$1" try=1
+  local text="$1" try=1 fx="${2:-}" fy="${3:-}"
   while [ $try -le 2 ]; do
     timeout 10 adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || { sleep 1; try=$((try+1)); continue; }
     local line
@@ -50,11 +45,15 @@ tap_text() {
     fi
     sleep 1; try=$((try+1))
   done
+  if [ -n "$fx" ] && [ -n "$fy" ]; then
+    adb shell input tap "$fx" "$fy"
+    echo "TAP_TEXT FALLBACK $text @ $fx,$fy"
+    return 0
+  fi
   echo "TAP_TEXT MISS $text"
   return 1
 }
 
-# dump_ui：控件树留证（带 timeout，视频页 uiautomator 可能挂死）
 dump_ui() { timeout 12 adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; timeout 8 adb shell cat /sdcard/ui.xml > "$OUT/$1" 2>/dev/null; return 0; }
 
 sleep 3
@@ -71,8 +70,8 @@ SHOT 03-drawer-portrait
 dump_ui ui-drawer-portrait.xml
 adb shell input swipe 324 $((H*3/4)) 324 $((H/4)) 600; sleep 1.2
 SHOT 03b-drawer-scrolled
-# 点右侧遮罩关闭（抽屉左贴）
-adb shell input tap $((W-60)) "$CY"; sleep 1.5
+# 关抽屉：返回键（v6：竖屏全屏无面板外可点；源码 Back=ExitOrCollapseList 先收抽屉）
+adb shell input keyevent 4; sleep 1.5
 SHOT 03c-drawer-closed
 
 # —— 竖屏：设置页（坐标直点 ⚙） ——
@@ -81,15 +80,16 @@ adb shell input tap 656 $P_BAR_Y
 sleep 2
 SHOT 04-settings-portrait
 dump_ui ui-settings-portrait.xml
-# 下半：进阶调优（面板贴底，面板内容区内上滑——v5：起点改面板内容区 y<760，v4 起点在面板外没滚出进阶内容）
-adb shell input swipe "$CX" 700 "$CX" 400 600; sleep 1.5
+# 进阶调优子页（v6：直点入口，坐标兜底自 ui-settings-portrait.xml 实证 [285,724][565,860]）
+tap_text "进阶调优" 425 792 || true
+sleep 1.5
 SHOT 05-settings-advanced
-# 诊断日志页（三标签；dump 对面板可能可用，miss 则跳过不阻塞）
-tap_text "崩溃日志" || true
+adb shell input keyevent 4; sleep 1.2   # 收进阶子页回设置
+# 诊断日志页（三标签；tap_text 坐标兜底自实证 [727,583][1007,719]）
+tap_text "崩溃日志" 867 651 || true
 sleep 1
 SHOT 06-diagnostics
-# 点上半屏遮罩关闭（面板贴底全宽）
-adb shell input tap "$CX" $((H/5)); sleep 1.5
+adb shell input keyevent 4; sleep 1.5   # 收诊断页（v6：返回键，v5 点「面板外」实测点在面板内）
 SHOT 06b-settings-closed
 
 # —— 竖屏：换台信息条（左滑=上一台） ——
@@ -98,21 +98,29 @@ sleep 0.7
 SHOT 11-switch-toast
 sleep 9
 
-# —— 竖屏：亮度 HUD（左半区慢拖，拖中快拍；ShowHud 700ms 自隐；v5：起终点改视频带内 y 1450→950，v4 起点 1600 在带外没落 TextureView） ——
-adb shell input swipe $((W/4)) 1450 $((W/4)) 950 2000 &
-sleep 0.8
+# —— 竖屏：亮度 HUD（左半区慢拖 3s，拖中三连拍；ShowHud 700ms 自隐；v6 加密采样防时机错过） ——
+adb shell input swipe $((W/4)) 1450 $((W/4)) 950 3000 &
+sleep 0.9
 SHOT 12-hud-brightness
+sleep 0.6
+SHOT 12c-hud-brightness-mid
+sleep 0.6
+SHOT 12d-hud-brightness-mid2
 wait
-sleep 1.2
+sleep 0.3
 SHOT 12b-hud-brightness-late
 sleep 2
 
-# —— 竖屏：音量 HUD（右半区慢拖，拖中快拍；v5：起终点同改视频带内） ——
-adb shell input swipe $((W*3/4)) 1450 $((W*3/4)) 950 2000 &
-sleep 0.8
+# —— 竖屏：音量 HUD（右半区慢拖 3s，拖中三连拍） ——
+adb shell input swipe $((W*3/4)) 1450 $((W*3/4)) 950 3000 &
+sleep 0.9
 SHOT 13-hud-volume
+sleep 0.6
+SHOT 13c-hud-volume-mid
+sleep 0.6
+SHOT 13d-hud-volume-mid2
 wait
-sleep 1.2
+sleep 0.3
 SHOT 13b-hud-volume-late
 sleep 2
 
@@ -126,8 +134,6 @@ sleep 1.5
 SHOT 17b-exit-dialog-dismissed
 
 # —— 横屏段：系统旋转口径（可靠），应用 OnConfigurationChanged 重建 ——
-# v5：横屏下屏幕坐标转置（W,H 仍是竖屏读数 1080x2400），横屏中心=(H/2,W/2)=(1200,540)——
-# v4 直接用 CX,CY=(540,1200) 落在横屏屏幕外，点按全部落空（08 控制条/09 抽屉没出的根因，脚本缺陷非应用缺陷）
 L_CX=$((H/2)); L_CY=$((W/2))
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 1
@@ -139,13 +145,13 @@ SHOT 08-controls-landscape
 adb shell input tap 1346 $L_BAR_Y
 sleep 2.5
 SHOT 09-drawer-landscape
-adb shell input tap $((H-60)) "$L_CY"; sleep 1.5
+adb shell input keyevent 4; sleep 1.5   # 关抽屉（v6：返回键）
 
 adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 adb shell input tap 1498 $L_BAR_Y
 sleep 2
 SHOT 10-settings-landscape
-adb shell input tap "$L_CX" $((W/5)); sleep 1.5
+adb shell input keyevent 4; sleep 1.5   # 收设置（v6：返回键，v5 横屏「点外」同样点在面板内）
 
 # 转回竖屏
 adb shell settings put system user_rotation 0

@@ -146,11 +146,11 @@ public static class ChannelTable
         ("清河经济综艺", "https://jwcdnqx.hebyun.com.cn/live/qinghe1/1500k/tzwj_video.m3u8", "城市台"),
         ("烟台经济科技", "http://live.yantaitv.cn/live/27f84144e95a4652ae9e5c211b2a6b55/405f3e33ba384aa0a16014d0becd1261-1.m3u8", "城市台"),
         ("苏州社会经济", "https://live-auth.51kandianshi.com/szgd/csztv2.m3u8", "城市台"),
-        ("东阳影视生活", "http://l.cztvcloud.com/channels/lantian/SXdongyang1/720p.m3u8", "城市台"),
+        ("东阳影视生活", "https://l.cztvcloud.com/channels/lantian/SXdongyang1/720p.m3u8", "城市台"),
         ("南宁影视娱乐", "http://hls.nntv.cn/nnlive/YSYL_244.m3u8", "城市台"),
         ("哈尔滨影视", "http://stream.hrbtv.net/yspd/sd/live.m3u8?zheild", "城市台"),
         ("甘肃经济", "https://satellitepull.cnr.cn/live/wxgshhzs/playlist.m3u8", "省台"),
-        ("福建经济", "http://satellitepull.cnr.cn/live/wx32fjdnjjgb/playlist.m3u8", "省台"),
+        ("福建经济", "https://satellitepull.cnr.cn/live/wx32fjdnjjgb/playlist.m3u8", "省台"),
     };
 
     /// <summary>

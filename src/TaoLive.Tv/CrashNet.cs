@@ -27,11 +27,26 @@ public static class CrashNet
     /// <summary>挂接未捕获异常：托管域 + Java 侧线程（含内核渲染线程）双入口，记日志后照常交系统，不吞异常。</summary>
     public static void Install()
     {
+        Record($"[启动] TaoLive {VersionTag()} 进程启动——此行起日志归属该包（vc99 令：日志自证版本，杜绝新旧包混淆）");
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             RecordNow($"未捕获异常 {e.ExceptionObject}");
         var next = Java.Lang.Thread.DefaultUncaughtExceptionHandler;
         if (next is not UncaughtCrashPeer)
             Java.Lang.Thread.DefaultUncaughtExceptionHandler = new UncaughtCrashPeer(next);
+    }
+
+    /// <summary>包版本标识（vc99 令：崩溃日志面板标题与启动行均带，真机截图一眼分清新旧包）。</summary>
+    public static string VersionTag()
+    {
+        try
+        {
+            var ctx = global::Android.App.Application.Context!;
+#pragma warning disable CA1422, CS0612, CS0619
+            var pkg = ctx.PackageManager!.GetPackageInfo(ctx.PackageName!, 0)!;
+#pragma warning restore CA1422, CS0612, CS0619
+            return $"v{pkg.VersionName}";
+        }
+        catch { return "v?"; }
     }
 
     /// <summary>记录一条异常（异常对象版）。主线程只入队，磁盘 IO 交给后台批量拍。</summary>

@@ -59,14 +59,9 @@ public static class FallbackSourceRegistry
 
     private static readonly FallbackEntry[] Cctv =
     {
-        // 老板令 2026-11-15 #20：74.91 家族整族降观察档——真机 11-15 18:16 实测 CCTV6 路 BAD_HTTP_STATUS
-        // （自诊断台账第一手证据），B 组 CCTV1/5 两路更早已三采样稳定死；沙箱侧复测该族仍活，
-        // 不物理删表、整族垫底（同族备线性质），运行时另有健康账轻排序+播放实测回写兜底，自救不再踩死路。
-        new("CCTV2财经", "http://74.91.26.218:82/live/cctv2hd.m3u8", ObservationRank: true),
-        new("CCTV6电影", "http://74.91.26.218:82/live/cctv6hd.m3u8", ObservationRank: true),
-        new("CCTV3综艺", "http://74.91.26.218:82/live/cctv3hd.m3u8", ObservationRank: true),
-        new("CCTV8电视剧", "http://74.91.26.218:82/live/cctv8hd.m3u8", ObservationRank: true),
-        new("CCTV4中文国际", "https://dash2.antik.sk/cctv4/index.m3u8", ObservationRank: true),        // 2026-11-26 DEAD（tsfile 0004_1 活）
+        // 老板令 2026-11-27 09:2x「把外网的备用源全部去掉，不能有外网」：74.91 家族（美国 IP，真机 11-15 实测
+        // BAD_HTTP_STATUS、11-27 真机 404 死循环实锤）与 dash2.antik.sk（斯洛伐克）整族物理删表；
+        // 央视各台国内备路（tsfile-124/gmxw）不受影响。
         new("CCTV13新闻", "https://ali-m-l.cztv.com/lantian/channel21/index.m3u8", ObservationRank: true), // 2026-11-26 DEAD（tsfile 0013_1 活）
     };
 
@@ -80,8 +75,8 @@ public static class FallbackSourceRegistry
 
     private static readonly FallbackEntry[] SatellitesBatch2 =
     {
-        new("浙江卫视", "http://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8"), // cztv-ali 浙江官方蓝天频道，同域双活
-        new("东方卫视", "http://bp-resource-dfl.bestv.cn/148/3/video.m3u8", ObservationRank: true),       // bestv 百视通 2026-11-26 DEAD（tsfile 0107_1 活）
+        new("浙江卫视", "https://ali-m-l.cztv.com/channels/lantian/channel001/1080p.m3u8"), // cztv-ali 浙江官方蓝天频道，同域双活（vc98 明文拦截根治：http→https）
+        new("东方卫视", "https://bp-resource-dfl.bestv.cn/148/3/video.m3u8", ObservationRank: true),       // bestv 百视通（vc98 明文拦截根治：http→https，实测 200）
         new("黑龙江卫视", "http://120.76.248.139/live/bfgd/4200000095.m3u8", ObservationRank: true),              // bfgd（观察档，共 token）
         new("深圳卫视", "http://120.76.248.139/live/bfgd/4200000100.m3u8", ObservationRank: true),                // bfgd（观察档，共 token）
         new("东南卫视", "http://120.76.248.139/live/bfgd/4200000483.m3u8", ObservationRank: true),                // bfgd（观察档，共 token）
@@ -110,12 +105,12 @@ public static class FallbackSourceRegistry
         new("CCTV6电影", "http://124.165.251.82:85/tsfile/live/0006_1.m3u8?key=txiptv&playlive=1&authid=0"),
         new("CCTV8电视剧", "http://124.165.251.82:85/tsfile/live/0008_1.m3u8?key=txiptv&playlive=1&authid=0"),
         new("CCTV5体育", "http://gmxw.7766.org:808/hls/93/index.m3u8"),
-        new("CCTV1综合", "http://63.141.230.178:82/gslb/zbdq5.m3u8?id=cctv1hd", ObservationRank: true), // applive：广告壳（分片404网页/目录轮换，老板真机实锤 2026-11-17），整族降观察档
+        // 老板令 2026-11-27 09:2x「不能有外网」：63.141（美国，applive 广告壳，老板真机 11-17 实锤）删表
         new("湖北卫视", "http://183.11.239.36:808/hls/46/index.m3u8"),           // gmxw 同族 id46，纯 IP 免解析
-        new("湖北卫视", "http://gmxw.7766.org:808/hls/46/index.m3u8"),           // 同族域名备线
+        new("湖北卫视", "http://gmxw.7766.org:808/hls/46/index.m3u8"),           // 同族域名备线（解析 183.11.239.36，国内）
         new("广东卫视", "http://183.11.239.36:808/hls/80/index.m3u8"),           // gmxw 同族 id80，纯 IP 免解析
         new("广东卫视", "http://gmxw.7766.org:808/hls/80/index.m3u8"),           // 同族域名备线
-        new("江苏卫视", "http://107.150.60.122/live/jswshd.m3u8", ObservationRank: true), // applive 同族广告壳（分片404网页，2026-11-17 实锤）
+        // 老板令 2026-11-27 09:2x「不能有外网」：107.150（美国，applive 同族广告壳，2026-11-17 实锤）删表
     };
 
     // ---- 第四批·零活兜底台救活（老板 2026-11-13 14:07 令「全收」）----
@@ -143,9 +138,8 @@ public static class FallbackSourceRegistry
         new("西藏卫视", "http://183.11.239.36:808/hls/64/index.m3u8"),
         // 安徽域名端（纯 IP 端在 Satellites 置顶）
         new("安徽卫视", "http://gmxw.7766.org:808/hls/40/index.m3u8"),
-        // B 组降序观察档：74.91 CCTV1（404 三采样稳定死）/CCTV5（伪 200 错误文案型）与 CCTV12 旧直拼路
-        new("CCTV1综合", "http://74.91.26.218:82/cctv1/index.m3u8", ObservationRank: true),
-        new("CCTV5体育", "http://74.91.26.218:82/live/cctv5hd.m3u8", ObservationRank: true),
+        // 老板令 2026-11-27 09:2x「不能有外网」：74.91 CCTV1（404 三采样稳定死、11-27 真机死循环实锤）与
+        // CCTV5（伪 200 错误文案型）两条美国路删表；CCTV12 旧直拼路（124 同端）降末位观察
         new("CCTV12社会与法", "http://124.165.251.82:85/cctv12/index.m3u8", ObservationRank: true),
     };
 
@@ -181,7 +175,7 @@ public static class FallbackSourceRegistry
         new("钱江都市", "https://ali-xwl.cztv.com/live/channel021080Plxw.m3u8"),
     };
 
-    /// <summary>全量备援表（58 路 + 第五批 124 端全目录 26 路，共 84 路；测试断言 Table.Length==84 锚定）。</summary>
+    /// <summary>全量备援表（vc97 老板令 2026-11-27「不能有外网」剔除 9 条海外路后 75 路；测试断言 Table.Length==75 锚定）。</summary>
     public static readonly FallbackEntry[] Table =
         Satellites.Concat(Cctv).Concat(SatellitesBatch2).Concat(Batch3).Concat(Batch4).Concat(Batch5).ToArray();
 

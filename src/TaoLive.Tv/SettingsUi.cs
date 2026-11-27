@@ -575,7 +575,7 @@ public partial class MainActivity
         {
             var path = new Java.IO.File(FilesDir, "taolive_crash.log");
             if (!path.Exists()) { ShowToast("暂无崩溃日志"); return; } // 空态提示
-            var (box, pad) = BuildOverlayPanel("崩溃日志（全屏）", "读取中…", out var scroll);
+            var (box, pad) = BuildOverlayPanel($"崩溃日志（全屏）· {CrashNet.VersionTag()}", "读取中…", out var scroll);
             var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             var clean = new TextView(this) { Text = "一键清理", Gravity = GravityFlags.Center };
             clean.SetPadding(pad, Dp(14), pad, Dp(14));

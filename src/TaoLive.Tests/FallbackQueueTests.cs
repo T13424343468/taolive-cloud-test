@@ -6,7 +6,7 @@ using Xunit;
 namespace TaoLive.Tests;
 
 /// <summary>
-/// 收口批①：84 条备源队列注入会话 + 稳定后回主源（迟滞判据）+ 活性按健康账轻排序（同台活源在前）。
+/// 收口批①：75 条备源队列注入会话（vc97 老板令 2026-11-27 剔除全部海外路）+ 稳定后回主源（迟滞判据）+ 活性按健康账轻排序（同台活源在前）。
 /// 固定时钟快拍不真等；回主源计时按注入单调钟推进。
 /// </summary>
 public class FallbackQueueTests
@@ -23,10 +23,11 @@ public class FallbackQueueTests
     // ---- 活性按健康账轻排序（收口批①+v28：同台活源在前、账新者在前，只动同台内排序） ----
 
     [Fact]
-    public void FallbackRegistry_table_anchors_84_entries()
+    public void FallbackRegistry_table_anchors_75_entries()
     {
         // R2-27 后补锚（99f7e69 头注承诺「测试断言 Table.Length==84 锚定」此前无实体断言）：防表漂移——收录须按老板令增删并同步此锚
-        Assert.Equal(84, FallbackSourceRegistry.Table.Length);
+        // vc97 老板令 2026-11-27「把外网的备用源全部去掉，不能有外网」：84→75（剔除 74.91×6、63.141、107.150、antik.sk 共 9 条海外路）
+        Assert.Equal(75, FallbackSourceRegistry.Table.Length);
     }
 
     [Fact]

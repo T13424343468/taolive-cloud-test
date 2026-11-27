@@ -252,6 +252,7 @@ public sealed class TicketResolver
         var (iretcode, playurl) = ParseYspResponse(body);
         if (iretcode == 0 && !string.IsNullOrEmpty(playurl))
         {
+            playurl = UpgradeHttps(playurl); // vc98 明文拦截根治：官方 CDN 票据 http→https（分片相对路径自动跟随）
             _ysp.MarkFetched(entryUrl, now, playurl);
             return playurl;
         }
@@ -287,6 +288,7 @@ public sealed class TicketResolver
         var urls = M3u8Regex.Matches(body).Select(m => m.Value.Replace("\\/", "/")).Distinct().ToList();
         if (urls.Count == 0) return null;
         var pick = urls.FirstOrDefault(u => u.Contains("1080")) ?? urls[0];
+        pick = UpgradeHttps(pick); // vc98：ali-m-l/ali-xwl 已验证 https 双活，明文票升级（zwebl/zhfivel 无 https 不动）
         return CztvSign.SignPlayUrl(pick, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), RandomToken());
     }
 
@@ -446,6 +448,34 @@ public sealed class TicketResolver
     }
 
     // ---- 公共 -----------------------------------------------------------------------
+
+    /// <summary>
+    /// vc98 明文拦截根治（真机 2026-11-27 实锤：老板家宽带运营商拦明文视频流——同一主机
+    /// https 通、http 被拦 4xx，取票/节目单走加密通道所以正常）。已实测支持 https 的视频主机，
+    /// 明文票据一律升级 https；未验证主机不动（防无 https 主机被改坏）。
+    /// </summary>
+    internal static readonly string[] HttpsUpgradableHostSuffixes =
+    {
+        ".ysp.cctv.cn",          // 央视频官方 CDN（hlsliveali-/live-dtocnc- 等，实测 https 200）
+        "ali-m-l.cztv.com",      // 浙江广电阿里 CDN（实测 https 200，0.2s）
+        "ali-xwl.cztv.com",      // 浙江广电阿里 CDN 西湖线（实测 https 200）
+        "l.cztvcloud.com",       // 浙江蓝天云（实测 https 200）
+        "satellitepull.cnr.cn",  // 央广卫星拉流（实测 https 200）
+        "bp-resource-dfl.bestv.cn", // 百视通（实测 https 200）
+    };
+
+    /// <summary>明文 http 票据升级 https：仅命中白名单主机后缀时改写，其余原样返回。</summary>
+    internal static string UpgradeHttps(string url)
+    {
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) return url;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return url;
+        foreach (var suffix in HttpsUpgradableHostSuffixes)
+        {
+            if (!u.Host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) continue;
+            return "https://" + url["http://".Length..];
+        }
+        return url;
+    }
 
     private static async Task<string?> HttpGetStringAsync(string url, string? referer)
     {

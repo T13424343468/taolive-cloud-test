@@ -189,10 +189,11 @@ public partial class MainActivity
     {
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         _controlBar = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
-        _controlBar.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc111 老板令：全页面统一电视端水墨透光（原近实色 232 闷画面）
-        // vc117 令2①+8+19/20（2026-11-28 老板拍板）：控制条贴底，底边距吃圆角安全边（圆角半径+8dp，
-        // 拿不到走 24dp 兜底）——大圆角屏不再裁掉按钮，一开始就避让不留角部裁切。
-        _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), Math.Max(UiScale.Px(10), BottomCornerSafePx()));
+        // vc119 老板令（2026-11-28「避开圆角不是整体上移，要丝滑过渡」）：控制条贴回屏幕底，
+        // 底边距回归与左右一致的正常口径；圆角过渡改由背景自身长出底部圆角（半径=系统圆角），
+        // 弧线贴合屏幕角落，不再整条硬抬一大截留空白带。
+        _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), UiScale.Px(16));
+        _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
         // 行3 水位+接下来），信息分块不再横屏特判；全部单行不换行、读数段完整不截断。
@@ -267,7 +268,7 @@ public partial class MainActivity
             Kind = landscape ? FullscreenIconView.IconKind.ExitFullscreen : FullscreenIconView.IconKind.EnterFullscreen,
             Clickable = true,
         };
-        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(36))
+        flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(UiScale.BtnBoxDp))
         { LeftMargin = UiScale.Px(8) }; // 令16：36dp 定尺寸盒（原 44dp），图标居中稍大
         flipBtn.Background = BarButtonBackground(); // vc116②：线框皮，按压态强描边
         flipBtn.Click += (_, _) =>
@@ -280,7 +281,7 @@ public partial class MainActivity
 
         // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
         var lockBtn = new LockIconView(this) { Clickable = true };
-        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(36))
+        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, UiScale.Px(UiScale.BtnBoxDp))
         { LeftMargin = UiScale.Px(8) }; // 令16：36dp 定尺寸盒（原 44dp），图标居中稍大
         lockBtn.Background = BarButtonBackground(); // vc116②：线框皮，按压态强描边
         lockBtn.Click += (_, _) => ToggleOrientationLock();
@@ -658,7 +659,7 @@ public partial class MainActivity
     /// 与全屏/锁图标同风格（单色描边、IconGlyph 字号、44dp 热区、几何居中），根除字体度量与几何中心两套混排的错位。</summary>
     private sealed class BarIconView : View
     {
-        internal enum IconKind { Prev, Next, List, Gear }
+        internal enum IconKind { Prev, Next, List, Gear, Refresh, Close, Doc, Folder, Trash }
         private IconKind _kind = IconKind.List;
         private readonly Paint _stroke = new(PaintFlags.AntiAlias) { StrokeCap = Paint.Cap.Round, StrokeJoin = Paint.Join.Round };
 
@@ -666,10 +667,11 @@ public partial class MainActivity
 
         internal IconKind Kind { get => _kind; set { if (_kind == value) return; _kind = value; Invalidate(); } }
 
-        // vc117 令16（2026-11-28 老板拍板）：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
+        // vc119 老板令（2026-11-28「改小不是改这么小」）：线框盒 36dp 回抬 44dp（vc116 原口径），
+        // 图标占盒 58%、几何正中间不变。全应用图标钮统一此盒径。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(36);
+            int side = UiScale.Px(UiScale.BtnBoxDp);
             SetMeasuredDimension(side, side);
         }
 
@@ -734,6 +736,76 @@ public partial class MainActivity
                     canvas.DrawCircle(cx, cy, r * 0.38f, _stroke);
                     break;
                 }
+                case IconKind.Refresh: // ⟳：270° 圆弧+箭头（刷新，vc119 页头钮自绘化）
+                {
+                    float cx = w / 2f, cy = h / 2f, r = w * 0.30f;
+                    canvas.DrawArc(new RectF(cx - r, cy - r, cx + r, cy + r), -60f, 270f, false, _stroke);
+                    // 箭头：弧终点（右上）指顺时针切线方向
+                    var tri = new float[]
+                    {
+                        cx + r * 1.05f, cy - r * 0.55f,
+                        cx + r * 0.30f, cy - r * 0.72f,
+                        cx + r * 0.62f, cy - r * 1.28f,
+                    };
+                    var fill = new Paint(PaintFlags.AntiAlias) { Color = _stroke.Color };
+                    canvas.DrawPath(ToPath(tri), fill);
+                    break;
+                }
+                case IconKind.Close: // ✕：两根对角线（关闭）
+                {
+                    float m = w * 0.22f;
+                    canvas.DrawLine(m, m, w - m, h - m, _stroke);
+                    canvas.DrawLine(w - m, m, m, h - m, _stroke);
+                    break;
+                }
+                case IconKind.Doc: // 📄→自绘：纸张+折角+两行字（打开源文件）
+                {
+                    float l = w * 0.24f, t = h * 0.16f, r2 = w * 0.76f, b = h * 0.84f;
+                    float fold = w * 0.18f;
+                    var paper = new Android.Graphics.Path();
+                    paper.MoveTo(l, t);
+                    paper.LineTo(r2 - fold, t);
+                    paper.LineTo(r2, t + fold);
+                    paper.LineTo(r2, b);
+                    paper.LineTo(l, b);
+                    paper.Close();
+                    canvas.DrawPath(paper, _stroke);
+                    canvas.DrawLine(r2 - fold, t, r2 - fold, t + fold, _stroke);
+                    canvas.DrawLine(l + w * 0.12f, h * 0.48f, r2 - w * 0.12f, h * 0.48f, _stroke);
+                    canvas.DrawLine(l + w * 0.12f, h * 0.62f, r2 - w * 0.12f, h * 0.62f, _stroke);
+                    break;
+                }
+                case IconKind.Folder: // 📁→自绘：文件夹（打开目录）
+                {
+                    float l = w * 0.16f, t = h * 0.26f, r2 = w * 0.84f, b = h * 0.76f;
+                    float tabW = w * 0.26f, tabH = h * 0.12f;
+                    var fd = new Android.Graphics.Path();
+                    fd.MoveTo(l, t + tabH);
+                    fd.LineTo(l + tabW, t + tabH);
+                    fd.LineTo(l + tabW + tabH * 0.6f, t);
+                    fd.LineTo(r2, t);
+                    fd.LineTo(r2, b);
+                    fd.LineTo(l, b);
+                    fd.Close();
+                    canvas.DrawPath(fd, _stroke);
+                    break;
+                }
+                case IconKind.Trash: // 🗑→自绘：桶盖+桶身两道（清空）
+                {
+                    float l = w * 0.24f, r2 = w * 0.76f;
+                    float lidY = h * 0.28f, bottom = h * 0.82f;
+                    canvas.DrawLine(w * 0.16f, lidY, w * 0.84f, lidY, _stroke); // 盖沿
+                    canvas.DrawLine(w * 0.5f, h * 0.16f, w * 0.5f, lidY, _stroke); // 提手
+                    var bodyP = new Android.Graphics.Path();
+                    bodyP.MoveTo(l + w * 0.04f, lidY);
+                    bodyP.LineTo(l + w * 0.10f, bottom);
+                    bodyP.LineTo(r2 - w * 0.10f, bottom);
+                    bodyP.LineTo(r2 - w * 0.04f, lidY);
+                    canvas.DrawPath(bodyP, _stroke);
+                    canvas.DrawLine(w * 0.40f, h * 0.42f, w * 0.42f, h * 0.68f, _stroke);
+                    canvas.DrawLine(w * 0.60f, h * 0.42f, w * 0.58f, h * 0.68f, _stroke);
+                    break;
+                }
             }
         }
 
@@ -761,7 +833,7 @@ public partial class MainActivity
         // vc117 令16：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(36);
+            int side = UiScale.Px(UiScale.BtnBoxDp);
             SetMeasuredDimension(side, side);
         }
 
@@ -834,7 +906,7 @@ public partial class MainActivity
         // vc117 令16：线框盒统一 36dp 稍小（原 44dp），图标占盒 58% 稍大、几何正中间。
         protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
         {
-            int side = UiScale.Px(36);
+            int side = UiScale.Px(UiScale.BtnBoxDp);
             SetMeasuredDimension(side, side);
         }
 

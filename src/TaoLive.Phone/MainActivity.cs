@@ -875,8 +875,8 @@ public partial class MainActivity : Activity
 
     // —— 视图（vc53 BuildUi 皮：视频垫底 + 半透明水墨抽屉 + 信息条 + 节目单 + 亮牌） ———
 
-    /// <summary>vc116⑦ 统一靠边对齐边距（dp）：列表页头/水位行/筛选框统一 16dp 贴边，行内容经 ListView 8dp 内距对齐同一边线。</summary>
-    private const int ListEdgePad = 16;
+    /// <summary>vc116⑦ 统一靠边对齐边距（dp）：列表页头/水位行/筛选框统一 24dp 贴边（vc119 老板令：左右统一设置页口径），行内容经 ListView 16dp 内距对齐同一边线。</summary>
+    private const int ListEdgePad = (int)UiScale.EdgePadDp;
 
     private void BuildRoot()
     {
@@ -947,7 +947,7 @@ public partial class MainActivity : Activity
         _emptyState.TextSize = UiScale.Caption;
         _emptyState.Background = InkTranslucency.PillBackground(this); // 令4：胶囊皮（与提示胶囊同款）
         InkTranslucency.ApplyReadabilityShadow(_emptyState);
-        _emptyState.SetPadding(UiScale.Px(20), UiScale.Px(10), UiScale.Px(20), UiScale.Px(10));
+        _emptyState.SetPadding(UiScale.Px(UiScale.EdgePadDp), UiScale.Px(10), UiScale.Px(UiScale.EdgePadDp), UiScale.Px(10));
         _emptyState.MovementMethod = Android.Text.Method.LinkMovementMethod.Instance; // 可点链接（立即重试/打开频道列表）
         _emptyState.SetHighlightColor(Color.Transparent); // 链接按压不糊底（绑定 HighlightColor 只读，走 Setter）
         _emptyState.Visibility = ViewStates.Invisible;
@@ -1005,27 +1005,20 @@ public partial class MainActivity : Activity
         titleRow.AddView(titleStretch, new LinearLayout.LayoutParams(0, 1, 1f));
         // vc116⑧ 页头钮统一皮：⟳ 刷新/✕ 关闭改定尺寸线框钮——定尺寸、图标居中、OutlineBox 描边、
         // 垂直居中、间距 8dp（旧纯文字加 padding 撑热区退场）。
-        // vc117 令16（2026-11-28 老板拍板）：线框盒统一 36dp 稍小、图标占盒 55% 稍大、始终正中间
-        // （IncludeFontPadding=false 消字形基线偏移，⟳ 不再偏下偏小）。
+        // vc119 老板令（2026-11-28「改小不是改这么小」）：字形钮（⟳✕ 字符跟字体度量，真机缩成一点沉底）
+        // 整体退场，改 BarIconView 几何自绘（Refresh/Close），与控制条图标同风格同盒径 44dp，字形病根根除。
         Android.Graphics.Drawables.Drawable HeaderBtnBg() =>
             InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha);
-        TextView HeaderBtn(string glyph, Action onClick)
-        {
-            var b = new TextView(this) { Text = glyph, Gravity = GravityFlags.Center };
-            b.TextSize = UiScale.Title; // 图标稍大：36dp 盒内 Title 字号，占比 0.55+
-            b.SetIncludeFontPadding(false); // 令16：去字形基线偏移，图标垂直正中间
-            b.SetTextColor(InkTranslucency.TextPrimary(this));
-            InkTranslucency.ApplyReadabilityShadow(b);
-            b.Background = HeaderBtnBg();
-            b.Click += (_, _) => onClick();
-            return b;
-        }
-        var listRefresh = HeaderBtn("⟳", RefreshChannelList);
-        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(UiScale.Px(36), UiScale.Px(36))
-        { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(8) });
-        var drawerClose = HeaderBtn("✕", ShowPlayer);
-        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(UiScale.Px(36), UiScale.Px(36))
-        { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(8) });
+        var listRefresh = new BarIconView(this) { Kind = BarIconView.IconKind.Refresh, Clickable = true };
+        listRefresh.Background = HeaderBtnBg();
+        listRefresh.Click += (_, _) => RefreshChannelList();
+        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(UiScale.Px(UiScale.BtnBoxDp), UiScale.Px(UiScale.BtnBoxDp))
+        { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(UiScale.BtnGapDp) });
+        var drawerClose = new BarIconView(this) { Kind = BarIconView.IconKind.Close, Clickable = true };
+        drawerClose.Background = HeaderBtnBg();
+        drawerClose.Click += (_, _) => ShowPlayer();
+        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(UiScale.Px(UiScale.BtnBoxDp), UiScale.Px(UiScale.BtnBoxDp))
+        { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(UiScale.BtnGapDp) });
         header.AddView(titleRow);
         _listPage.AddView(header);
 
@@ -1035,7 +1028,7 @@ public partial class MainActivity : Activity
         // 原实需≈116% 屏宽三档全裁「地方台」——收边距到≈93%屏宽，再布局后实测兜底（FitTabsOnePage）
         _tabViews.Clear();
         var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        tabRow.SetPadding(UiScale.Px(16), UiScale.Px(24), UiScale.Px(16), UiScale.Px(12)); // #15 尺寸令；vc111 左右 48→16
+        tabRow.SetPadding(UiScale.Px(ListEdgePad), UiScale.Px(24), UiScale.Px(ListEdgePad), UiScale.Px(12)); // #15 尺寸令；vc119 左右统一 24dp 边线
         int tabIndex = 0;
         foreach (ListTabs.Tab t in Enum.GetValues(typeof(ListTabs.Tab)))
         {
@@ -1076,7 +1069,7 @@ public partial class MainActivity : Activity
         filterBox.SetHintTextColor(Color.ParseColor("#8894A0"));
         filterBox.SetBackgroundResource(0); // 去系统下划线底
         filterBox.Background = InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha); // vc116⑨：全透明+圆角线框（界面元素统一皮）
-        filterBox.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12)); // vc117 令6：内距 24→8，文字与列表行内容同边线（框 16+内 8=24dp）
+        filterBox.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12)); // vc117 令6：内距 8dp 呼吸边（框边 24dp 与全页边线对齐，vc119）
         filterBox.TextChanged += (_, e) =>
         {
             if (_list?.Adapter is ChannelListAdapter adapter)
@@ -1087,8 +1080,8 @@ public partial class MainActivity : Activity
 
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
-        // vc116⑦：列表左右 8dp 内距+不裁内距——选中态描边收进 8..W-8 不被屏缘裁，行内容对齐 16dp 边线
-        _list.SetPadding(UiScale.Px(8), 0, UiScale.Px(8), 0);
+        // vc119 老板令：列表左右 16dp 内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐 24dp 统一边线
+        _list.SetPadding(UiScale.Px(16), 0, UiScale.Px(16), 0);
         _list.SetClipToPadding(false);
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _list.Selector = InkTranslucency.FocusDrawable();
@@ -2257,6 +2250,27 @@ public partial class MainActivity : Activity
             return Math.Max(basePx, Math.Max(cutout, status) + UiScale.Px(8));
         }
         return basePx;
+    }
+
+    /// <summary>vc119 丝滑过渡令：底部系统圆角半径（px）——API 31+ 实时读四角几何取底部两角最大值；
+    /// 拿不到走 24dp 兜底。供贴底面板背景自长底部圆角用（内容不再整体上移避让）。</summary>
+    internal int BottomCornerRadiusPx()
+    {
+        int fallback = UiScale.Px(24);
+        if (!OperatingSystem.IsAndroidVersionAtLeast(31)) return fallback;
+        try
+        {
+            var insets = Window!.DecorView!.RootWindowInsets;
+            if (insets is null) return fallback;
+            int maxR = 0;
+            foreach (var pos in new[] { Android.Views.RoundedCornerPosition.BottomLeft, Android.Views.RoundedCornerPosition.BottomRight })
+            {
+                var rc = insets.GetRoundedCorner((int)pos);
+                if (rc is { } c) maxR = Math.Max(maxR, c.Radius);
+            }
+            return maxR > 0 ? maxR : fallback;
+        }
+        catch { return fallback; }
     }
 
     /// <summary>vc117 令19/20（2026-11-28 老板拍板）：底部圆角安全边（px）——API 31+ 实时读系统圆角几何

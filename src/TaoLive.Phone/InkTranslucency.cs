@@ -21,11 +21,12 @@ public static class InkTranslucency
     // 强调色（水墨 Accent #8A5C3D）：当前台高亮底、可读性兜底共用
     public const byte AccentR = 0x8A, AccentG = 0x5C, AccentB = 0x3D;
 
-    /// <summary>面板/列表底色透明度：v1.0.9 第③项调深（56→76），亮画面上文字仍清晰可读，保持半透明水墨质感。</summary>
-    public const int PanelAlpha = 76;
+    /// <summary>面板/列表底色透明度：vc119 老板令（真机「透出太强」）76→208——压深保文字干净，
+    /// 仍留一档水墨透光；低亮度 Boost 再加深。</summary>
+    public const int PanelAlpha = 208;
 
-    /// <summary>进阶调优页底色：加深一档，不跟画面亮度走（vc41 口径；vc53 真值 120，11-15 对基线校正 130→120）。</summary>
-    public const int PanelDeepAlpha = 120;
+    /// <summary>进阶调优页底色：加深一档，不跟画面亮度走（vc41 口径；vc119 老板令 120→232 压深保可读）。</summary>
+    public const int PanelDeepAlpha = 232;
 
     /// <summary>焦点/确认效果层底色透明度：v1.0.9 第③项加深（40→64），高亮更醒目。</summary>
     public const int FocusFillAlpha = 64;
@@ -69,6 +70,16 @@ public static class InkTranslucency
 
     /// <summary>进阶调优页底色：固定加深一档，不跟画面亮度走（vc41 口径）。</summary>
     public static Color PanelColorDeep(Context ctx) => Color.Argb(PanelDeepAlpha, InkR, InkG, InkB);
+
+    /// <summary>vc119 丝滑过渡令：贴底面板背景——同 PanelColor 底色，底部两角自长圆角（半径=系统圆角），
+    /// 弧线贴合屏幕角落；内容不再整体上移避让，圆角处由背景顺过去。</summary>
+    public static Android.Graphics.Drawables.Drawable PanelBgWithBottomCorner(Context ctx, int bottomRadiusPx)
+    {
+        var d = new Android.Graphics.Drawables.GradientDrawable();
+        d.SetColor(PanelColor(ctx));
+        d.SetCornerRadii(new float[] { 0f, 0f, 0f, 0f, bottomRadiusPx, bottomRadiusPx, bottomRadiusPx, bottomRadiusPx });
+        return d;
+    }
 
     /// <summary>近实色水墨面板底（手机版整改令 2026-11-27）：抽屉/设置面板在手机亮画面（台标）上
     /// 半透明 76 必叠字不可读，改 232 近实色，保留水墨色调。</summary>

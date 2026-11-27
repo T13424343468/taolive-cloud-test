@@ -54,4 +54,16 @@ public static class UiScale
 
     /// <summary>裸最终 px 尺寸（2026-11-27 手机整改令）：入参按 390dp 基准的 dp 值计，乘间距档转像素。</summary>
     public static int Px(float v) => (int)(v * PxScale + 0.5f);
+
+    // —— vc119 全局间距口径（2026-11-28 老板拍板：块间距/行间距各一个数，全页面统一）——
+    /// <summary>左右边距：所有页面统一按设置页口径 24dp。</summary>
+    public const float EdgePadDp = 24f;
+    /// <summary>块间距：卡片/区块之间统一 20dp（大于行间距，块与块之间松）。</summary>
+    public const float BlockGapDp = 20f;
+    /// <summary>行间距：块内部行与行统一 10dp（块内更紧凑）。</summary>
+    public const float RowGapDp = 10f;
+    /// <summary>按钮间距：相邻按钮统一 8dp。</summary>
+    public const float BtnGapDp = 8f;
+    /// <summary>按钮线框盒统一 44dp（vc119 老板令：36dp 太小回抬，vc116 原 44dp 口径）。</summary>
+    public const float BtnBoxDp = 44f;
 }

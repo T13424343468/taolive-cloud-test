@@ -172,7 +172,7 @@ public partial class MainActivity
         // vc111 老板令「全页面统一电视端水墨透光」：面板改自适应透底（亮屏76/暗房108），画面透出、
         // 文字清晰由可读性投影兜底（电视端 vc53 同口径）；不再用近实色底闷住画面。
         panel.SetBackgroundColor(InkTranslucency.PanelColor(this));
-        panel.SetPadding(Dp(20), SafeTopInset(Dp(10)), Dp(20), Dp(12)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
+        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Dp(12)); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线
         panel.Visibility = ViewStates.Gone;
 
         // 页头：标题（v26 原型口径）。vc117 令11（2026-11-28 老板拍板）：左上角「←」全删，
@@ -196,7 +196,7 @@ public partial class MainActivity
         _settingsCloseRow.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
         _settingsCloseRow.Click += (_, _) => CloseSettingsPanel();
         StyleOverlayButton(_settingsCloseRow);
-        panel.AddView(_settingsCloseRow, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(10) });
+        panel.AddView(_settingsCloseRow, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
 
         // 设置开关卡（流式行：一行摆多项）
         _settingsScroll = new MaxHeightScrollView(this, int.MaxValue);
@@ -336,7 +336,9 @@ public partial class MainActivity
             catch (Exception ex) { text = "读取失败：" + ex.Message; }
             _main.Post(() =>
             {
-                if (seq == _diagLoadSeq && _settingsPanelOpen && _diagBody != null)
+                // vc119 修（真机「统计中…」卡死根因）：诊断页打开时设置面板已关（ShowDiagPanel→CloseSettingsPanel），
+                // 旧条件 _settingsPanelOpen 恒 false，后台读数回贴被永久丢弃。改判诊断覆盖层在位即回贴。
+                if (seq == _diagLoadSeq && _diagOverlay is not null && _diagBody != null)
                     _diagBody.Text = text;
             });
         });
@@ -532,20 +534,19 @@ public partial class MainActivity
         // —— vc113 原型对照令（03 节设置页定稿）：分组卡片+真实 switch 控件——
         // 开关组卡片（即时生效）+ 入口组卡片（逐级进入），两组卡片分隔；行=标题+副标题+右缘控件/箭头。
 
-        // 卡片容器（原型 .set-card：edge 描边、12 圆角、行间 1px 分隔线；vc116⑮ 界面元素统一皮：
-        // 实底 #2B333B 退场，改全透明填充+描边线框风）
+        // 卡片容器（vc119 老板令 2026-11-28「左右两侧线条去掉只保留横线」：圆角描边框退场，
+        // 改上下横线分组——行间 1px 分隔线保留，内部元素左右间距不变）
         LinearLayout NewCard()
         {
             var card = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            var bg = new GradientDrawable();
-            bg.SetColor(Color.Transparent); // vc116⑮：全透明填充
-            bg.SetStroke(Dp(1), Color.ParseColor("#3A444D")); // 原型 --line 作描边
-            bg.SetCornerRadius(Dp(12));
-            card.Background = bg;
-            var lp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(40) }; // vc117 令15：块间 40dp
+            card.AddView(CardLine()); // 顶横线
+            var lp = new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(UiScale.BlockGapDp) }; // vc119 老板令：全页面块距统一 20dp（块间松、行内紧）
             _settingsFlow!.AddView(card, lp);
             return card;
         }
+
+        // vc119：分组横线（原型 --line 同色 1dp 全宽，替代原圆角描边框的上下边）
+        View CardLine() => new View(this) { Background = new Android.Graphics.Drawables.ColorDrawable(Color.ParseColor("#3A444D")) };
 
         // 行按压反馈（原型 .set-row:active=card-2 底；焦点高亮沿用全局 FocusDrawable）
         void BindPressFeedback(View row)
@@ -586,7 +587,7 @@ public partial class MainActivity
             var d = new TextView(this) { Text = subtitle, TextSize = UiScale.Caption };
             d.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(d);
-            txt.AddView(d, new LinearLayout.LayoutParams(-2, -2) { TopMargin = Dp(10) }); // vc117 令15：行内标题→说明 10dp
+            txt.AddView(d, new LinearLayout.LayoutParams(-2, -2) { TopMargin = Dp(UiScale.RowGapDp) }); // vc119 统一行距 10dp
             row.AddView(txt, new LinearLayout.LayoutParams(0, -2, 1f));
             card.AddView(row);
             BindPressFeedback(row);
@@ -622,6 +623,7 @@ public partial class MainActivity
         var subRow = NewCardRow(toggleCard, "源订阅", "自动收录公开源（默认关，长按立即刷新）", first: false);
         NewSwitch(subRow, _subEnabled, _ => ToggleSubscription());
         subRow.LongClick += (_, _) => RefreshSubscriptionNow();
+        toggleCard.AddView(CardLine()); // vc119：底横线收组
 
         // —— 入口组卡片（逐级进入；vc113 原型 03 节：运行统计/诊断日志/进阶调优/关于，各自独立子页） ——
         var entryCard = NewCard();
@@ -629,6 +631,7 @@ public partial class MainActivity
         AddEntryRow(entryCard, "诊断日志", "运行台账 · 崩溃日志 · 自诊断", ShowDiagPanel, first: false);
         AddEntryRow(entryCard, "进阶调优", "缓冲水位 · 出画门槛 · 预热车道", ShowAdvancedTuningPanel, first: false);
         AddEntryRow(entryCard, "关于 · 开源许可", null, ShowLicensePanel, first: false);
+        entryCard.AddView(CardLine()); // vc119：底横线收组
 
         void AddEntryRow(LinearLayout card, string title, string? subtitle, Action onClick, bool first)
         {
@@ -877,10 +880,13 @@ public partial class MainActivity
     }
 
     /// <summary>自管面板按钮统一皮（vc117 老板令 2026-11-28：文字按钮也上圆角线框——静默态墨色托底+细线框、
-    /// 聚焦态同构提亮，圆角口径一致；诊断页签操作钮/进阶调优/关于/各子页关闭行共用，ui-remote 归一条款）。</summary>
-    private void StyleOverlayButton(TextView b, bool accent = false)
+    /// 聚焦态同构提亮，圆角口径一致；诊断页签操作钮/进阶调优/关于/各子页关闭行共用，ui-remote 归一条款）。
+    /// vc119：入参放宽到 View——BarIconView 自绘图标钮共用同一套托底/线框/聚焦皮。
+    /// vc119 老板令（2026-11-28「左右两侧线条去掉只保留横线」）：描边退场，只留托底胶囊——
+    /// 按钮靠淡墨填充辨识，聚焦靠提亮填充，设置系页面不再出现竖向线条。</summary>
+    private void StyleOverlayButton(View b, bool accent = false)
     {
-        // accent=改动性按钮（如一键还原默认）：线框与提亮走朱砂；普通按钮走纸白
+        // accent=改动性按钮（如一键还原默认）：托底与提亮走朱砂；普通按钮走纸白
         byte cr = accent ? InkTranslucency.AccentR : InkTranslucency.PaperR;
         byte cg = accent ? InkTranslucency.AccentG : InkTranslucency.PaperG;
         byte cb = accent ? InkTranslucency.AccentB : InkTranslucency.PaperB;
@@ -888,8 +894,7 @@ public partial class MainActivity
         {
             var d = new GradientDrawable();
             d.SetColor(Color.Argb(fillAlpha, cr, cg, cb));
-            d.SetStroke(1, Color.Argb(strokeAlpha, cr, cg, cb));
-            d.SetCornerRadius(Dp(10)); // 圆角线框口径与档位弹层选项行胶囊一致
+            d.SetCornerRadius(Dp(10)); // 圆角口径与档位弹层选项行胶囊一致
             return d;
         }
         var idleBg = Skin(36, 64); // 静默：淡墨托底+细线框（档位弹层未选中行同构）
@@ -897,12 +902,12 @@ public partial class MainActivity
         b.Focusable = true;
         b.Clickable = true;
         b.Background = idleBg;
-        b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
-        InkTranslucency.ApplyReadabilityShadow(b);
+        if (b is TextView tv) tv.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        if (b is TextView tvShadow) InkTranslucency.ApplyReadabilityShadow(tvShadow);
         b.FocusChange += (_, ev) =>
         {
-            if (ev.HasFocus) { b.Background = focusBg; b.SetTextColor(InkTranslucency.TextPrimary(this)); }
-            else if (b.Background == focusBg) { b.Background = idleBg; b.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
+            if (ev.HasFocus) { b.Background = focusBg; if (b is TextView ft) ft.SetTextColor(InkTranslucency.TextPrimary(this)); }
+            else if (b.Background == focusBg) { b.Background = idleBg; if (b is TextView it) it.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary)); }
         };
     }
 
@@ -979,7 +984,7 @@ public partial class MainActivity
         {
             var overlay = new FrameLayout(this) { Clickable = true };
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            int pad = Dp(20);
+            int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
@@ -991,9 +996,9 @@ public partial class MainActivity
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             head.AddView(title, new LinearLayout.LayoutParams(0, -2, 1f));
-            head.AddView(DiagHeadBtn("📄", "打开源文件", OpenDiagSourceFile));
-            head.AddView(DiagHeadBtn("📁", "打开目录", OpenDiagDirectory));
-            head.AddView(DiagHeadBtn("🗑", "清空", ConfirmClearCrashLog));
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Doc, "打开源文件", OpenDiagSourceFile));
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Folder, "打开目录", OpenDiagDirectory));
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Trash, "清空", ConfirmClearCrashLog));
             box.AddView(head, new LinearLayout.LayoutParams(-1, -2));
 
             // 页签行（运行台账/崩溃日志/自诊断，v5 老板令三标签同页）
@@ -1022,14 +1027,14 @@ public partial class MainActivity
             box.AddView(_diagBodyScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
             _diagBtnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-            box.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(10) });
+            box.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(UiScale.RowGapDp) });
 
             // vc117 令11：底部「关闭」行收页（页头「←」已删，统一收口；返回键口径不变）
             var diagClose = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
             diagClose.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
             diagClose.Click += (_, _) => CloseDiagPanel();
             StyleOverlayButton(diagClose);
-            box.AddView(diagClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(10) });
+            box.AddView(diagClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
 
             _diagOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1040,14 +1045,14 @@ public partial class MainActivity
         catch (Exception ex) { CrashNet.Record($"[诊断] 打开失败：{ex.Message}"); ShowToast("诊断日志打开失败"); }
     }
 
-    /// <summary>topbar 常驻钮统一样式（描边自管，与面板操作钮同款）。</summary>
-    private TextView DiagHeadBtn(string glyph, string desc, Action onClick)
+    /// <summary>topbar 常驻钮统一样式（vc119 老板令：emoji 字符退场改 BarIconView 几何自绘——
+    /// 单色、44dp 盒、与控制条/页头图标同一套皮，全应用按钮风格归一）。</summary>
+    private View DiagHeadBtn(BarIconView.IconKind kind, string desc, Action onClick)
     {
-        var b = new TextView(this) { Text = glyph, TextSize = UiScale.Item, ContentDescription = desc, Gravity = GravityFlags.Center };
-        b.SetPadding(Dp(18), Dp(10), Dp(18), Dp(10));
-        StyleOverlayButton(b);
-        b.Click += (_, _) => onClick();
-        return b;
+        var icon = new BarIconView(this) { Kind = kind, Clickable = true, ContentDescription = desc };
+        StyleOverlayButton(icon);
+        icon.Click += (_, _) => onClick();
+        return icon;
     }
 
     private void CloseDiagPanel()
@@ -1101,7 +1106,7 @@ public partial class MainActivity
         {
             var overlay = new FrameLayout(this) { Clickable = true };
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
-            int pad = Dp(20);
+            int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
@@ -1127,7 +1132,7 @@ public partial class MainActivity
             statsClose.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
             statsClose.Click += (_, _) => CloseStatsPanel();
             StyleOverlayButton(statsClose);
-            box.AddView(statsClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(10) });
+            box.AddView(statsClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
 
             _statsOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1270,7 +1275,7 @@ public partial class MainActivity
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
-            box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = Dp(10) });
+            box.AddView(title, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = Dp(UiScale.RowGapDp) });
 
             var scroll = new ScrollView(this);
             var body = new LinearLayout(this) { Orientation = Orientation.Vertical };
@@ -1283,6 +1288,7 @@ public partial class MainActivity
             // 点行弹底部档位选择（单选、当前档高亮、点选即生效、点遮罩收层）。
             void AddTuningRow(string desc, int[] steps, Func<string> valueText, Func<int, string> gearLabel, Action<int> set, Func<int> cur)
             {
+                // vc119 老板令（触发点令）：标题与说明整块可点——说明行同样挂弹层，点哪儿都触发
                 var row = new TextView(this) { TextSize = UiScale.Item };
                 row.SetTextColor(Color.ParseColor("#F7F5EE"));
                 row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(4));
@@ -1294,7 +1300,8 @@ public partial class MainActivity
                 var sub = new TextView(this) { Text = desc, TextSize = UiScale.Caption };
                 sub.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
                 InkTranslucency.ApplyReadabilityShadow(sub);
-                sub.SetPadding(Dp(24), 0, Dp(24), Dp(8));
+                sub.SetPadding(Dp(24), 0, Dp(24), Dp(UiScale.RowGapDp));
+                sub.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur); // vc119：说明也可点
                 body.AddView(sub);
 
                 void Refresh() => row.Text = $"{valueText()} ›";
@@ -1378,7 +1385,8 @@ public partial class MainActivity
             StyleOverlayButton(close);
             int btnH = Dp(60); // #70 口径归一后实值直出：52dp 装不下 22sp 文字+28dp 内边距，抬到 60dp 保字完整
             btns.AddView(reset, new LinearLayout.LayoutParams(0, btnH, 1f));
-            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
+            // vc119 老板令：两钮之间补间距（原肩并肩零缝），走全局按钮间距口径
+            btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f) { LeftMargin = Dp(UiScale.BtnGapDp) });
             box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = padAdv });
 
             var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
@@ -1411,10 +1419,10 @@ public partial class MainActivity
             };
 
             var sheet = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            // vc116⑯：档位弹层与底页隔断——底色加深至 216、描边+四角圆角 14dp、左右/底部 margin 12dp（仍半透明口径）
+            // vc116⑯：档位弹层与底页隔断——底色加深至 216、四角圆角 14dp、左右/底部 margin 12dp（仍半透明口径）
+            // vc119 老板令：描边退场（左右线条去掉只保留横线），靠深底填充隔断
             var sheetBg = new GradientDrawable();
             sheetBg.SetColor(Color.Argb(216, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
-            sheetBg.SetStroke(1, Color.Argb(InkTranslucency.FocusStrokeAlpha, InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
             sheetBg.SetCornerRadius(Dp(14));
             sheet.Background = sheetBg;
             int padSheet = Dp(20);
@@ -1440,17 +1448,16 @@ public partial class MainActivity
                     ? InkTranslucency.TextPrimary(this)
                     : Color.ParseColor(InkTranslucency.TextSecondary));
                 // vc115 A2：每个选项行自带托底胶囊（原型 .opt 同款），选中行保持强化样式
+                // vc119 老板令：描边退场（左右线条去掉只保留横线），选中/未选中靠填充深浅区分
                 var pill = new GradientDrawable();
                 pill.SetCornerRadius(Dp(10));
-                if (selected) // 当前档高亮：淡底细边框（诊断卡片同构）
+                if (selected) // 当前档高亮：淡底强化
                 {
                     pill.SetColor(Color.Argb(60, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
-                    pill.SetStroke(1, Color.Argb(InkTranslucency.FocusStrokeAlpha, InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
                 }
-                else // 未选中：墨色托底+纸色细边框，保证半透明面板上文字可读
+                else // 未选中：墨色托底，保证半透明面板上文字可读
                 {
                     pill.SetColor(Color.Argb(36, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
-                    pill.SetStroke(1, Color.Argb(64, InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
                 }
                 opt.Background = pill;
                 int val = step;

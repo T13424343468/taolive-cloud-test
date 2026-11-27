@@ -6,8 +6,10 @@ using Android.OS;
 namespace TaoLive.Phone;
 
 /// <summary>
-/// 后台保活前台服务（老板令 2026-11-27 #20「切后台要保活」）：切后台时以前台服务身份持有进程，
-/// 播放内核与看门狗泵照常运转，当前台继续把水位灌满；回前台即撤（OnResume 停服务）。
+/// 后台保活前台服务（老板令 2026-11-27 #20「切后台要保活」）：播放期长驻，以前台服务身份持有进程，
+/// 播放内核与看门狗泵照常运转，当前台继续把水位灌满；退出应用时撤（OnDestroy）。
+/// 长驻原因：起停短命模式存在竞态——StopService 先于服务报到即触发
+/// ForegroundServiceDidNotStartInTimeException 闪退（v7 走查实锤 2026-11-27）。
 /// 服务本身不碰播放器——进程活着、Activity 未销毁，播放与缓冲就不会停；
 /// 切回时画面原样接续（不重新起播、不重新缓冲），即「从水位接续点续播」。
 /// </summary>
@@ -56,8 +58,8 @@ public class KeepAliveService : Service
             ? new Notification.Builder(this, ChannelId)
             : new Notification.Builder(this);
         builder.SetSmallIcon(Resource.Drawable.ic_fg)
-               .SetContentTitle("TaoLive 后台播放中")
-               .SetContentText($"正在缓冲：{title}（回来自动接上）")
+               .SetContentTitle("TaoLive 播放中")
+               .SetContentText($"正在播放：{title}（切后台不断流，回来接着看）")
                .SetOngoing(true)
                .SetContentIntent(pi);
         return builder.Build()!;

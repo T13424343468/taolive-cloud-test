@@ -753,19 +753,21 @@ public partial class MainActivity : Activity
     {
         base.OnResume();
         CrashNet.Record($"[生命周期] OnResume 回前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
-        StopKeepAlive(); // 老板令 #20：回前台即撤保活，画面原样接续
+        StartKeepAlive(); // 老板令 #20：会话期长驻（起停相撞会触发系统违规闪退，v7 走查实锤），只在退出时撤
     }
 
     protected override void OnPause()
     {
         base.OnPause();
         CrashNet.Record($"[生命周期] OnPause 失去前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
-        StartKeepAlive(); // 老板令 #20：切后台即起前台服务，进程不死、水位照灌
+        StartKeepAlive(); // 老板令 #20：切后台保活（已在跑则幂等跳过）
     }
 
     // —— 后台保活（老板令 2026-11-27 #20「切后台要保活+满水位+切回续播」）——————
     // 前台服务只负责持有进程优先级：播放内核与看门狗泵在 Activity 里照常运转，
     // 后台继续拉流灌水位；服务不碰播放器，切回时画面从水位接续点原样续播。
+    // 长驻口径：播放期一直跑，只在 OnDestroy 撤——OnPause 起/OnResume 撤的短命模式
+    // 存在起停竞态（StopService 先于服务报到 → ForegroundServiceDidNotStartInTime 闪退）。
 
     private bool _keepAliveOn; // 保活服务在跑（防重复起/撤）
 

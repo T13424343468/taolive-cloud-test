@@ -128,13 +128,16 @@ public partial class MainActivity
         _controlBar.SetBackgroundColor(InkTranslucency.PanelSolidColor(this));
         _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), UiScale.Px(10));
 
-        // 信息行：台名+读数（竖屏行1）；横屏与节目单同行横排（v25 紧凑口径）
+        // 信息行：台名+读数同行（v26 原型口径：台名左、读数右，均单行——2026-11-27 走查修：竖屏原把读数拼进台名
+        // 导致整行换行顶高，违 v13 单行令）；横屏与节目单同行横排（v25 紧凑口径）
         var infoRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-        _cbTitle = new TextView(this) { TextSize = UiScale.Item };
+        _cbTitle = new TextView(this) { TextSize = UiScale.Item, Ellipsize = TextUtils.TruncateAt.End };
+        _cbTitle.SetSingleLine(true);
         _cbTitle.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(_cbTitle);
-        infoRow.AddView(_cbTitle);
-        _cbReadout = new TextView(this) { TextSize = UiScale.Caption };
+        infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f)); // 台名占余宽、超长省略
+        _cbReadout = new TextView(this) { TextSize = UiScale.Caption, Ellipsize = TextUtils.TruncateAt.End };
+        _cbReadout.SetSingleLine(true);
         _cbReadout.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(_cbReadout);
         infoRow.AddView(_cbReadout);
@@ -167,6 +170,7 @@ public partial class MainActivity
                 Gravity = GravityFlags.Center,
                 TextSize = UiScale.Item,
             };
+            b.SetHeight(UiScale.Px(44)); // 定高按钮：◀▶ 符号字形走回退字体度量偏大，不定高会把整行顶高、字形下沉错位（2026-11-27 走查实锤）
             b.SetTextColor(InkTranslucency.TextPrimary(this)); // 单色文本图标（v22：去彩色 emoji 呈现）
             InkTranslucency.ApplyReadabilityShadow(b);
             b.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12)); // 手机热区：间距档实值
@@ -186,20 +190,41 @@ public partial class MainActivity
             ShowToast(land ? "竖屏" : "横屏");
         });
         var lockBtn = new TextView(this) { Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+        lockBtn.SetHeight(UiScale.Px(44));
         lockBtn.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(lockBtn);
         lockBtn.SetPadding(UiScale.Px(18), UiScale.Px(12), UiScale.Px(18), UiScale.Px(12));
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
         right.AddView(lockBtn);
-        AddBtn(right, "音量−", (_, _) => StepVolume(-1));
-        AddBtn(right, "音量+", (_, _) => StepVolume(1));
 
-        btnRow.AddView(left);
-        var space = new View(this);
-        btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
-        btnRow.AddView(right);
-        _controlBar.AddView(btnRow);
+        if (!landscape)
+        {
+            // 竖屏：8 钮单行实测约 504dp > 390dp 基准可用宽，音量两钮被裁出屏（2026-11-27 走查实锤，一票重扣级）——
+            // 拆两行：行1 两端分组（左组切台 | 右组功能），行2 音量右对齐（与右组右缘对齐）；音量文字样式仍待老板裁定，此处不动文案
+            btnRow.AddView(left);
+            var space = new View(this);
+            btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
+            btnRow.AddView(right);
+            _controlBar.AddView(btnRow);
+
+            var volRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
+            volRow.SetGravity(GravityFlags.End);
+            AddBtn(volRow, "音量−", (_, _) => StepVolume(-1));
+            AddBtn(volRow, "音量+", (_, _) => StepVolume(1));
+            _controlBar.AddView(volRow);
+        }
+        else
+        {
+            // 横屏：可用宽约 914dp，8 钮单行两端分组放得下（v21/v26 口径不变）
+            AddBtn(right, "音量−", (_, _) => StepVolume(-1));
+            AddBtn(right, "音量+", (_, _) => StepVolume(1));
+            btnRow.AddView(left);
+            var space = new View(this);
+            btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
+            btnRow.AddView(right);
+            _controlBar.AddView(btnRow);
+        }
 
         RefreshLockButton();
         _controlBar.Visibility = ViewStates.Gone;
@@ -230,7 +255,7 @@ public partial class MainActivity
         var ch = _channels.Count > 0 && _currentIndex >= 0 && _currentIndex < _channels.Count
             ? _channels[_currentIndex] : null;
         long buffered = BufferedMsNow() ?? 0;
-        string readout = $"  实时水位：{buffered / 1000}秒 · 画面时刻：{PictureClock(buffered)}";
+        string readout = $"实时水位：{buffered / 1000}秒 · 画面时刻：{PictureClock(buffered)}";
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         string program = _epgNowTitle is { } t ? t : "节目单暂无数据";
         if (landscape)
@@ -240,7 +265,9 @@ public partial class MainActivity
         }
         else
         {
-            _cbTitle.Text = (ch is null ? "TaoLive" : ch.Name) + readout;
+            // 竖屏：台名/读数分属两个 TextView（信息行单行、台名超长省略，v26 原型口径）
+            _cbTitle.Text = ch is null ? "TaoLive" : ch.Name;
+            _cbReadout.Text = "  " + readout;
             _cbProgram?.Text = program;
         }
     }

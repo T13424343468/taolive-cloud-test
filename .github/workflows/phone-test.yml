@@ -97,6 +97,10 @@ jobs:
           mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd -n testavd -k "$PICK" || true
           CFG=$ANDROID_AVD_HOME/testavd.avd/config.ini
+          # 真机分辨率口径（走查比对基准）：1080x2400 @420dpi，禁用 320x640 默认玩具档
+          grep -q '^hw.lcd.width=' "$CFG" && sed -i 's|^hw.lcd.width=.*|hw.lcd.width=1080|' "$CFG" || echo 'hw.lcd.width=1080' >> "$CFG"
+          grep -q '^hw.lcd.height=' "$CFG" && sed -i 's|^hw.lcd.height=.*|hw.lcd.height=2400|' "$CFG" || echo 'hw.lcd.height=2400' >> "$CFG"
+          grep -q '^hw.lcd.density=' "$CFG" && sed -i 's|^hw.lcd.density=.*|hw.lcd.density=420|' "$CFG" || echo 'hw.lcd.density=420' >> "$CFG"
           grep -q '^hw.gpu.enabled=' "$CFG" && sed -i 's|^hw.gpu.enabled=.*|hw.gpu.enabled=no|' "$CFG" || echo 'hw.gpu.enabled=no' >> "$CFG"
           grep -q '^hw.gpu.mode=' "$CFG" && sed -i 's|^hw.gpu.mode=.*|hw.gpu.mode=off|' "$CFG" || echo 'hw.gpu.mode=off' >> "$CFG"
           grep -q '^hw.cpu.ncore=' "$CFG" && sed -i 's|^hw.cpu.ncore=.*|hw.cpu.ncore=4|' "$CFG" || echo 'hw.cpu.ncore=4' >> "$CFG"

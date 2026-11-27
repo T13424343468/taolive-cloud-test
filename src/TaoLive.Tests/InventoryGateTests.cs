@@ -18,9 +18,10 @@ public class InventoryGateTests
     // ---- 第 6 刀：首帧出画门槛分档 ----
 
     [Fact]
-    public void SilentRefetch_opens_frame_at_one_second()
+    public void SilentRefetch_opens_frame_at_seven_seconds()
     {
-        Assert.Equal(1000, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
+        // vc102 老板令「1秒出画 改回7秒」：两档门槛统一 7 秒，先稳后快
+        Assert.Equal(7000, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
         Assert.Equal(BufferInventory.SilentRefetchOpenMs, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
     }
 
@@ -32,11 +33,11 @@ public class InventoryGateTests
     }
 
     [Fact]
-    public void Default_mode_is_silent_refetch_so_kernel_gate_eats_one_second()
+    public void Default_mode_is_silent_refetch_so_kernel_gate_eats_seven_seconds()
     {
-        // 空拨根治断言：默认档=SilentRefetch，内核门槛取值必须=1 秒档
+        // 空拨根治断言：默认档=SilentRefetch，内核门槛取值必须=7 秒档（vc102 老板令改回）
         Assert.Equal(BufferInventory.Mode.SilentRefetch, BufferInventory.Default);
-        Assert.Equal(1000, BufferInventory.FirstFrameOpenMs(BufferInventory.Default));
+        Assert.Equal(7000, BufferInventory.FirstFrameOpenMs(BufferInventory.Default));
     }
 
     [Fact]
@@ -90,11 +91,9 @@ public class InventoryGateTests
         AdvancedTuning.ResetToDefaults();
         try
         {
-            // 出厂 LiveLagSec=60：触发线=min(7 秒, 60*0.5 秒)=7 秒（TargetMs 联动，非 1 秒出画档）
+            // 出厂 LiveLagSec=60：触发线=min(7 秒, 60*0.5 秒)=7 秒（TargetMs 联动；vc102 两档门槛统一 7 秒后与出画档同值）
             Assert.Equal(BufferInventory.TargetMs, PlaybackSession.ProactiveInventoryFloor.TotalMilliseconds);
             Assert.Equal(7000, PlaybackSession.ProactiveInventoryFloor.TotalMilliseconds);
-            Assert.NotEqual(BufferInventory.SilentRefetchOpenMs,
-                (int)PlaybackSession.ProactiveInventoryFloor.TotalMilliseconds);
         }
         finally { AdvancedTuning.ResetToDefaults(); }
     }

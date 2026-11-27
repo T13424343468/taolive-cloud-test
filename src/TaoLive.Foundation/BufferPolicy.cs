@@ -66,10 +66,10 @@ public static class BufferInventory
     /// 原 StartFull（起播即 7 秒，vc53 画面平稳优先令 00:36）为激活前的旧默认档，保留作回退档。</summary>
     public static Mode Default => Mode.SilentRefetch;
 
-    /// <summary>SilentRefetch 档首帧出画门槛（毫秒）=1 秒（vc93 第 6 刀，老板 2026-11-26 拍板接线）：
-    /// 先出画后补库存，首帧不慢——低缓存 1 秒即出画，出画后静默补满窗口。
+    /// <summary>SilentRefetch 档首帧出画门槛（毫秒）=7 秒（vc102，老板 2026-11-27 令「1秒出画 改回7秒」）：
+    /// 原 1 秒（vc93 第 6 刀接线）改回与 StartFull 同一口径——出画那一刻手里有 7 秒存货，先稳后快。
     /// 此前 c7a0aca 只切了 Default 档未接内核门槛（空拨），内核仍写死 7 秒，本常量补上落点。</summary>
-    public const int SilentRefetchOpenMs = 1000;
+    public const int SilentRefetchOpenMs = 7000;
 
     /// <summary>首帧出画门槛（毫秒）按库存档分档（vc93 第 6 刀接线，老板 2026-11-26 拍板）：
     /// SilentRefetch=1 秒出画（<see cref="SilentRefetchOpenMs"/>）；StartFull=7 秒（<see cref="TargetMs"/>，出画那一刻手里正好 7 秒存货）。

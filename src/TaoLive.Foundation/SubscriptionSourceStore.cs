@@ -217,8 +217,12 @@ public sealed class SubscriptionSourceStore
             finally { gate.Release(); }
         });
         await Task.WhenAll(tasks).ConfigureAwait(false);
+        LastRefreshedAt = DateTime.Now; // 诊断页「最近刷新」读数（v26 自诊断逐项检查行）
         return Ingest(alive, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), knownByName.Keys);
     }
+
+    /// <summary>最近一次全量刷新完成时刻（本地时间；null=尚未完成过刷新）。诊断页展示用。</summary>
+    public DateTime? LastRefreshedAt { get; private set; }
 
     /// <summary>试活单路：清单须 EXTM3U，首个分片首字节须 TS 魔数 0x47。</summary>
     public static async Task<bool> ProbeAsync(string url, string ua, CancellationToken ct = default)

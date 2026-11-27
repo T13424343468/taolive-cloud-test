@@ -359,7 +359,7 @@ public class HotSwitchV2Tests
     public void Silent_refetch_seeks_back_once_when_water_below_target_after_open()
     {
         var clock = new FixedClock(DateTimeOffset.Parse("2026-11-28T00:00:00Z"));
-        var player = new LoggingPlayer { BufferedMs = 2_000 }; // 慢源 1 秒开画后水位仅 2 秒
+        var player = new LoggingPlayer { BufferedMs = 2_000 }; // 低水位开画场景（vc121 硬门禁后主要兜卡后重入/换线）
         var session = new PlaybackSession(player, clock);
         session.ChangeChannel(MakeChannel("c1", "https://s/a.m3u8", "https://s/b.m3u8"));
         session.NotifyFirstFrame(); // Playing

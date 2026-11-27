@@ -105,9 +105,9 @@ public class SessionFailoverTests
     [Fact]
     public void Watchdog_slow_filling_source_gets_extended_window()
     {
-        // vc104 门槛联动根修：慢灌窗改 max(OpenTimeout, 出画门槛×3)=8s 与判死钟同账——
-        // 慢灌源不再靠放宽窗让路（vc103 门槛回退 1 秒后旧 21s 窗与门槛脱钩，慢死源白等），
-        // 改由「宽限不重启」续攒：窗到点不切线不重放不扔货，只重计窗继续灌，预算 2 次封顶。
+        // vc104 门槛联动根修：慢灌窗改 max(OpenTimeout, 出画门槛×3)——vc121 硬门禁出画门槛回 7 秒后，
+        // 窗自动回 21 秒口径（7×3，公式不写死）。慢灌源靠「宽限不重启」续攒：窗到点不切线不重放不扔货，
+        // 只重计窗继续灌，预算 2 次封顶。
         var clock = new FixedClock(T0);
         var player = new LoggingPlayer();
         var session = new PlaybackSession(player, clock);
@@ -116,22 +116,22 @@ public class SessionFailoverTests
 
         player.BufferedMs = 1_000; // 缓冲在灌（>0 有增长）
         clock.Advance(TimeSpan.FromSeconds(3));
-        Assert.False(session.CheckWatchdog()); // 判死窗 8 秒内不切，慢灌源不切
+        Assert.False(session.CheckWatchdog()); // 判死窗 21 秒内不切，慢灌源不切
         Assert.Equal(PlaybackState.Buffering, session.State);
         Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url);
 
         player.BufferedMs = 2_000; // 继续在灌
-        clock.Advance(TimeSpan.FromSeconds(9)); // 累计 12s：窗到点，有进度→宽限不重启 1/2（不切线不重放）
+        clock.Advance(TimeSpan.FromSeconds(18)); // 累计 21s：窗到点，有进度→宽限不重启 1/2（不切线不重放）
         Assert.True(session.CheckWatchdog());
         Assert.Equal(PlaybackState.Buffering, session.State);
         Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url);
 
-        clock.Advance(TimeSpan.FromSeconds(8)); // 累计 20s：窗重计后再到点→宽限 2/2，仍原地续攒
+        clock.Advance(TimeSpan.FromSeconds(21)); // 累计 42s：窗重计后再到点→宽限 2/2，仍原地续攒
         Assert.True(session.CheckWatchdog());
         Assert.Equal(PlaybackState.Buffering, session.State);
         Assert.Equal("https://s/a.m3u8", session.CurrentEndpoint?.Url);
 
-        clock.Advance(TimeSpan.FromSeconds(8)); // 累计 28s：预算耗尽，该切还得切
+        clock.Advance(TimeSpan.FromSeconds(21)); // 累计 63s：预算耗尽，该切还得切
         Assert.True(session.CheckWatchdog());
         Assert.Equal("https://s/b.m3u8", session.CurrentEndpoint?.Url);
     }
@@ -163,7 +163,8 @@ public class SessionFailoverTests
     public void Watchdog_windows_stay_consistent_with_gates()
     {
         // vc66/vc67/vc68 三次同款死局的防复发闸：门槛动，窗必须跟着动——推导式+不变量断言双保险。
-        // vc104 门槛联动根修：慢灌窗改 max(OpenTimeout, 出画门槛×3)，与判死钟同账（默认档 1s×3=3s<8s，窗=8s）。
+        // vc104 门槛联动根修：慢灌窗改 max(OpenTimeout, 出画门槛×3)，与判死钟同账
+        // （vc121 硬门禁后默认档 7s×3=21s>8s，窗=21s——慢热源攒满 7 秒的证明时间）。
         Assert.True(PlaybackSession.DefaultOpenTimeout >= PrefetchCurve.FirstFrameGate,
             "判死窗必须≥首帧门槛：窗<门槛起播必被误杀（vc103 门槛回退 1 秒后判死窗 8 秒仍盖住）");
         Assert.True(PlaybackSession.DefaultOpenTimeout >= TimeSpan.FromSeconds(8),

@@ -41,13 +41,19 @@ public partial class MainActivity
     // 自绘图标（全屏/锁）OnDraw 按 ScaledDensity 换算同尺寸绘制，热区 44dp 不变。
     private static float IconGlyph => UiScale.T(1.25f);
 
-    private FrameLayout? _hud;                 // 亮度/音量手势悬浮指示（竖条+图标，普通播放器样式，2026-11-27 老板令）
-    private HudIconView? _hudIcon;
-    private View? _hudFill;                    // 竖条填充（高度=音量/亮度比例）
-    private Java.Lang.Runnable? _hudHide;
-    private const int HudTrackDp = 120;        // 竖条轨道高（dp，390 基准；v31 老板令「参考系统窄条」定稿 5×120）
-    private const int HudIconDp = 16;          // 指示图标边长（v31 原型口径：太阳 SVG 16×16）
-    private const int HudTrackWidthDp = 5;     // 竖条轨道宽（v31 老板令：系统滚动条式细条 5×120，不占画面）
+    private FrameLayout? _hudBright;           // 亮度指示条（vc121 老板令：竖横屏永远亮左、音右，各在黑区）
+    private FrameLayout? _hudVol;              // 音量指示条
+    private HudIconView? _hudBrightIcon;
+    private HudIconView? _hudVolIcon;
+    private View? _hudBrightFill;              // 竖条填充（高度=音量/亮度比例）
+    private View? _hudVolFill;
+    private FrameLayout? _hudBrightTrack;
+    private FrameLayout? _hudVolTrack;
+    private Java.Lang.Runnable? _hudBrightHide;
+    private Java.Lang.Runnable? _hudVolHide;
+    private const int HudTrackDp = 160;        // 竖条轨道高（vc121 老板令「整体元素太小」：120→160）
+    private const int HudIconDp = 24;          // 指示图标边长（vc121：16→24）
+    private const int HudTrackWidthDp = 10;    // 竖条轨道宽（vc121：5→10，可拖不硌手）
     private AudioManager? _audio;
     private float _brightness = 0.5f;          // 0.05–1 手势工作值：起点=当前实际亮度（vc117 老板令「出画不提亮」，不再持久记忆）
 
@@ -75,16 +81,28 @@ public partial class MainActivity
 
     private void BuildHud()
     {
-        _hud = new FrameLayout(this);
-        _hud.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：深档退场，全应用一档
+        _hudBright = BuildHudPanel(HudIconView.IconKind.Sun);
+        _hudVol = BuildHudPanel(HudIconView.IconKind.Speaker);
+        PositionHud();
+        _playerPage.AddView(_hudBright); // vc116①：不传新 lp——PositionHud 已落 LayoutParameters，再挂带 Gravity 的 lp 会整体覆盖落位
+        _playerPage.AddView(_hudVol);
+    }
+
+    /// <summary>构建单根指示条面板（图标在上、竖条在下）；条面板整块可拖直接调值（vc121 老板令「划不动」整改）。</summary>
+    private FrameLayout BuildHudPanel(HudIconView.IconKind kind)
+    {
+        var panel = new FrameLayout(this);
+        panel.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：深档退场，全应用一档
+        panel.Clickable = true; // 消费触摸，不透给切台手势
 
         // 竖排：图标在上、竖条在下（普通播放器通行样式，无文字）
         var col = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
         col.SetGravity(GravityFlags.Center);
         col.SetPadding(UiScale.Px(28), UiScale.Px(20), UiScale.Px(28), UiScale.Px(20));
 
-        _hudIcon = new HudIconView(this);
-        col.AddView(_hudIcon, new LinearLayout.LayoutParams(UiScale.Px(HudIconDp), UiScale.Px(HudIconDp)) { Gravity = GravityFlags.CenterHorizontal });
+        var icon = new HudIconView(this);
+        icon.SetKind(kind);
+        col.AddView(icon, new LinearLayout.LayoutParams(UiScale.Px(HudIconDp), UiScale.Px(HudIconDp)) { Gravity = GravityFlags.CenterHorizontal });
 
         var gap = new View(this);
         col.AddView(gap, new LinearLayout.LayoutParams(1, UiScale.Px(12)));
@@ -95,55 +113,96 @@ public partial class MainActivity
         trackBg.SetColor(Color.Argb(70, (trackArgb >> 16) & 0xFF, (trackArgb >> 8) & 0xFF, trackArgb & 0xFF));
         trackBg.SetCornerRadius(UiScale.Px(5));
         track.Background = trackBg;
+        track.ClipToOutline = true; // vc121：裁掉 fill 溢出轨道圆角弧线的 1-2px
 
         var fillBg = new GradientDrawable();
         fillBg.SetColor(InkTranslucency.TextPrimary(this));
         fillBg.SetCornerRadius(UiScale.Px(5));
-        _hudFill = new View(this) { Background = fillBg };
-        track.AddView(_hudFill, new FrameLayout.LayoutParams(
+        var fill = new View(this) { Background = fillBg };
+        track.AddView(fill, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent, UiScale.Px(3)) { Gravity = GravityFlags.Bottom });
 
         col.AddView(track, new LinearLayout.LayoutParams(UiScale.Px(HudTrackWidthDp), UiScale.Px(HudTrackDp)));
-        _hud.AddView(col);
-        _hud.Visibility = ViewStates.Gone;
-        PositionHud();
-        _playerPage.AddView(_hud); // vc116①：不传新 lp——PositionHud 已落 LayoutParameters，再挂带 Gravity 的 lp 会整体覆盖落位
+        panel.AddView(col);
+
+        // vc121 老板令「亮度划不动」：手指按住条面板上下拖，纵向位置直接定值（绝对映射），不再只靠暗手势
+        int trackH = UiScale.Px(HudTrackDp);
+        track.Touch += (_, e) =>
+        {
+            if (e.Event is null) return;
+            var act = e.Event.ActionMasked;
+            if (act == MotionEventActions.Down || act == MotionEventActions.Move)
+            {
+                float f = Math.Clamp(1f - e.Event.GetY() / trackH, 0f, 1f);
+                ApplyHudValue(kind, f);
+                e.Handled = true;
+            }
+            else if (act == MotionEventActions.Up || act == MotionEventActions.Cancel)
+            {
+                e.Handled = true;
+            }
+        };
+
+        if (kind == HudIconView.IconKind.Sun) { _hudBrightIcon = icon; _hudBrightFill = fill; _hudBrightTrack = track; }
+        else { _hudVolIcon = icon; _hudVolFill = fill; _hudVolTrack = track; }
+        panel.Visibility = ViewStates.Gone;
+        return panel;
     }
 
-    /// <summary>悬浮指示条落位（v28 老板令定稿④「落位」）：竖屏=亮度左上（顶部黑边内），
-    /// 横屏=亮度左黑边垂直居中（画面满高后左右留黑边）。音量走系统音量条（⑤定稿），自绘条只服务亮度。转屏重算。</summary>
+    /// <summary>拖条设值：亮度走窗口亮度，音量走媒体流；各自亮条跟手。</summary>
+    private void ApplyHudValue(HudIconView.IconKind kind, float f)
+    {
+        if (kind == HudIconView.IconKind.Sun) SetBrightness(f);
+        else if (_audio is { } audio)
+        {
+            int max = audio.GetStreamMaxVolume(Android.Media.Stream.Music);
+            int idx = Math.Clamp((int)Math.Round(f * max), 0, max);
+            audio.SetStreamVolume(Android.Media.Stream.Music, idx, (VolumeNotificationFlags)0);
+            ShowHudBar(kind, max <= 0 ? 0 : (float)idx / max);
+        }
+    }
+
+    /// <summary>悬浮指示条落位（vc121 老板令定稿：竖横屏永远亮左、音右，各在黑区；
+    /// 竖屏特殊点=在上半区黑区，横屏=左右黑区垂直居中）。转屏重算。</summary>
     internal void PositionHud()
     {
-        if (_hud is null || _playerPage is null) return;
+        if (_playerPage is null) return;
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
-        var lp = _hud.LayoutParameters as FrameLayout.LayoutParams;
+        PositionHudBar(_hudBright, landscape, left: true);
+        PositionHudBar(_hudVol, landscape, left: false);
+    }
+
+    private void PositionHudBar(FrameLayout? bar, bool landscape, bool left)
+    {
+        if (bar is null) return;
+        var lp = bar.LayoutParameters as FrameLayout.LayoutParams;
         if (lp is null)
         {
             lp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
-            _hud.LayoutParameters = lp;
+            bar.LayoutParameters = lp;
         }
+        int barW = bar.Width, barH = bar.Height;
         if (landscape)
         {
-            // vc120 老板令（2026-11-28「横屏保证在黑区的中间」）：条落左黑区水平居中——按画面实际区域算，
-            // 不再写死 10dp。画面未布局时兜底 8dp 贴边（布局后 LayoutChange 会重算落准）。
-            lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Left;
+            // 横屏：条落各自侧黑区水平居中——按画面实际区域算，黑区窄于条兜底 8dp 贴边
+            lp.Gravity = GravityFlags.CenterVertical | (left ? GravityFlags.Left : GravityFlags.Right);
+            int screenW = Resources!.DisplayMetrics!.WidthPixels;
             int videoLeft = _videoView is { } vv && vv.Width > 0 ? vv.Left : 0;
-            int barW = _hud.Width;
-            int margin = videoLeft > 0 ? (videoLeft - barW) / 2 : UiScale.Px(8);
-            lp.LeftMargin = Math.Max(margin, UiScale.Px(8)); // 黑区窄于条时保底 8dp 不压画面
-            lp.RightMargin = 0;
+            int videoRight = _videoView is { } vv2 && vv2.Width > 0 ? vv2.Right : screenW;
+            int blackW = left ? videoLeft : screenW - videoRight;
+            int margin = blackW > 0 ? (blackW - barW) / 2 : UiScale.Px(8);
+            if (left) { lp.LeftMargin = Math.Max(margin, UiScale.Px(8)); lp.RightMargin = 0; }
+            else { lp.RightMargin = Math.Max(margin, UiScale.Px(8)); lp.LeftMargin = 0; }
             lp.TopMargin = 0;
         }
         else
         {
-            // vc120 老板令（2026-11-28「竖屏黑屏区域那么大为什么非要顶出去，根据画面区域计算」）：
-            // 条落顶部黑区垂直居中——黑区=屏顶到画面上沿，条中心对黑区中点；黑区太窄兜底 SafeTop+8dp。
-            lp.Gravity = GravityFlags.Top | GravityFlags.Left;
-            lp.LeftMargin = UiScale.Px(12);
-            lp.RightMargin = 0;
-            int videoTop = _videoView is { } vv2 && vv2.Height > 0 ? vv2.Top : 0;
-            int barH = _hud.Height;
+            // 竖屏：条落上半区黑区垂直居中——黑区=屏顶到画面上沿；黑区太窄兜底 SafeTop+8dp
+            lp.Gravity = GravityFlags.Top | (left ? GravityFlags.Left : GravityFlags.Right);
+            if (left) { lp.LeftMargin = UiScale.Px(12); lp.RightMargin = 0; }
+            else { lp.RightMargin = UiScale.Px(12); lp.LeftMargin = 0; }
+            int videoTop = _videoView is { } vv3 && vv3.Height > 0 ? vv3.Top : 0;
             int safeTop = SafeTopInset(0);
             if (videoTop > 0)
             {
@@ -157,20 +216,26 @@ public partial class MainActivity
         }
     }
 
-    /// <summary>竖条悬浮指示：kind 选图标，fraction 0–1 定填充高；700ms 无操作自动收。</summary>
+    /// <summary>竖条悬浮指示：kind 选条（亮左/音右），fraction 0–1 定填充高；700ms 无操作自动收。</summary>
     private void ShowHudBar(HudIconView.IconKind kind, float fraction)
     {
-        if (_hud is null || _hudIcon is null || _hudFill is null) return;
-        _hudIcon.SetKind(kind);
+        bool isSun = kind == HudIconView.IconKind.Sun;
+        var panel = isSun ? _hudBright : _hudVol;
+        var icon = isSun ? _hudBrightIcon : _hudVolIcon;
+        var fill = isSun ? _hudBrightFill : _hudVolFill;
+        if (panel is null || icon is null || fill is null) return;
+        icon.SetKind(kind);
         float f = Math.Clamp(fraction, 0f, 1f);
         int fillH = Math.Max((int)(UiScale.Px(HudTrackDp) * f), UiScale.Px(3)); // 0 也留可见头
-        if (_hudFill.LayoutParameters is FrameLayout.LayoutParams lp) lp.Height = fillH;
-        else _hudFill.LayoutParameters = new FrameLayout.LayoutParams(
+        if (fill.LayoutParameters is FrameLayout.LayoutParams lp) lp.Height = fillH;
+        else fill.LayoutParameters = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent, fillH) { Gravity = GravityFlags.Bottom };
-        _hud.Visibility = ViewStates.Visible;
-        if (_hudHide is { } old) _main.RemoveCallbacks(old);
-        _hudHide = new Java.Lang.Runnable(() => _hud!.Visibility = ViewStates.Gone);
-        _main.PostDelayed(_hudHide, 700);
+        panel.Visibility = ViewStates.Visible;
+        var oldHide = isSun ? _hudBrightHide : _hudVolHide;
+        if (oldHide is { }) _main.RemoveCallbacks(oldHide);
+        var newHide = new Java.Lang.Runnable(() => panel.Visibility = ViewStates.Gone);
+        if (isSun) _hudBrightHide = newHide; else _hudVolHide = newHide;
+        _main.PostDelayed(newHide, 700);
     }
 
     // —— 亮度/音量（手势与按钮共用单点） ————————————————————
@@ -308,10 +373,13 @@ public partial class MainActivity
         right.AddView(lockBtn);
 
         // vc110：音量按钮删除后竖屏 6 钮单行放得下，两行拆分口径退场
-        btnRow.AddView(left);
+        // vc121 老板拍板方案A（2026-11-28 真机「按钮被圆角覆盖」）：仅按钮行两端让出圆角弧区——
+        // 让位=底部圆角半径-条内距 16dp（半径≤16dp 时为 0），文字三行位置不动，弧线照旧贴屏幕角
+        int cornerClear = Math.Max(0, BottomCornerRadiusPx() - UiScale.Px(16));
+        btnRow.AddView(left, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = cornerClear });
         var space = new View(this);
         btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
-        btnRow.AddView(right);
+        btnRow.AddView(right, new LinearLayout.LayoutParams(-2, -2) { RightMargin = cornerClear });
         _controlBar.AddView(btnRow);
 
         RefreshLockButton();
@@ -464,9 +532,11 @@ public partial class MainActivity
     }
 
     /// <summary>触屏手势监听（2026-11-27 整改令 + vc110 老板令）：单击=控制条；左右滑=切台（左=上一台、右=下一台，
-    /// 老板令「左上右下」；慢拖 OnScroll 累计触发，不只认快滑）；上下滑按半区=亮度（左）/音量（右），
-    /// 行程按整屏高（vc110 老板令「行程=整屏高」）；边缘手势（vc110 老板令）：左边缘右滑=呼出列表页（横竖屏一致）、
-    /// 右边缘左滑=横屏退全屏/竖屏出退出确认；长按=收藏/取消当前台。滑动阈值 96dp。</summary>
+    /// 老板令「左上右下」；慢拖 OnScroll 累计触发，不只认快滑）；上下滑分区=亮度/音量/切台——
+    /// 竖屏三块（vc121 老板令：左 1/3 亮度、右 1/3 音量、中间 1/3 上下滑切台，上=下一台），
+    /// 横屏不分块维持左右半区（vc121 老板令：横屏左右滑切台，不用分三块）；行程按整屏高；
+    /// 边缘手势（vc110 老板令）：左边缘右滑=呼出列表页（横竖屏一致）、右边缘左滑=横屏退全屏/竖屏出退出确认；
+    /// 长按=收藏/取消当前台。滑动阈值 96dp。</summary>
     private sealed class PhoneGestureListener(MainActivity host) : GestureDetector.SimpleOnGestureListener
     {
         private const float SwipeMinDp = 96f;  // 横向切台门槛（只管切台）
@@ -549,8 +619,23 @@ public partial class MainActivity
                 }
                 if (ady > Dp(VertEntryDp) && ady > adx * 1.2f)
                 {
-                    bool leftHalf = _startX < host.Resources!.DisplayMetrics!.WidthPixels / 2f;
-                    _vMode = leftHalf ? 1 : 2; // 左半区亮度、右半区音量
+                    float xf = _startX / host.Resources!.DisplayMetrics!.WidthPixels;
+                    bool portrait = host.Resources!.Configuration!.Orientation != Android.Content.Res.Orientation.Landscape;
+                    if (portrait && xf >= 1f / 3f && xf <= 2f / 3f)
+                    {
+                        // vc121 老板令：竖屏中间 1/3 上下滑=切台（上=下一台、下=上一台），
+                        // 门槛沿用横向 96dp 防误触；一次滑动只切一台
+                        if (ady > Dp(SwipeMinDp))
+                        {
+                            _fired = true;
+                            host.RunOnUiThread(() => host.SwitchChannel(dy < 0 ? 1 : -1));
+                        }
+                        _lastY = e2.GetY();
+                        return true;
+                    }
+                    // vc121 老板令：竖屏三块——左 1/3 亮度、右 1/3 音量；横屏不分块，维持左右半区（左右滑切台）
+                    _vMode = portrait ? (xf < 1f / 3f ? 1 : 2)
+                                      : (_startX < host.Resources!.DisplayMetrics!.WidthPixels / 2f ? 1 : 2);
                     if (_vMode == 1) host.RunOnUiThread(() => host._brightness = host.ReadCurrentBrightness()); // vc117：入模即同步当前实际亮度，起手不跳变
                     if (_vMode == 2 && host._audio is { } a)
                         _volStart = a.GetStreamVolume(Android.Media.Stream.Music); // vc117 令10：入模记起点音量，绝对映射不跳变

@@ -6,8 +6,9 @@ namespace TaoLive.Tests;
 
 /// <summary>
 /// vc93 第 6 刀（补库存档接线，老板 2026-11-26 拍板）+ 水位链断言：
-/// - 首帧出画门槛按库存档分档：SilentRefetch=1 秒出画（先出画后补库存）；StartFull=7 秒（出就流畅）；
-/// - 默认档为 SilentRefetch（c7a0aca 激活），内核门槛必须吃到 1 秒档（空拨根治）；
+/// - 首帧出画门槛按库存档分档：vc121 硬门禁（老板 2026-11-28 05:45 令「不管快慢源攒水够7秒才出画」）后
+///   两档同口径=7 秒——快源 5 秒档/8 秒强制档/15 秒硬顶全删，唯一开画条件=水位≥TargetMs；
+/// - 默认档为 SilentRefetch（c7a0aca 激活），内核门槛必须吃到 7 秒档（低水位出画根治）；
 /// - 水位链：MaxWatermarkSeconds=AdvancedTuning.PrefetchWindowSec（设置项 10–300s，出厂 60）；
 /// - 防误烧闸 _inventoryEverFilled 判据（ProactiveInventoryFloor）用 TargetMs(7s) 联动，不受出画门槛影响；
 /// - 卡后重入门槛仍 StartupThreshold 12 秒，与首帧门槛分家。
@@ -15,15 +16,16 @@ namespace TaoLive.Tests;
 /// </summary>
 public class InventoryGateTests
 {
-    // ---- 第 6 刀：首帧出画门槛分档 ----
+    // ---- 第 6 刀：首帧出画门槛分档（vc121 硬门禁后两档同口径） ----
 
     [Fact]
-    public void SilentRefetch_opens_frame_at_one_second()
+    public void SilentRefetch_opens_frame_at_seven_seconds()
     {
-        // vc103 回退（老板 2026-11-27 真机实锤）：vc102 的 7 秒门槛在慢源上永远攒不满、全台不出画；
-        // 回退 1 秒先开画（上个包能出只是卡黑），出画后静默补满窗口口径不变
-        Assert.Equal(1000, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
+        // vc121 硬门禁（老板 2026-11-28 05:45 令）：vc103 的 1 秒回退口径废止——不管快慢源
+        // 必须攒水够 7 秒才出画，攒不满不开画，真死源交看门狗判死切线
+        Assert.Equal(7000, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
         Assert.Equal(BufferInventory.SilentRefetchOpenMs, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
+        Assert.Equal(BufferInventory.TargetMs, BufferInventory.SilentRefetchOpenMs);
     }
 
     [Fact]
@@ -34,16 +36,17 @@ public class InventoryGateTests
     }
 
     [Fact]
-    public void Default_mode_is_silent_refetch_so_kernel_gate_eats_one_second()
+    public void Default_mode_is_silent_refetch_so_kernel_gate_eats_seven_second_gate()
     {
-        // 空拨根治断言：默认档=SilentRefetch，内核门槛取值必须=1 秒档（vc103 回退口径）
+        // 低水位出画根治断言：默认档=SilentRefetch，内核门槛取值必须=7 秒档（vc121 硬门禁口径）
         AdvancedTuning.ResetToDefaults(); // 出厂口径还原，防其他用例改档影响 NotEqual 判据
         try
         {
             Assert.Equal(BufferInventory.Mode.SilentRefetch, BufferInventory.Default);
-            Assert.Equal(1000, BufferInventory.FirstFrameOpenMs(BufferInventory.Default));
-            // 防空拨回归：出画门槛常量不得与 7 秒补库存底水联动（1 秒 ≠ 7 秒）
-            Assert.NotEqual((double)BufferInventory.SilentRefetchOpenMs, PlaybackSession.ProactiveInventoryFloor.TotalMilliseconds);
+            Assert.Equal(7000, BufferInventory.FirstFrameOpenMs(BufferInventory.Default));
+            // vc121 硬门禁定稿：出画门槛与 7 秒补库存底水有意同口径（都是 7 秒，一把尺）——
+            // 旧「1 秒 ≠ 7 秒防联动」断言随硬门禁废止，改断言同口径防再漂移
+            Assert.Equal((double)BufferInventory.SilentRefetchOpenMs, PlaybackSession.ProactiveInventoryFloor.TotalMilliseconds);
         }
         finally
         {

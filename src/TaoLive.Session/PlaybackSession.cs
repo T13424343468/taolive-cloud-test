@@ -609,8 +609,8 @@ public sealed class PlaybackSession
 
     /// <summary>
     /// 静默重接补库存（vc117 水位修复 A，2026-11-28 老板拍板「落」）：SilentRefetch 档「先开画后补库存」
-    /// 的补库存半边此前只有口径没有执行点（BufferPolicy 库存两档注释），慢源 1 秒强制开画后水位仅
-    /// 1~2 秒且无人补给，一秒就追到直播边缘出画。开画后（Playing）水位低于补库目标
+    /// 的补库存半边此前只有口径没有执行点（BufferPolicy 库存两档注释），低水位开画后无人补给，
+    /// 一秒就追到直播边缘出画。开画后（Playing）水位低于补库目标
     /// （<see cref="BufferInventory.TargetMs"/>）且不在防振铃窗内时，静默回退一次（内核存量续播，
     /// 不进 Reconnecting），把退过的段补进库存——延迟 10~30 秒属老板确认取舍（vc53 00:52 拍板）。
     /// 与微卡回退共用防振铃账（回退类动作 30 秒窗内最多一次，防连环回退原地打转）；
@@ -767,7 +767,7 @@ public sealed class PlaybackSession
             && _bufferingSinceMs is { } started)
         {
             // vc112 老板拍板「攒流期看门狗只判真死」：零进度照旧判死快切；慢而通（3 秒内有进度）攒流期不判死——
-            // 门没开没画面可看，死活交开画闸（7 秒水位/8 秒强制开）兜底，出画后看门狗接管。
+            // 门没开没画面可看，死活交开画闸（vc121 硬门禁：唯一条件=水位攒满 7 秒）兜底，出画后看门狗接管。
             if (_player.StartupGateAccumulating && _lastBufferProgressAtMs is { } t && nowMs - t < 3_000)
             {
                 return false; // 慢而通攒流期不判死（Buffering 态下后续 Reconnecting 分支不适用）

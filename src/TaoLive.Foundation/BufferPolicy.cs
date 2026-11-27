@@ -39,7 +39,8 @@ public static class BufferPolicy
 /// <summary>
 /// 库存两档（1.0.12 发现 B·拍板稿，治「慢」不治「断」——网络抖动型卡顿近乎消除）：
 /// - StartFull 起播即 7 秒：起播缓存不低于 7 秒，稳；默认档（vc53 画面平稳优先令 00:36：缓冲 7 秒）。
-/// - SilentRefetch 静默重接补库存：低缓存先开画（换台口径：先开画后补库存，首帧不慢），
+/// - SilentRefetch 静默重接补库存：vc121 硬门禁后开画门槛与 StartFull 同为 7 秒（老板 2026-11-28 05:45 令
+///   「不管快源慢源 必须攒水够7秒才出画」），档位差异只剩「开画后静默回退补满窗口」半边，
 ///   首帧后静默重接一次把库存补满窗口。
 /// vc53 画面平稳优先令（老板 2026-11-14 00:36/00:52 拍板）：缓冲下限 7 秒（00:36）；
 /// 预取=取满窗口（00:52）——参数给足（FillWindowMs），实际缓冲深度由源清单滑动窗口决定
@@ -66,13 +67,14 @@ public static class BufferInventory
     /// 原 StartFull（起播即 7 秒，vc53 画面平稳优先令 00:36）为激活前的旧默认档，保留作回退档。</summary>
     public static Mode Default => Mode.SilentRefetch;
 
-    /// <summary>SilentRefetch 档首帧出画门槛（毫秒）=1 秒（vc103 回退，老板 2026-11-27 真机实锤）：
-    /// vc102 改 7 秒后真机「一分钟都不出」——慢源攒不满 7 秒门槛就永远不开画；
-    /// 回退 1 秒先开画（上个包能出只是卡黑），出画后静默补满窗口的口径不变。</summary>
-    public const int SilentRefetchOpenMs = 1000;
+    /// <summary>SilentRefetch 档首帧出画门槛（毫秒）=7 秒（vc121 硬门禁，老板 2026-11-28 05:45 令
+    /// 「不管快源慢源 必须攒水够7秒才出画」）：原 1 秒先开画口径（vc103 回退令）整体废止——
+    /// 快源 5 秒档/8 秒强制档/15 秒硬顶三条绕过路径同批全删，唯一开画条件=水位≥<see cref="TargetMs"/>；
+    /// 攒不满 7 秒的源不开画，真死源交看门狗判死切线（零进度走既有判死窗）。</summary>
+    public const int SilentRefetchOpenMs = TargetMs;
 
     /// <summary>首帧出画门槛（毫秒）按库存档分档（vc93 第 6 刀接线，老板 2026-11-26 拍板）：
-    /// SilentRefetch=1 秒出画（<see cref="SilentRefetchOpenMs"/>）；StartFull=7 秒（<see cref="TargetMs"/>，出画那一刻手里正好 7 秒存货）。
+    /// vc121 硬门禁后两档同口径=7 秒（<see cref="TargetMs"/>，出画那一刻手里正好 7 秒存货）。
     /// 只管首帧何时出画，不管取哪一帧——首帧永远取库存中能取到的最老画面（老板 2026-11-26 18:50 重申口径）。
     /// 卡后重入门槛不受此影响（仍 PrefetchCurve.StartupThreshold 12 秒）；防误烧闸 _inventoryEverFilled
     /// 判据用 ProactiveInventoryFloor（TargetMs 联动），与出画门槛无关。</summary>

@@ -53,6 +53,8 @@ public partial class MainActivity : Activity
     private TextView _toastLeft = default!;       // 胶囊左段文字（主文案）
     private TextView _toastRight = default!;      // 胶囊右段文字（副文案/图标位，默认空）
     private View _toastGap = default!;            // 胶囊中段空档（宽度=挖孔宽，孔上不画字）
+    private View _toastBalL = default!;           // vc121 包孔扶正：左侧平衡占位（右段更宽时补差值，默认 0 宽）
+    private View _toastBalR = default!;           // vc121 包孔扶正：右侧平衡占位（左段更宽时补差值，默认 0 宽）
     private int _cutoutHoleW;                     // 挖孔宽（px，0=无挖孔信息走兜底居中）
     private int _cutoutHoleCenterX;               // 挖孔中心 X（px）
     private int _cutoutHoleCenterY;               // 挖孔中心 Y（px）
@@ -1092,7 +1094,8 @@ public partial class MainActivity : Activity
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
         // vc119 老板令：列表左右 16dp 内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐 24dp 统一边线
-        _list.SetPadding(UiScale.Px(16), 0, UiScale.Px(16), 0);
+        // vc121 同类排查：底部内距=圆角让位——滚到底最后一行能滚出系统圆角弧区，不贴底被削
+        _list.SetPadding(UiScale.Px(16), 0, UiScale.Px(16), BottomCornerClearPx());
         _list.SetClipToPadding(false);
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _list.Selector = InkTranslucency.FocusDrawable();
@@ -2284,6 +2287,11 @@ public partial class MainActivity : Activity
         catch { return fallback; }
     }
 
+    /// <summary>vc121 同类排查收口（老板 2026-11-28 05:45 令「同类问题全部进清单」）：贴底面板底部内距的
+    /// 圆角让位（px）——同控制条口径：让位=底部圆角半径−16dp，半径≤16dp 时为 0。
+    /// 设置/诊断/统计/关于/许可/进阶调优/列表页统一走此口径，底部关闭行不再落进系统圆角弧区被削角。</summary>
+    internal int BottomCornerClearPx() => Math.Max(0, BottomCornerRadiusPx() - UiScale.Px(16));
+
     /// <summary>vc117 令19/20（2026-11-28 老板拍板）：底部圆角安全边（px）——API 31+ 实时读系统圆角几何
     /// （四角半径+圆心坐标），取底部两角半径最大值 + 8dp 间距；拿不到走 24dp 兜底。
     /// 令20 全局口径：所有贴底界面（控制条/列表页/设置面板/子页面）一开始就避让圆角区并留间距，
@@ -2420,6 +2428,14 @@ public partial class MainActivity : Activity
         InkTranslucency.ApplyReadabilityShadow(_toastRight);
         _toastRight.SetSingleLine(true);
         _toast.AddView(_toastRight, new LinearLayout.LayoutParams(-2, -2));
+
+        // vc121 包孔扶正（老板 05:3x 真机截图实锤：右段无字时孔不在胶囊正中、压在文字下面）：
+        // 左右各挂一个平衡占位（默认 0 宽）——竖屏包孔分支按左右两段文字宽度差补占位，
+        // 孔两侧总宽相等 → 孔永远落在胶囊正中、孔上无字；横屏/无孔分支占位归零不影响。
+        _toastBalL = new View(this);
+        _toast.AddView(_toastBalL, 0, new LinearLayout.LayoutParams(0, 1));
+        _toastBalR = new View(this);
+        _toast.AddView(_toastBalR, new LinearLayout.LayoutParams(0, 1));
     }
 
     /// <summary>挖孔几何读取（vc113 第④单）：DisplayCutout 包围盒取孔位与孔宽，供胶囊包孔与列表页避让。</summary>
@@ -2462,6 +2478,8 @@ public partial class MainActivity : Activity
             _toast.Orientation = Orientation.Vertical;
             _toast.SetGravity(GravityFlags.Top | GravityFlags.Left);
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 0); // 竖排无中段空档
+            ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = 0; // 横屏竖排占位归零
+            ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = 0;
             int leftSafe = UiScale.Px(16), topSafe = UiScale.Px(12);
             if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } ins)
             {
@@ -2491,15 +2509,36 @@ public partial class MainActivity : Activity
                 int pw = _toast.Width, ph = _toast.Height;
                 if (pw > 0)
                 {
-                    // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：包孔居中 + 安全钳制——
-                    // 孔贴顶时胶囊不出屏、文字不被裁
-                    _toast.TranslationX = _cutoutHoleCenterX - pw / 2f;
-                    float ty = _cutoutHoleCenterY - ph / 2f;
-                    int safeTop = SafeTopInset(0);
-                    if (ty < safeTop) ty = safeTop;
-                    _toast.TranslationY = ty;
+                    // vc121 包孔扶正（老板 05:3x 真机截图实锤）：右段无字时孔不在胶囊正中、压在文字下面——
+                    // 几何根因：孔（中段空档）跟在左段文字后，胶囊对孔心居中后孔落在文字下方（偏移=textW/2）。
+                    // 改法：按左右两段文字宽度差补平衡占位（左宽>右宽右侧补差值，反之左侧补），
+                    // 孔两侧总宽相等 → 孔永远居中、孔上无字。占位改动后再 Post 一拍重测重对孔心。
+                    int leftW = _toastLeft.Visibility == ViewStates.Gone ? 0 : _toastLeft.Width;
+                    int rightW = _toastRight.Visibility == ViewStates.Gone ? 0 : _toastRight.Width;
+                    int diff = leftW - rightW;
+                    ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = diff > 0 ? diff : 0;
+                    ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = diff < 0 ? -diff : 0;
+                    _toastBalR.RequestLayout();
+                    _toast.Post(() =>
+                    {
+                        int pw2 = _toast.Width, ph2 = _toast.Height;
+                        if (pw2 > 0)
+                        {
+                            // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：包孔居中 + 安全钳制——
+                            // 孔贴顶时胶囊不出屏、文字不被裁
+                            _toast.TranslationX = _cutoutHoleCenterX - pw2 / 2f;
+                            float ty = _cutoutHoleCenterY - ph2 / 2f;
+                            int safeTop = SafeTopInset(0);
+                            if (ty < safeTop) ty = safeTop;
+                            _toast.TranslationY = ty;
+                        }
+                        onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
+                    });
                 }
-                onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
+                else
+                {
+                    onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
+                }
             });
         }
         else
@@ -2508,6 +2547,8 @@ public partial class MainActivity : Activity
             _toast.SetGravity(GravityFlags.CenterVertical);
             _toastLeft.SetMaxLines(2);
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 1);
+            ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = 0; // 非包孔分支占位归零
+            ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = 0;
             lp.Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal;
             lp.LeftMargin = 0;
             lp.TopMargin = SafeTopInset(0); // vc120 老板令：兜底分支不再贴死顶边，给安全区顶距
@@ -2971,7 +3012,8 @@ public partial class MainActivity : Activity
             Style(h.Name, isCur ? "#FFFFFF" : InkTranslucency.TextSecondary, UiScale.Item);
             h.Name.Typeface = isCur ? Typeface.DefaultBold! : Typeface.Default!; // 复用件必须显式回置，防上一行粗体残留
             // vc115 D2：当前台改 deep #3D6E9E 描边（原型 .chan-row.current），去棕色 Accent 填充。
-            // vc117 令6：描边内收 8dp（行内距口径）——描边盒与行内容同边线，不再凸出到台标/编号外侧
+            // vc117 令6：描边内收与行内容同边线；vc121 老板拍板方案A（2026-11-28 真机「框线盖到台标」）：
+            // 描边盒内缩改 4dp——线画在台标（8dp 起笔）外侧留 4dp 空隙，行内容位置一概不动
             if (isCur)
             {
                 var curBg = new Android.Graphics.Drawables.GradientDrawable();
@@ -2979,7 +3021,7 @@ public partial class MainActivity : Activity
                 curBg.SetColor(Color.Transparent);
                 curBg.SetStroke(UiScale.Px(1), Color.ParseColor("#3D6E9E"));
                 curBg.SetCornerRadius(UiScale.Px(12));
-                h.Line.Background = new Android.Graphics.Drawables.InsetDrawable(curBg, UiScale.Px(8), 0, UiScale.Px(8), 0);
+                h.Line.Background = new Android.Graphics.Drawables.InsetDrawable(curBg, UiScale.Px(4), 0, UiScale.Px(4), 0);
             }
             else
             {
@@ -2990,8 +3032,10 @@ public partial class MainActivity : Activity
             h.Sub.Text = isCur ? "正在看" : "直播频道";
             Style(h.Sub, isCur ? "#F0C563" : InkTranslucency.TextSecondary, UiScale.Caption);
 
-            // 路源标（老板 2026-11-27 20:2x 拍板「元素肯定都要」）：显示该台源路数；0 路（异常态）不显
-            var srcCount = ch.SourceEndpoints.Count;
+            // 路源标（老板 2026-11-27 20:2x 拍板「元素肯定都要」；vc121 实数令 2026-11-28 05:4x 拍板）：
+            // 显示该台实际可用源路数=主源+备援注册表候选+订阅同台源（与播放备援队列 FallbackQueueSource 同口径，
+            // 不再只数主源恒显 1 路）；0 路（异常态）不显
+            var srcCount = ch.SourceEndpoints.Count + FallbackQueueSource.FromRegistry(ch).Count;
             h.Pill.Text = $"{srcCount}路";
             h.Pill.Visibility = srcCount > 0 ? ViewStates.Visible : ViewStates.Gone;
 

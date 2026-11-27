@@ -172,7 +172,7 @@ public partial class MainActivity
         // vc111 老板令「全页面统一电视端水墨透光」：面板改自适应透底（亮屏76/暗房108），画面透出、
         // 文字清晰由可读性投影兜底（电视端 vc53 同口径）；不再用近实色底闷住画面。
         panel.SetBackgroundColor(InkTranslucency.PanelColor(this));
-        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Dp(12)); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线
+        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Dp(12) + BottomCornerClearPx()); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线；vc121 同类排查：底部随系统圆角让位，关闭行不落弧区
         panel.Visibility = ViewStates.Gone;
 
         // 页头：标题（v26 原型口径）。vc117 令11（2026-11-28 老板拍板）：左上角「←」全删，
@@ -862,7 +862,7 @@ public partial class MainActivity
     {
         int pad = Dp(24);
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        box.SetPadding(pad, SafeTopInset(pad), pad, pad); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
+        box.SetPadding(pad, SafeTopInset(pad), pad, pad + BottomCornerClearPx()); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）
         box.SetBackgroundColor(InkTranslucency.PanelColor(this));
         var titleView = new TextView(this) { Text = title, TextSize = UiScale.Title };
         titleView.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -986,7 +986,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14) + BottomCornerClearPx()); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // topbar：标题 + 三常驻钮（📄📁🗑）。vc117 令11：左上角「←」全删，统一底部「关闭」行收页
@@ -1108,7 +1108,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14) + BottomCornerClearPx()); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // vc117 令11：页头「←」删，标题起头；底部统一「关闭」行收页
@@ -1270,7 +1270,7 @@ public partial class MainActivity
         {
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int padAdv = Dp(24);
-            box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, padAdv); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
+            box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, padAdv + BottomCornerClearPx()); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）
             box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档（跟普通面板浅档）
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));

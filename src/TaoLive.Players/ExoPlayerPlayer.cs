@@ -351,8 +351,8 @@ public sealed class ExoPlayerPlayer : IPlayer
             EnsureWarmVideoSink(); // vc66 哑面预热：无真面起播（热备攒流）也把视频解码器初始化到位，热切接管零解码器冷启
             _player.SetMediaItem(mediaItem);
             _player.Prepare();
-            // vc111 自适应开画（老板拍板）：默认档冷切起播（有真面）先攒流后开画——快源 1 秒级开、
-            // 慢源攒满 7 秒开、8 秒强制开兜底。热备攒流（StartFull 档/无面预热）不挂闸，原样即开。
+            // vc111 自适应开画（老板拍板）：默认档冷切起播（有真面）先攒流后开画——vc121 硬门禁：
+            // 不管快源慢源攒水够 7 秒才出画。热备攒流（StartFull 档/无面预热）不挂闸，原样即开。
             if (_gateMode == BufferInventory.Mode.SilentRefetch && _hasSurface)
             {
                 _player.PlayWhenReady = false;
@@ -470,34 +470,23 @@ public sealed class ExoPlayerPlayer : IPlayer
     // —— vc111 自适应开画（老板 2026-11-27 拍板「改底层，真机可靠电视端同步跟进」；vc112 真机修）——
     // 病根：默认档 SilentRefetch=1 秒出画（vc103 回退令），慢源 1 秒出画→黑十来秒→出一帧→继续黑；
     // vc102 改 7 秒门槛又致慢源「一分钟都不出」（攒不满门槛永不开画）。
-    // 改法：冷切起播先暂停出画攒流（ExoPlayer 暂停态照常缓冲），三条件先到先开——
-    // ①攒满 7 秒目标水位（BufferInventory.TargetMs）；②攒流满 5 秒且 2 秒滑动窗灌速 ≥0.9×实时（真快源固定 5 秒出画，老板 2026-11-27 拍板）；
-    // ③攒流满 8 秒可开（慢源兜底，vc103 教训：永不开=黑屏）；vc118 C 令：8 秒到点水位不足 2 秒延后开，
-    // 灌到 2 秒即开，硬顶 15 秒强制放行（防无限黑屏，真死源交看门狗）。
-    // vc112 真机修（老板截图「一秒就出画」）：快源灌速原按 250ms 单拍差值算——直播源按段突发到货，
-    // 一段 4~6 秒内容几百毫秒涌进内核，单拍灌速轻松 10×实时，0.9 阈值形同虚设，任何源第一段到货即被判快源
-    // 1 秒开画，vc103 老病复发。改 2 秒滑动窗：灌速=窗首到现在的均值，单拍脉冲不再骗闸；
-    // 开画时点再钉死为攒流满 5 秒（老板终口径：快源固定 5 秒出画，不再「存货够就早开」）。
-    // 攒流期看门狗让路（vc112 真机修「没出画就换源」）：起播判死窗与强制开同为 8 秒赛跑，看门狗先到即切源、
-    // 强制开没轮到——会话层经 IPlayer.StartupGateAccumulating 感知攒流期，判死窗下限抬到 12 秒（强制开+4 秒余量），
-    // 8 秒强制开先出画，出画后看门狗照常接管（口径见 PlaybackSession.CheckWatchdog）。
+    // 改法：冷切起播先暂停出画攒流（ExoPlayer 暂停态照常缓冲）。
+    // vc121 硬门禁（老板 2026-11-28 05:45 令「不管快源慢源 必须攒水够7秒才出画」）：快源 5 秒档、8 秒强制档、
+    // 15 秒硬顶三条绕过路径全删——唯一开画条件=水位≥7 秒（BufferInventory.TargetMs），快慢源一视同仁；
+    // 内核首帧门槛（BuildLoadControl firstFrameGateMs）同步对齐 7 秒，双闸同口径不再有 1 秒后门。
+    // 读数宽限从严（vc120 根修口径收紧）：宽限满仍无读数不开画、继续攒——真死源交看门狗判死切线
+    // （零进度走既有判死窗），不再「读数不可靠」放行。
+    // 攒流期看门狗让路（vc112 真机修「没出画就换源」）：慢而通（3 秒内有进度）攒流期不判死，
+    // 攒满 7 秒即开画；零进度真死源照常判死快切（口径见 PlaybackSession.CheckWatchdog）。
     // 预防换源 _inventoryEverFilled 闸、后台拉源首帧放行、卡流看门狗 NotifyFirstFrame 正门均不动。
     // 热备哑面预热（vc66）走 StartFull 档，不挂闸原样即开。
     // vc120 根修（老板真机「还是低水位出画」追问实锤）：「读数不可靠立即开画」原口径在首拍 250ms 生效——
-    // 真机上此刻清单/媒体期普遍尚未备好（BufferedPosition=TIME_UNSET），闸在第一拍就被绕过开画，
-    // 内核按 1 秒首帧门槛出画，vc118 C 令水位门槛形同虚设。改读数宽限 3 秒：宽限内无读数继续攒，
-    // 宽限满仍无读数才开画（真死源交看门狗）；快源到点同样守 2 秒水位底线（首段晚到的假快源延后）。
+    // 真机上此刻清单/媒体期普遍尚未备好（BufferedPosition=TIME_UNSET），闸在第一拍就被绕过开画。
     private const int GatePollMs = 250;          // 攒流轮询节拍
-    private const long GateNoReadoutGraceMs = 3000; // vc120 根修：读数宽限——内核出首个可靠读数前不开画（原首拍 250ms 无读数即开，整道闸被绕过）
-    private const long GateFastOpenMs = 5000;    // 快源开画时点：攒流满 5 秒（老板终口径：快源固定 5 秒出画）
-    private const long GateFastWindowMs = 2000;  // 快源灌速滑动窗：≥2 秒窗均值，单拍脉冲不再骗闸
-    private const long GateForceOpenMs = 8000;   // 攒流兜底：满 8 秒可开（水位足额时）
-    private const long GateForceMinBufferMs = 2000; // vc118 C 令（老板 2026-11-28 拍板「只落C」）：8 秒到点水位不足 2 秒不开——
-    private const long GateForceCapMs = 15000;   // 延后硬顶：满 15 秒无论水位强制开（防无限黑屏；真死源由看门狗兜底）
-    private const double GateFastFillRate = 0.9; // 快源判据：滑动窗灌速 ≥0.9×实时
+    private const long GateNoReadoutGraceMs = 3000; // 读数宽限：宽限满仍无读数打一次点说明（不开画，交看门狗兜底）
     private bool _gateAccumulating;              // 攒流中（PlayWhenReady=false 攒水）
     private long _gateSinceMs;                   // 攒流起点（单调钟 Environment.TickCount64）
-    private readonly List<(long TickMs, long BufferedMs)> _gateSamples = new(); // 滑动窗样本（单调钟递增，无锁：仅主线程轮询触达）
+    private bool _gateNoReadoutLogged;           // 宽限满无读数只打一次点，不刷屏
     private bool _shellPaused;                   // 壳层切后台暂停（vc110⑧）：攒流期开画不出声，回前台 Resume 统一放行
 
     /// <summary>攒流闸是否在攒（IPlayer 契约 vc112）：会话看门狗据此让路，判死窗不与强制开赛跑。</summary>
@@ -508,60 +497,31 @@ public sealed class ExoPlayerPlayer : IPlayer
     {
         _gateAccumulating = true;
         _gateSinceMs = Environment.TickCount64;
-        _gateSamples.Clear();
-        Reporter?.Invoke("[开画闸] 冷切攒流：暂停出画，攒满 7 秒 / 滑动窗灌速跟得上 / 满 8 秒且水位足 2 秒（硬顶 15 秒），读数宽限 3 秒，先到先开");
+        _gateNoReadoutLogged = false;
+        Reporter?.Invoke("[开画闸] 冷切攒流：暂停出画，不管快源慢源攒水够 7 秒才出画（无读数不开画交看门狗）");
         _main.PostDelayed(PollStartupGate, GatePollMs);
     }
 
-    /// <summary>攒流轮询（250ms 一拍，主线程）：三开画条件先到先开，不到继续排下一拍。</summary>
+    /// <summary>攒流轮询（250ms 一拍，主线程）：唯一开画条件=水位攒满 7 秒，不到继续排下一拍。</summary>
     private void PollStartupGate()
     {
         if (_released || !_gateAccumulating) return;
         long now = Environment.TickCount64;
         long buffered = BufferedMs;
         long elapsed = now - _gateSinceMs;
-        // vc120 根修（老板真机「还是低水位出画」实锤）：原口径首拍 250ms 无读数立即开画——真机上清单/
-        // 媒体期尚未备好是常态，整道攒流闸被这一条绕过，C 令水位门槛根本没轮到跑。改读数宽限：
-        // 宽限 3 秒内无读数继续攒（等内核出首个可靠读数），宽限满仍无读数才按原口径开画交既有兜底。
+        // vc121 硬门禁（老板 2026-11-28 05:45 令）：读数宽限满仍无读数不开画、继续攒——真死源交看门狗
+        // 判死切线（零进度走既有判死窗），不再按「读数不可靠」放行开画。
         if (!BufferedMsKnown)
         {
-            if (elapsed >= GateNoReadoutGraceMs) { OpenStartupGate("读数不可靠"); return; } // 宽限满仍无读数：不赌，交既有兜底
+            if (!_gateNoReadoutLogged && elapsed >= GateNoReadoutGraceMs)
+            {
+                _gateNoReadoutLogged = true;
+                Reporter?.Invoke("[开画闸] 读数宽限满仍无读数：不开画继续攒，真死源交看门狗兜底");
+            }
             _main.PostDelayed(PollStartupGate, GatePollMs);
             return;
         }
         if (buffered >= BufferInventory.TargetMs) { OpenStartupGate($"攒满 {buffered}ms"); return; }
-        // vc112 快源判据（老板终口径）：攒流满 5 秒 + 2 秒滑动窗灌速 ≥0.9×实时——真快源固定 5 秒出画，
-        // 单拍脉冲不再骗闸，也不再「存货够就早开」
-        _gateSamples.Add((now, buffered));
-        _gateSamples.RemoveAll(s => s.TickMs < now - GateFastWindowMs);
-        var oldest = _gateSamples[0];
-        double rate = now > oldest.TickMs
-            ? (buffered - oldest.BufferedMs) / (double)(now - oldest.TickMs)
-            : 0;
-        if (elapsed >= GateFastOpenMs && now - oldest.TickMs >= GateFastWindowMs && rate >= GateFastFillRate)
-        {
-            // vc120：快源到点同样守 C 令 2 秒水位底线——首段到货晚的「假快源」5 秒到点存货不足 2 秒
-            // 延后开画（灌到 2 秒即开），硬顶 15 秒兜底不变，出画水位不再低于 C 令口径。
-            if (buffered >= GateForceMinBufferMs)
-            {
-                OpenStartupGate($"滑动窗灌速 {rate:0.00}×实时（存货 {buffered}ms）");
-                return;
-            }
-            Reporter?.Invoke($"[开画闸] 快源 5 秒到点水位 {buffered}ms 不足 2 秒，延后开画（硬顶 15 秒）");
-        }
-        // vc118 C 令（老板 2026-11-28 拍板「只落C」）：8 秒到点先看水位——足 2 秒照开；不足则延后，
-        // 灌到 2 秒即开（慢而通期会话看门狗让路，不赛跑）；硬顶 15 秒无论水位强制开，防无限黑屏。
-        if (elapsed >= GateForceOpenMs)
-        {
-            if (buffered >= GateForceMinBufferMs || elapsed >= GateForceCapMs)
-            {
-                OpenStartupGate(elapsed >= GateForceCapMs && buffered < GateForceMinBufferMs
-                    ? $"攒流满 {elapsed}ms 强制（水位 {buffered}ms 不足 2 秒，硬顶放行）"
-                    : $"攒流满 {elapsed}ms 强制（水位 {buffered}ms）");
-                return;
-            }
-            Reporter?.Invoke($"[开画闸] 8 秒到点水位 {buffered}ms 不足 2 秒，延后开画（硬顶 15 秒）");
-        }
         _main.PostDelayed(PollStartupGate, GatePollMs);
     }
 

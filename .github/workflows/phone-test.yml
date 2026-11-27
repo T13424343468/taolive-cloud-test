@@ -40,12 +40,28 @@ jobs:
   # 闸三：云真机（x86_64 + houdini ARM 转译），八道关证据
   install-and-launch:
     runs-on: ubuntu-24.04
+    needs: build-phone-apk
     timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: main
+
+      # 走查实锤（2026-11-27）：仓库里提交的 TaoLive-phone.apk 是旧 vc2 包，装包步骤装的一直是它，
+      # build 产物从没被装上——走查全在测旧包。改：下载本次 build 产物再装，装包必为新码。
+      - name: Download built APK
+        uses: actions/download-artifact@v4
+        with:
+          name: taolive-phone-apk
+          path: apk
+
+      - name: Stage fresh APK
+        run: |
+          ls -la apk/
+          cp apk/*-Signed.apk TaoLive-phone.apk
+          ls -la TaoLive-phone.apk
+          sha256sum TaoLive-phone.apk
 
       - name: Host capability probe
         run: |
@@ -97,6 +113,10 @@ jobs:
           mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd -n testavd -k "$PICK" || true
           CFG=$ANDROID_AVD_HOME/testavd.avd/config.ini
+          # 真机分辨率口径（走查比对基准）：1080x2400 @420dpi，禁用 320x640 默认玩具档
+          grep -q '^hw.lcd.width=' "$CFG" && sed -i 's|^hw.lcd.width=.*|hw.lcd.width=1080|' "$CFG" || echo 'hw.lcd.width=1080' >> "$CFG"
+          grep -q '^hw.lcd.height=' "$CFG" && sed -i 's|^hw.lcd.height=.*|hw.lcd.height=2400|' "$CFG" || echo 'hw.lcd.height=2400' >> "$CFG"
+          grep -q '^hw.lcd.density=' "$CFG" && sed -i 's|^hw.lcd.density=.*|hw.lcd.density=420|' "$CFG" || echo 'hw.lcd.density=420' >> "$CFG"
           grep -q '^hw.gpu.enabled=' "$CFG" && sed -i 's|^hw.gpu.enabled=.*|hw.gpu.enabled=no|' "$CFG" || echo 'hw.gpu.enabled=no' >> "$CFG"
           grep -q '^hw.gpu.mode=' "$CFG" && sed -i 's|^hw.gpu.mode=.*|hw.gpu.mode=off|' "$CFG" || echo 'hw.gpu.mode=off' >> "$CFG"
           grep -q '^hw.cpu.ncore=' "$CFG" && sed -i 's|^hw.cpu.ncore=.*|hw.cpu.ncore=4|' "$CFG" || echo 'hw.cpu.ncore=4' >> "$CFG"
@@ -171,6 +191,12 @@ jobs:
           adb shell "dumpsys dropbox --print" > dropbox.txt 2>/dev/null || echo "NO_DROPBOX"
           grep -c taolive dropbox.txt > dropbox-taolive-count.txt || true
 
+      - name: Full-state walkthrough screenshots (制度必截状态清单)
+        run: |
+          chmod +x scripts/phone-walkthrough.sh
+          scripts/phone-walkthrough.sh walk
+          ls -la walk/
+
       - name: Dump emulator log
         if: always()
         run: cat emulator.log 2>/dev/null | tail -150 || echo "NO_EMULATOR_LOG"
@@ -189,4 +215,7 @@ jobs:
             proc-info.txt
             proc-ps.txt
             emulator.log
+            walk/*.png
+            walk/*.xml
+            walk/walkthrough-logcat.txt
           if-no-files-found: warn

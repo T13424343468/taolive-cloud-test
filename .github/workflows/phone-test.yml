@@ -200,6 +200,6 @@ jobs:
             proc-ps.txt
             emulator.log
             walk/*.png
-            walk/ui-tree-final.xml
+            walk/*.xml
             walk/walkthrough-logcat.txt
           if-no-files-found: warn

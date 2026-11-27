@@ -484,8 +484,11 @@ public sealed class ExoPlayerPlayer : IPlayer
     // 真机上此刻清单/媒体期普遍尚未备好（BufferedPosition=TIME_UNSET），闸在第一拍就被绕过开画。
     private const int GatePollMs = 250;          // 攒流轮询节拍
     private const long GateNoReadoutGraceMs = 3000; // 读数宽限：宽限满仍无读数打一次点说明（不开画，交看门狗兜底）
+    private const long GatePlateauMs = 5000;     // vc122 平台期兜底：水位连续 5 秒不再增长=涨到头了，按当前水位放行
     private bool _gateAccumulating;              // 攒流中（PlayWhenReady=false 攒水）
     private long _gateSinceMs;                   // 攒流起点（单调钟 Environment.TickCount64）
+    private long _gatePlateauSinceMs;            // vc122 平台期起点（单调钟）
+    private long _gatePlateauLevelMs;            // vc122 平台期参照水位
     private bool _gateNoReadoutLogged;           // 宽限满无读数只打一次点，不刷屏
     private bool _shellPaused;                   // 壳层切后台暂停（vc110⑧）：攒流期开画不出声，回前台 Resume 统一放行
 
@@ -497,12 +500,14 @@ public sealed class ExoPlayerPlayer : IPlayer
     {
         _gateAccumulating = true;
         _gateSinceMs = Environment.TickCount64;
+        _gatePlateauSinceMs = _gateSinceMs; // vc122 平台期账随攒流起点起算
+        _gatePlateauLevelMs = 0;
         _gateNoReadoutLogged = false;
-        Reporter?.Invoke("[开画闸] 冷切攒流：暂停出画，不管快源慢源攒水够 7 秒才出画（无读数不开画交看门狗）");
+        Reporter?.Invoke("[开画闸] 冷切攒流：暂停出画，攒水够 7 秒出画；水位涨到头（平台 5 秒）按当前水位放行（vc122 兜底）");
         _main.PostDelayed(PollStartupGate, GatePollMs);
     }
 
-    /// <summary>攒流轮询（250ms 一拍，主线程）：唯一开画条件=水位攒满 7 秒，不到继续排下一拍。</summary>
+    /// <summary>攒流轮询（250ms 一拍，主线程）：开画条件=水位攒满 7 秒，或水位平台 5 秒（涨到头）按当前水位放行（vc122）。</summary>
     private void PollStartupGate()
     {
         if (_released || !_gateAccumulating) return;
@@ -522,6 +527,20 @@ public sealed class ExoPlayerPlayer : IPlayer
             return;
         }
         if (buffered >= BufferInventory.TargetMs) { OpenStartupGate($"攒满 {buffered}ms"); return; }
+        // vc122 平台期兜底（vc121 死洞根治）：直播源暂停攒流时水位涨到直播边缘就停——「慢而通但攒不满
+        // 7 秒」的源永远到不了门槛，看门狗又因有进度不判死，黑屏卡死无人兜底（vc102 同病 vc103 真机实锤）。
+        // 口径：水位连续 5 秒不再增长（涨到头了）即按当前水位放行出画，快慢源通用；出画后静默重接补库存照旧。
+        // 水位仍在涨（超参照 100ms 容差）则刷新平台账继续攒；零水位平台放行后交看门狗零进度判死快切。
+        if (buffered > _gatePlateauLevelMs + 100)
+        {
+            _gatePlateauLevelMs = buffered;
+            _gatePlateauSinceMs = now;
+        }
+        else if (now - _gatePlateauSinceMs >= GatePlateauMs)
+        {
+            OpenStartupGate($"水位平台 {buffered}ms（连续 5 秒不再增长，涨到头放行）");
+            return;
+        }
         _main.PostDelayed(PollStartupGate, GatePollMs);
     }
 

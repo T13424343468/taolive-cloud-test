@@ -11,6 +11,8 @@ namespace TaoLive.Players;
 /// 立刻对同源发第二请求赛跑，先到先用；监控发现的每次慢片用竞速消化，不动整路（与整路降档一细一粗）。
 /// 竞速只发生在本路未消费任何数据字节前（换缝零偏移，字节对齐）；赛跑是让路角色，
 /// 任何失败原样退回慢路继续播，绝不打断在播（四原则）。
+/// vc101 老板令「并发整个都不要了」：赛跑第二请求已除——本壳只保留首字节滑动均值记账（纯观测，不发请求），
+/// 慢片一律原路继续播；竞速常量与判据保留供回滚口径对账。
 /// </summary>
 public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSource.IDataSource
 {
@@ -61,6 +63,7 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
 
     public int Read(byte[]? buffer, int offset, int count)
     {
+        // vc101 老板令「并发整个都不要了」：慢片竞速第二请求已除——只记账不赛跑，原路继续播。
         if (!_raced && _spec is { } spec && IsSegment(spec.Uri?.ToString()))
         {
             _raced = true;
@@ -72,7 +75,7 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
             }
             if (elapsed > threshold)
             {
-                RaceInner(spec); // 慢片坐实：对同源发第二请求赛跑
+                RecordSlowSegment(spec, elapsed); // 只落账（纯观测），不再发第二请求
             }
         }
         if (_pendingByte is { } pending)
@@ -92,40 +95,12 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
         return read;
     }
 
-    /// <summary>赛跑：第二请求同源同偏移开拉，先拿到首字节者胜；败者关闭，胜者接管本片余下字节。</summary>
-    private void RaceInner(AndroidX.Media3.DataSource.DataSpec spec)
+    /// <summary>慢片落账（vc101）：并发拆除后竞速不再发第二请求，本方法只做纯观测记录（不发网络、不换路）。</summary>
+    private void RecordSlowSegment(AndroidX.Media3.DataSource.DataSpec spec, long elapsedMs)
     {
-        try
-        {
-            var racer = _innerFactory();
-            foreach (var l in _listeners) racer.AddTransferListener(l);
-            var probe = new byte[1];
-            var raceTask = Task.Run(() =>
-            {
-                racer.Open(spec);
-                return racer.Read(probe, 0, 1);
-            });
-            // 败者任务异常必须有人观察（vc96 P3）：挂 OnlyOnFaulted 观察器防 UnobservedTaskException
-            _ = raceTask.ContinueWith(
-                t => _ = t.Exception,
-                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
-            var winner = Task.WhenAny(raceTask, Task.Delay(RacerWaitMs)).GetAwaiter().GetResult();
-            if (ReferenceEquals(winner, raceTask) && raceTask.Status == TaskStatus.RanToCompletion && raceTask.Result > 0)
-            {
-                // 第二请求先到：弃慢路用快路（未消费任何字节，偏移零对齐）
-                try { _inner?.Close(); } catch { /* 慢路关闭失败无害，资源随进程回收 */ }
-                _inner = racer;
-                _pendingByte = probe[0];
-            }
-            else
-            {
-                try { racer.Close(); } catch { /* 败者回收失败无害 */ }
-            }
-        }
-        catch
-        {
-            // 竞速是让路角色：任何异常原样退回慢路照播（绝不打断在播）
-        }
+        // 预留观测位：慢片统计已由 RecordFirstByte 滑动均值承载，此处不再产生任何请求。
+        _ = spec;
+        _ = elapsedMs;
     }
 
     private static void RecordFirstByte(long firstByteMs)

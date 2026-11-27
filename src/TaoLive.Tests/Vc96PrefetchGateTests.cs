@@ -5,30 +5,29 @@ using Xunit;
 namespace TaoLive.Tests;
 
 /// <summary>
-/// vc96 试探版并发预取总开关：
-/// 默认开——单路起步、水位不涨才逐档升级（封顶 2 路额外），被拒即缩档并记源脾气账。
-/// 静态开关跨测试共享，用 try/finally 存恢复，防串染。
+/// vc101 老板令「并发整个都不要了」：并发预取总开关默认拆除——
+/// 默认关（装配点退回纯单路链路），开关仅保留回滚口径；静态开关跨测试共享，用 try/finally 存恢复，防串染。
 /// </summary>
 public class Vc96PrefetchGateTests
 {
     [Fact]
-    public void Prefetch_gate_defaults_on()
+    public void Prefetch_gate_defaults_off()
     {
-        Assert.True(ParallelPrefetcher.Enabled); // 默认开：试探版口径，单路起步不等于关预取
+        Assert.False(ParallelPrefetcher.Enabled); // vc101 默认关：并发预取整体拆除
     }
 
     [Fact]
-    public void Prefetch_gate_can_be_disabled_and_restored()
+    public void Prefetch_gate_can_be_toggled_and_restored()
     {
         try
         {
-            ParallelPrefetcher.Enabled = false;
-            Assert.False(ParallelPrefetcher.Enabled); // 关闸口径：装配点退回单路链路
+            ParallelPrefetcher.Enabled = true;
+            Assert.True(ParallelPrefetcher.Enabled); // 开关仍可拨（回滚口径保留）
         }
         finally
         {
-            ParallelPrefetcher.Enabled = true; // 存恢复：不串染其他用例
+            ParallelPrefetcher.Enabled = false; // 存恢复：不串染其他用例
         }
-        Assert.True(ParallelPrefetcher.Enabled);
+        Assert.False(ParallelPrefetcher.Enabled);
     }
 }

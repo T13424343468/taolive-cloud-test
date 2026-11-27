@@ -21,9 +21,10 @@ public static class ServiceCollectionExtensions
             var dispatcher = sp.GetService<IMainThreadDispatcher>() ?? new ImmediateMainThreadDispatcher();
             if (kernelFactory is not null)
             {
+                // vc101 老板令「并发整个都不要了」：热备双实例并行攒流拆除，退回纯单会话（换台走既有串行链路）
                 return new PlaybackSessionManager(
                     () => new PlaybackSession(kernelFactory(), clock), dispatcher,
-                    onSwitchingChannel, hotStandbyEnabled: true);
+                    onSwitchingChannel, hotStandbyEnabled: false);
             }
             var player = sp.GetRequiredService<IPlayer>();
             return new PlaybackSessionManager(() => new PlaybackSession(player, clock), dispatcher);

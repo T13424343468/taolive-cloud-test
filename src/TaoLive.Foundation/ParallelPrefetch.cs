@@ -152,7 +152,7 @@ public sealed class ParallelPrefetcher
     /// 试探并发总开关（vc96，默认开）：试探语义本身防封（默认单路、逐路升级、被拒即缩）；
     /// 置 false 退回纯单路（工厂 null 分支，链路不含预取壳），装配点在内核 BuildPlayer。
     /// </summary>
-    public static bool Enabled { get; set; } = true;
+    public static bool Enabled { get; set; } = false; // vc101 老板令「并发整个都不要了」：并发预取默认拆除，装配点退回纯单路
 
     /// <summary>额外连接封顶（不含内核在播那路）：总 3 个，试探版上限。</summary>
     public const int MaxExtraConnections = 2;

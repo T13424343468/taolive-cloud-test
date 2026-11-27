@@ -126,8 +126,6 @@ public partial class MainActivity : Activity
     private TextView? _epgNext;
     private TextView? _epgWater; // 老板令 2026-11-17：节目单条挂实时水位（上下排列），与画面时刻同源同拍
     private TextView? _waterLevelText;       // 老板令 2026-11-16：列表页头「实时水位:XX秒」——当前会话内核攒着还没播的量
-    private TextView? _headerTitle;          // 走查令 2026-11-27：页头标题/台数视图引用（ApplyListWidth 页头项 Paint 实测用）
-    private TextView? _headerCount;
     private bool _epgHasData;                // 当前台拉到过节目单（抽屉收起后据此重新亮出）
     private Action? _epgHidePending;         // 7 秒自动收起任务
     private int _epgSeq;                     // 节目单代数：换台即作废旧拉取
@@ -992,11 +990,19 @@ public partial class MainActivity : Activity
         var count = new TextView(this) { Text = $"  共 {_channels.Count} 路", TextSize = UiScale.Caption };
         count.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(count);
-        count.SetSingleLine(true); // 走查令 2026-11-27：台数不竖排换行（宽度由 ApplyListWidth 页头项兜底，极端钳制走省略号）
+        count.SetSingleLine(true); // 走查令 2026-11-27：台数不竖排换行（定宽下面板外缘走省略号）
         count.Ellipsize = TextUtils.TruncateAt.End;
-        _headerTitle = title;
-        _headerCount = count;
         titleRow.AddView(count);
+        // 关闭 ×（老板 2026-11-27 20:2x 拍板「元素肯定都要」）：竖屏抽屉全屏后无面板外可点，
+        // 页头右侧常驻 ✕ 关闭（与设置面板同款），返回键口径不变
+        var titleStretch = new Space(this); // 台数与 ✕ 之间弹性撑开，✕ 顶到右缘
+        titleRow.AddView(titleStretch, new LinearLayout.LayoutParams(0, 1, 1f));
+        var drawerClose = new TextView(this) { Text = "✕", TextSize = UiScale.Title, Gravity = GravityFlags.Center };
+        drawerClose.SetTextColor(InkTranslucency.TextPrimary(this));
+        InkTranslucency.ApplyReadabilityShadow(drawerClose);
+        drawerClose.SetPadding(UiScale.Px(24), 0, 0, 0);
+        drawerClose.Click += (_, _) => ShowPlayer();
+        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(-2, -2) { Gravity = GravityFlags.CenterVertical });
         header.AddView(titleRow);
         // 老板令 2026-11-16：共N路后面挂「实时水位」——内核当前攒着还没播的库存（BufferedMs 实时读数），
         // 1 秒独立泵跟刷，抽屉开着数字一直新鲜；vc85 施工包5 同行并入「画面时刻」（现在−水位换算，源头延迟可标定）
@@ -1028,6 +1034,26 @@ public partial class MainActivity : Activity
         }
         StyleTabs();
         _listPage.AddView(tabRow);
+
+        // 筛选输入框（老板 2026-11-27 20:2x 拍板「元素肯定都要」；v11 设计稿口径）：数字=频道号前缀、文字=台名包含，
+        // 系统输入法；空串恢复全量。过滤只动行装配，不碰频道表与编号语义
+        var filterBox = new EditText(this)
+        {
+            Hint = "筛选：数字=频道号 · 文字=台名",
+            TextSize = UiScale.Caption,
+        };
+        filterBox.SetSingleLine(true);
+        filterBox.SetTextColor(InkTranslucency.TextPrimary(this));
+        filterBox.SetHintTextColor(Color.ParseColor("#8894A0"));
+        filterBox.SetBackgroundResource(0); // 去系统下划线底，走面板同色
+        filterBox.SetBackgroundColor(Color.ParseColor("#223A4750")); // 半透明深底条
+        filterBox.SetPadding(UiScale.Px(24), UiScale.Px(12), UiScale.Px(24), UiScale.Px(12));
+        filterBox.TextChanged += (_, e) =>
+        {
+            if (_list?.Adapter is ChannelListAdapter adapter)
+                adapter.SetFilter(e.Text?.ToString() ?? "");
+        };
+        _listPage.AddView(filterBox, new LinearLayout.LayoutParams(-1, -2) { LeftMargin = UiScale.Px(48), RightMargin = UiScale.Px(48), TopMargin = UiScale.Px(4), BottomMargin = UiScale.Px(8) });
 
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
@@ -1568,6 +1594,7 @@ public partial class MainActivity : Activity
         base.OnConfigurationChanged(newConfig!);
         ApplyVideoAspect();
         RebuildControlBar();
+        ApplyListWidth(_channels); // 定宽令 2026-11-27：竖屏全屏/横屏 480dp，转屏即定（不依赖内容）
         _main.Post(ApplyVideoAspect);
     }
 
@@ -2344,50 +2371,17 @@ public partial class MainActivity : Activity
         return extra.Count;
     }
 
-    /// <summary>列表宽度恒定（vc65 老板令 2026-11-15：列表页每次打开宽度都一样，「地方台」页签不换行）。
-    /// 根因（#72 口径的副作用）：宽度按当前页签 adapter.Rows 贴内容估——打开所在页签/收藏不同，面板就漂移；
-    /// 面板窄于页签行自然宽时最后签被挤换行。修法：估宽改按<b>全表</b>最长频道行（含收藏星位），恒定公式不随页签/收藏变；
-    /// 页签行最小宽并入下限兜底；下限 300dp、上限钳制不变。
-    /// #15 尺寸令：估宽基准随档缩放；#72 列表贴内容口径保留（行宽计入台标+边距，无重复留白）。
-    /// 走查令 2026-11-27（D1/D2 根治）：间距重定标（Px 入参改 390dp 基准）后行内 chrome 实宽≈0.68 屏，
-    /// 旧估宽公式仍按文字档折算（96×Scale≈86px 当 266px padding 用）系统性偏窄，半屏钳制把台名挤成「C…」单字省略——
-    /// 估宽改按行装配实式（Paint 实测文字 + Px 实距），上限改 0.98 屏：≤5 字台名全显，更长台名单行省略号
-    /// （v26 olist-longname 长台名口径一致）；页头两行（标题+台数/水位行）一并并入估宽，杜绝竖排逐字换行。</summary>
+    /// <summary>列表宽度定宽（老板 2026-11-27 20:2x 拍板）：竖屏固定全屏、横屏固定最大宽 480dp，不随内容/页签/收藏变。
+    /// 沿革：vc65 恒定估宽（全表最长行兜底）；走查令 2026-11-27（D1/D2 根治）改行装配实式估宽+上限 0.98 屏——
+    /// 间距重定标后行内固定件（台标/编号/收藏星/状态点/边距）实宽≈0.68 屏，贴内容估宽必然顶满上限，等效近全屏；
+    /// 老板拍板不再「贴内容长」：竖屏全屏（信息一行看全），横屏定宽 480dp（页签行实需≈455dp 内收，长台名单行省略号）。
+    /// 转屏在 OnConfigurationChanged 重算（定宽不依赖内容，转屏即定）。</summary>
     private void ApplyListWidth(IReadOnlyList<Channel> channels)
     {
-        float density = Resources!.DisplayMetrics!.Density;
-        // 文字实测：Paint 按最终 sp→px 装载（TextView TextSize=sp，渲染 px=sp×density），量出的就是实渲染宽
-        using var itemPaint = new Paint(PaintFlags.AntiAlias) { TextSize = UiScale.Item * density };
-        using var captionPaint = new Paint(PaintFlags.AntiAlias) { TextSize = UiScale.Caption * density };
-        // 频道行恒定口径（vc65：逐台估宽取最大，不读当前页签行集）——行装配实式（BuildRowHolder 同源）：
-        // 行宽 = 左右 padding Px(48)×2 + 台标 40dp×density×Scale + 右距 Px(16) + 号(3字符满宽)+右距 Px(32)
-        //      + 星(收藏位满宽)+右距 Px(24) + 台名(Item 实测) + 健康点(Caption 实测)+左距 Px(24)
-        float logoW = 40 * density * UiScale.Scale + UiScale.Px(16);
-        float rowChrome = UiScale.Px(48) * 2 + logoW
-            + itemPaint.MeasureText("000") + UiScale.Px(32)
-            + itemPaint.MeasureText("★") + UiScale.Px(24)
-            + captionPaint.MeasureText("●") + UiScale.Px(24);
-        float max = 0;
-        foreach (var ch in channels)
-            max = Math.Max(max, rowChrome + itemPaint.MeasureText(ch.Name));
-        // 空态提示行同为恒定文案，取最长一并兜进（单行不换行口径下不被截断）
-        max = Math.Max(max, UiScale.Px(48) * 2 + captionPaint.MeasureText("收藏夹是空的，对着频道按确认可收藏"));
-        // 页签行最小宽兜底（vc65：面板窄于页签行时「地方台」被挤换行）——行装配实式：左右 padding + 每签文本+内边距 Px(12)×2 + 非首签间距 Px(8)×4
-        string[] tabLabels = { "全部", "央视", "卫视", "地方台", "收藏" };
-        float tabRowMin = UiScale.Px(48) * 2 + 4 * UiScale.Px(8);
-        foreach (var label in tabLabels) tabRowMin += itemPaint.MeasureText(label) + UiScale.Px(12) * 2;
-        max = Math.Max(max, tabRowMin);
-        // 页头两行并入估宽（走查令 D1：页头被半宽钳制挤成竖排逐字换行）——用实视图 Paint 实测，文案随台数/水位实时取
-        if (_headerTitle is { } ht && _headerCount is { } hc && _waterLevelText is { } wl)
-        {
-            max = Math.Max(max, UiScale.Px(48) * 2 + ht.Paint!.MeasureText(ht.Text!.ToString()) + hc.Paint!.MeasureText(hc.Text!.ToString()));
-            max = Math.Max(max, UiScale.Px(48) * 2 + wl.Paint!.MeasureText(wl.Text!.ToString()));
-        }
-        // ListMetrics（vc53 v1.0.8）：下限 300dp；上限 0.98 屏（走查令 2026-11-27：半屏钳制在间距重定标后必然截断台名）
-        float total = max;
-        float lo = UiScale.Px(300);
-        float hi = Resources.DisplayMetrics.WidthPixels * 0.98f;
-        int width = (int)Math.Clamp(total, Math.Min(lo, hi), Math.Max(lo, hi));
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+        int width = landscape
+            ? Math.Min(UiScale.Px(480), Resources.DisplayMetrics!.WidthPixels) // 横屏定宽 480dp，窄屏钳到屏宽
+            : Resources.DisplayMetrics!.WidthPixels; // 竖屏固定全屏
         _listPage.LayoutParameters = new FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MatchParent, GravityFlags.Left);
     }
 
@@ -2496,6 +2490,7 @@ public partial class MainActivity : Activity
         private readonly Func<string?> _currentId;
         private HashSet<string> _favorites;
         private ListTabs.Tab _tab;
+        private string _filter = ""; // 筛选令（老板 2026-11-27 20:2x 拍板）：数字=频道号前缀、文字=台名包含
         private List<Row> _rows;
         private IReadOnlyList<int> _favOrder; // 收藏顺序（vc53 排序口径：收藏页签按此顺序铺开）
 
@@ -2510,7 +2505,7 @@ public partial class MainActivity : Activity
             _currentId = currentId;
             _tab = tab;
             _favOrder = favoriteOrder ?? Array.Empty<int>();
-            _rows = BuildRows(channels, favorites, tab, markOf, _favOrder);
+            _rows = BuildRows(channels, favorites, tab, markOf, _favOrder, _filter);
         }
 
         /// <summary>当前装配的行（宽度随内容重算用）。</summary>
@@ -2518,9 +2513,10 @@ public partial class MainActivity : Activity
 
         /// <summary>行装配（vc53 DrawerSupport.BuildRows 口径一比一）：
         /// 收藏标签=收藏顺次铺开（按 favoriteOrder，未入册的按频道表序缀后）+空态行；其余标签=收藏成组置顶，无信号分组收口（全部标签），
-        /// 装配完无任何频道行补空态行（不白屏）。</summary>
+        /// 装配完无任何频道行补空态行（不白屏）。
+        /// 筛选令（老板 2026-11-27 20:2x 拍板）：纯数字=频道号前缀；含非数字=台名包含（不区分大小写）；空=不过滤。</summary>
         private static List<Row> BuildRows(IReadOnlyList<Channel> channels, HashSet<string> favorites,
-            ListTabs.Tab tab, Func<Channel, ChannelHealth> markOf, IReadOnlyList<int> favOrder)
+            ListTabs.Tab tab, Func<Channel, ChannelHealth> markOf, IReadOnlyList<int> favOrder, string filter = "")
         {
             var rows = new List<Row>();
             // 收藏顺序铺开（vc53 排序口径）：order 在前的在前，未入 order 的收藏台按频道表序缀后
@@ -2542,7 +2538,16 @@ public partial class MainActivity : Activity
                 ListTabs.Tab.Local => channels.Where(c => c.Category is ChannelCategory.City or ChannelCategory.UserSource),
                 _ => channels,
             };
-            var baseL = baseList.Where(c => !c.Unavailable).ToList();
+            IEnumerable<Channel> filtered = baseList.Where(c => !c.Unavailable);
+            // 筛选令：纯数字=频道号前缀；含非数字=台名包含（不区分大小写）；空=不过滤
+            if (!string.IsNullOrWhiteSpace(filter))
+            {
+                var f = filter.Trim();
+                filtered = f.All(char.IsDigit)
+                    ? filtered.Where(c => c.Number.ToString().StartsWith(f, StringComparison.Ordinal))
+                    : filtered.Where(c => c.Name.Contains(f, StringComparison.OrdinalIgnoreCase));
+            }
+            var baseL = filtered.ToList();
 
             if (tab == ListTabs.Tab.Favorite)
             {
@@ -2596,7 +2601,16 @@ public partial class MainActivity : Activity
             _favorites = favorites;
             _tab = tab ?? _tab;
             if (favoriteOrder != null) _favOrder = favoriteOrder;
-            _rows = BuildRows(_channels, favorites, _tab, _markOf, _favOrder);
+            _rows = BuildRows(_channels, favorites, _tab, _markOf, _favOrder, _filter);
+            NotifyDataSetChanged();
+        }
+
+        /// <summary>筛选令变化（老板 2026-11-27 20:2x 拍板）：重建行装配；空串恢复全量。</summary>
+        public void SetFilter(string filter)
+        {
+            if (_filter == filter) return;
+            _filter = filter;
+            _rows = BuildRows(_channels, _favorites, _tab, _markOf, _favOrder, _filter);
             NotifyDataSetChanged();
         }
 
@@ -2604,7 +2618,7 @@ public partial class MainActivity : Activity
         public void ReplaceChannels(IReadOnlyList<Channel> channels)
         {
             _channels = channels;
-            _rows = BuildRows(channels, _favorites, _tab, _markOf, _favOrder);
+            _rows = BuildRows(channels, _favorites, _tab, _markOf, _favOrder, _filter);
             NotifyDataSetChanged();
         }
 
@@ -2626,6 +2640,7 @@ public partial class MainActivity : Activity
             public TextView Num = null!;
             public TextView Star = null!;
             public TextView Name = null!;
+            public TextView Pill = null!; // 路源标（老板 2026-11-27 20:2x 拍板「元素肯定都要」）：每台显示源路数
             public TextView Dot = null!;
         }
 
@@ -2680,6 +2695,19 @@ public partial class MainActivity : Activity
             InkTranslucency.ApplyReadabilityShadow(h.Name);
             h.Line.AddView(h.Name);
 
+            // 路源标（老板 2026-11-27 20:2x 拍板「元素肯定都要」；v26 olist 口径）：圆角小胶囊显示源路数，
+            // 紧跟台名，状态点之前；半透明浅底+次色字，不抢台名主视觉
+            h.Pill = new TextView(ctx) { Gravity = GravityFlags.Center };
+            Style(h.Pill, InkTranslucency.TextSecondary, UiScale.Caption);
+            var pillBg = new Android.Graphics.Drawables.GradientDrawable();
+            pillBg.SetShape(Android.Graphics.Drawables.ShapeType.Rectangle);
+            pillBg.SetCornerRadius(UiScale.Px(10));
+            pillBg.SetColor(Color.ParseColor("#33D8E2EC")); // 纸色 20% 透明底
+            h.Pill.Background = pillBg;
+            h.Pill.SetPadding(UiScale.Px(12), UiScale.Px(2), UiScale.Px(12), UiScale.Px(2));
+            var pillLp = new LinearLayout.LayoutParams(-2, -2) { LeftMargin = UiScale.Px(12), Gravity = GravityFlags.CenterVertical };
+            h.Line.AddView(h.Pill, pillLp);
+
             h.Dot = new TextView(ctx);
             h.Dot.SetPadding(UiScale.Px(24), 0, 0, 0);
             InkTranslucency.ApplyReadabilityShadow(h.Dot);
@@ -2703,6 +2731,7 @@ public partial class MainActivity : Activity
                 h.Num.Visibility = ViewStates.Gone;
                 h.Star.Visibility = ViewStates.Gone;
                 h.Name.Visibility = ViewStates.Gone;
+                h.Pill.Visibility = ViewStates.Gone;
                 h.Dot.Visibility = ViewStates.Gone;
                 h.Line.SetBackgroundColor(Color.Transparent);
                 return;
@@ -2748,13 +2777,19 @@ public partial class MainActivity : Activity
                 : Color.Transparent);
             h.Name.Visibility = ViewStates.Visible;
 
-            // 可连状态标识（v1.0.8 预检握手）：绿点可用 · 灰点检测中/未探 · 红叉连不上
+            // 路源标（老板 2026-11-27 20:2x 拍板「元素肯定都要」）：显示该台源路数；0 路（异常态）不显
+            var srcCount = ch.SourceEndpoints.Count;
+            h.Pill.Text = $"{srcCount}路";
+            h.Pill.Visibility = srcCount > 0 ? ViewStates.Visible : ViewStates.Gone;
+
+            // 可连状态标识（v1.0.8 预检握手）：绿点可用 · 灰点检测中/未探 · 红叉连不上；
+            // 未探态提亮 #8894A0→#A9B7C5（走查令 2026-11-27：深底对比度 4.4:1→6.6:1，CCTV4/CCTV7 状态点看不清）
             var (mark, color) = _markOf(ch) switch
             {
                 ChannelHealth.Alive => ("●", "#7ED182"),
                 ChannelHealth.Dead => ("✕", "#E97F7F"),
                 ChannelHealth.Checking => ("●", "#B5C4D0"),
-                _ => ("●", "#8894A0"),
+                _ => ("●", "#A9B7C5"),
             };
             h.Dot.Text = mark;
             Style(h.Dot, color, UiScale.Caption);

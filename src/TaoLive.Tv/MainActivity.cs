@@ -77,7 +77,7 @@ public partial class MainActivity : Activity
     private bool _sortMode;      // 收藏排序状态机（v1.0.8 第14项）：列表内长按确认进入，退出恢复默认键位
     private Channel? _sortChannel;
     private readonly List<int> _sortBackup = new();
-    private static bool _precheckEnabled = false; // vc101 老板令「并发整个都不要了」：预检探活+全部预热预取（共车道开关）整体拆除，不再读盘复活；
+    private static bool _precheckEnabled = true; // vc105 老板令：以 93 为基线——预检握手+预热入口接回（vc101 拆除令被「以93为基线」覆盖），读盘持久化恢复；
 
     /// <summary>开机全表备货避让节拍（老板批 2026-11-16 第③条·避让）：先让预检探出默认台/收藏台首批绿点，备货再上路。</summary>
     private const int BootWarmAllGraceMs = 3 * 60 * 1000;
@@ -148,8 +148,8 @@ public partial class MainActivity : Activity
         UiScale.ScreenScale = Math.Max(Resources!.DisplayMetrics!.WidthPixels, Resources.DisplayMetrics.HeightPixels) / 1920f;
         // 收口批④开关合流：预热与预检共车道只留预检开关，预热（开机全量预热+换台邻台预取+开机默认台焐热）
         // 一律随 _precheckEnabled 同起同停——两个开关管同一条车道必出一个死开关（方案书收口批④原文）。
-        // vc101 老板令「并发整个都不要了」：不再读盘复活——探活/预热/预取整体拆除，硬关。
-        _precheckEnabled = false;
+        // vc105 老板令：以 93 为基线——读盘复活恢复（默认开），vc101 硬关口径作废。
+        _precheckEnabled = _prefs.GetBoolean("precheck_enabled", true);
         // 内置订阅源库（老板 2026-11-26 拍板「只做内置订阅」）：载入落盘档案；开关默认关，开了才拉合集
         SubscriptionSourceStore.Shared.Load(FilesDir!.AbsolutePath);
         SubscriptionSourceStore.Reporter = msg => Android.Util.Log.Info("TaoLive", msg);

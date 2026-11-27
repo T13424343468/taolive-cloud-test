@@ -295,7 +295,10 @@ public partial class MainActivity
             ToggleAutoStart, "#F7F5EE", OpenAutoStartSettings);
         // ⑥开机默认台设置行已删（老板令 2026-11-15：一百多台循环点选没法用；启动选台回归 vc53 口径=断点台回看，见 MainActivity.DefaultChannelIndex）
         // 预检握手（vc53 v1.0.8 一比一）：真实控制常驻循环预检（关=循环同停）；
-        // vc101 老板令「并发整个都不要了」：预检+预热+预取整体拆除，设置面板入口一并撤下（不可再开）。
+        // 收口批④开关合流：预热与预检两个开关管同一条车道必出一个死开关——只留本开关，
+        // 预热（开机全量预热+换台邻台预取）随预检同起同停，不再单设开关。
+        // vc105 老板令：以 93 为基线——入口接回（vc101 撤除令被「以93为基线」覆盖）。
+        AddRow($"预检握手：{(_precheckEnabled ? "开" : "关")}（预热同起同停）", TogglePrecheck, "#F7F5EE");
         // 内置订阅（老板 2026-11-26 拍板「只做内置订阅」）：开关默认关；长按=立即刷新合集
         AddRow($"源订阅：{(_subEnabled ? "开" : "关")}（自动收录公开源）", ToggleSubscription, "#F7F5EE", RefreshSubscriptionNow);
         AddRow($"显示大小：{DisplaySizeLabel()}", CycleDisplaySize, "#F7F5EE");
@@ -366,7 +369,18 @@ public partial class MainActivity
     /// <summary>长按自启行跳系统自启管理（照 vc53 三级降级口径，遥控器放行入口）。</summary>
     private void OpenAutoStartSettings() => OpenSystemSettings();
 
-    // vc101 老板令「并发整个都不要了」：TogglePrecheck 已随设置入口一并撤除——预检/预热/预取不可再从面板开启。
+    /// <summary>预检握手开关（vc53 v1.0.8 一比一；vc105 老板令以 93 为基线接回）：切换并持久化，
+    /// 开=常驻循环预检+预热（共车道同起同停）随启停。</summary>
+    private void TogglePrecheck()
+    {
+        _precheckEnabled = !_precheckEnabled;
+        _prefs.Edit()?.PutBoolean("precheck_enabled", _precheckEnabled)?.Apply();
+        if (_precheckEnabled) StartPrecheckLoop();
+        else StopPrecheckLoop();
+        RefreshSettingsRows();
+        ShowToast(_precheckEnabled ? "预检握手：开" : "预检握手：关");
+    }
+
     // —— 内置订阅源（老板 2026-11-26 拍板「只做内置订阅」）：拉公开免费合集→按台名匹配→查重→试活→入库垫底 ——
     // 老板令 2026-11-26「拉源避开播放，不能影响播放」：播放/热备在跑一律暂缓，挂起待停播自动补跑；
     // 试活并发≤2、单次取样≤64KB，拉源流量绝不与播放抢道。
@@ -1023,7 +1037,8 @@ public partial class MainActivity
 
             var tip = new TextView(this)
             {
-                Text = "左右键切 − / +，确认键调档；到头即停。\n改坏了随时点「一键还原默认」回出厂值，全部即时生效。",
+                // vc105 老板令：文案放一行（原写死 \n 拆两行，改一行自然排版）
+                Text = "左右键切 − / +，确认键调档；到头即停。改坏了随时点「一键还原默认」回出厂值，全部即时生效。",
                 TextSize = UiScale.Caption,
             };
             tip.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));

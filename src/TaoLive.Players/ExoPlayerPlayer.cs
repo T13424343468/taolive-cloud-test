@@ -305,8 +305,10 @@ public sealed class ExoPlayerPlayer : IPlayer
             // 同步与 resolver 异步两路都在主线程进入本方法（ExoPlayer 创建线程契约），重建合法。
             bool blindZone = !IsHls(uri);
             EnsurePlayerMode(blindZone);
-            // 请求头纪律（vc53 同口径）：当前频道表与备源表全部无自定义 UA/Referer（11-15 清点=0 路），
-            // 内核走 Media3 默认头即可；将来某路源带校验需补头时，改在 ExoPlayerBuilder 构造期注入工厂，
+            // 请求头纪律（vc53→vc100 修订）：频道表与备源表仍无自定义 UA/Referer，但内核 UA 不再走
+            // Media3 默认（Dalvik）——vc100 起由 RacingHttpDataSource.CreateInner 统一挂
+            // TicketResolver.ClientUserAgent（与取票同 UA，CDN 按票指纹放行；11-27 真机实锤 Dalvik UA 被 4xx）。
+            // 将来某路源带校验需补 Referer 时，改在 ExoPlayerBuilder 构造期注入工厂，
             // 不在每次 Play 动态挂（IExoPlayer 绑定无 SetMediaSourceFactory，云闸已实锤）。
             var builder = new AndroidX.Media3.Common.MediaItem.Builder();
             builder.SetUri(uri);

@@ -207,6 +207,10 @@ public sealed class RacingDataSourceFactory : Java.Lang.Object, AndroidX.Media3.
         var factory = new AndroidX.Media3.DataSource.DefaultHttpDataSource.Factory();
         factory.SetConnectTimeoutMs(12_000);
         factory.SetReadTimeoutMs(15_000);
+        // vc100 UA 对齐（真机 11-27 实锤）：取票用浏览器 UA 成功、播放内核却带 Dalvik 默认 UA，
+        // CDN 对「票与请求指纹不符」的播放请求回 4xx——一期 LibVLC 经 http-user-agent 挂浏览器 UA 可播，
+        // 2.0 换 Media3 后漏配。播放链（Racing/TicketSwap/ParallelPrefetch）全部经本工厂出网，单点对齐。
+        factory.SetUserAgent(TaoLive.Catalog.TicketResolver.ClientUserAgent);
         return factory.CreateDataSource()!;
     }
 }

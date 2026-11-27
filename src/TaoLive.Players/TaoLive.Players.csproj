@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="../TaoLive.Model/TaoLive.Model.csproj" />
     <ProjectReference Include="../TaoLive.Foundation/TaoLive.Foundation.csproj" />
+    <ProjectReference Include="../TaoLive.Catalog/TaoLive.Catalog.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Xamarin.AndroidX.Media3.ExoPlayer" Version="1.11.1" />

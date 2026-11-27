@@ -1,0 +1,33 @@
+PACKAGE VERSION: TaoLive 100/1.15 (2026-11-27)
+TaoLive TV 1.15 vc100 — 播放内核 UA 对齐（真机全台不出画根治候选）
+
+【诊断修订（重要）】
+vc99 真机日志（2026-11-27 10:00-10:01，v1.14 自证生效）推翻「运营商明文拦截」判断：
+- 取票全部成功、健康点全绿——取票与调度正常。
+- 播放全失败：官方 https 线报 ERROR_CODE_IO_UNSPECIFIED，线路2 报
+  ERROR_CODE_IO_BAD_HTTP_STATUS（4xx，CDN 可达但主动拒绝）。
+- 结论：CDN 在拒绝播放请求的请求指纹，不是网络断、不是明文拦截。
+
+【根因（本轮实锤）】
+- 一期 1.4（vc89，11-17 真机最后可用）用 LibVLC，播放时经 http-user-agent
+  显式挂浏览器 UA（StreamResolver.cs L196/L280）。
+- 2.0 换 Media3/ExoPlayer 后，播放内核未设 UA——实际请求带 Dalvik 系统默认 UA，
+  与取票时的浏览器 UA（TicketResolver.ClientUserAgent）不一致，
+  CDN 对「票与请求指纹不符」的播放请求回 4xx。
+- 时间线吻合：真机最后可用=vc89（LibVLC），2.0 线（vc90+）从未在真机成功过。
+
+【修复（单点）】
+- RacingHttpDataSource.CreateInner()：DefaultHttpDataSource.Factory 加
+  SetUserAgent(TicketResolver.ClientUserAgent)——播放链
+  （TicketSwap/Racing/ParallelPrefetch）全部经本工厂出网，单点对齐。
+- Players 工程新增引用 Catalog（共享 UA 常量，无循环依赖）。
+- ExoPlayerPlayer.cs 请求头纪律注释同步修订（vc53「内核走默认头」口径作废）。
+
+【验证】
+- 全测 406/406 绿（Release）。
+- badging 亲验：versionCode='100' versionName='1.15'。
+- SHA256: c786c2d010bab7480499b8c6eeccc25eb03cc097701baea17c3ac96d7ba76992
+
+【真机验收要点】
+装包后直接换台即可，无需任何额外操作。若仍不出画，崩溃日志面板
+标题会显示 v1.15（日志自证版本），截图发回即可定位。

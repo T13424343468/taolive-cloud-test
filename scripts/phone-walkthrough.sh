@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# TaoLive 手机版逐屏走查出图 v7（制度：视觉模型比对与评分制度 2026-11-26）
+# TaoLive 手机版逐屏走查出图 v8（制度：视觉模型比对与评分制度 2026-11-26）
+# v8 改法（对照 v7 实拍复盘，vc121 改版后按钮盒 44dp、两端让位、信息三行 → 旧坐标全落空）：
+#   坐标全部按 v7 实拍截图裁剪测量更新（1080x2400 竖屏 / 2400x1080 横屏）：
+#   竖屏按钮行 y 2189→2334；☰ x 504→710；⚙ x 656→810（实测 ⏮70 ⏭170 ☰710 ⚙810 ⛶910 🔒1010）。
+#   横屏按钮行 y 991→1016；☰ x 1346→2025；⚙ x 1498→2131（实测 ☰2025 ⚙2131 ⛶2238 🔒2344）。
 # v7 改法（对照 v6 实拍缺陷，vc122 云测 run 46075783452 复盘）：
 #   ① 根因修复：v6 在 03c 按返回键关抽屉，但 03 抽屉根本没开（控制条 3s 窗口已过，点 ☰ 落空），
 #      vc112 拍板口径「播放页返回=停播攒流退后台」生效 → 应用退到桌面，此后 04~17 共 20+ 张全拍到
@@ -23,8 +27,8 @@ echo "SCREEN ${W}x${H}"
 echo "SCREEN ${W}x${H}" > "$OUT/screen.txt"
 
 # —— 控制条按钮坐标（源码推算，1080x2400@420dpi） ——
-P_BAR_Y=2189; P_VOL_Y=2311
-L_BAR_Y=991
+P_BAR_Y=2334; P_VOL_Y=2311
+L_BAR_Y=1016
 ACT="com.taolive.phone/crc64b53a6f6c1e1300c1.MainActivity"
 
 # ensure_fg：vc112 返回=退后台，走查任何一步都可能把应用按回桌面；每段开始前核对并拉回
@@ -98,7 +102,7 @@ adb shell input tap "$CX" "$CY"; sleep 0.8
 SHOT 02-controls-portrait
 
 # —— 竖屏：抽屉（83台全量=极端数据）——v7：open_drawer 带验证重试 ——
-open_drawer 504 $P_BAR_Y
+open_drawer 710 $P_BAR_Y
 SHOT 03-drawer-portrait
 dump_ui ui-drawer-portrait.xml
 adb shell input swipe 324 $((H*3/4)) 324 $((H/4)) 600; sleep 1.2
@@ -110,7 +114,7 @@ ensure_fg
 
 # —— 竖屏：设置页（坐标直点 ⚙） ——
 adb shell input tap "$CX" "$CY"; sleep 0.8
-adb shell input tap 656 $P_BAR_Y
+adb shell input tap 810 $P_BAR_Y
 sleep 2
 SHOT 04-settings-portrait
 dump_ui ui-settings-portrait.xml
@@ -178,13 +182,13 @@ SHOT 07-play-landscape
 adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 SHOT 08-controls-landscape
 
-open_drawer 1346 $L_BAR_Y
+open_drawer 2025 $L_BAR_Y
 SHOT 09-drawer-landscape
 adb shell input keyevent 4; sleep 1.5   # 关抽屉（返回键）
 ensure_fg
 
 adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
-adb shell input tap 1498 $L_BAR_Y
+adb shell input tap 2131 $L_BAR_Y
 sleep 2
 SHOT 10-settings-landscape
 adb shell input keyevent 4; sleep 1.5   # 收设置（返回键）

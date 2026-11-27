@@ -2367,7 +2367,7 @@ public partial class MainActivity : Activity
     {
         if (_digits.Length >= 3) return; // 位数封顶（闪退镜红① 11-15）：连按不溢出，编号三位内直达
         _digits = (_digits + d.ToString()).TrimStart('0');
-        ShowToast(_digits);
+        ShowToast(string.IsNullOrEmpty(_digits) ? "0" : _digits); // 盲测修：首位按 0 不再出空信息条
         _main.RemoveCallbacks(_digitCommit!); // 先摘旧回调再换新（闪退镜黄⑨）：已 Dispose 的 runnable 不再执行，窗口内连按不提前换台
         _digitCommit?.Dispose();
         _digitCommit = new Java.Lang.Runnable(() =>

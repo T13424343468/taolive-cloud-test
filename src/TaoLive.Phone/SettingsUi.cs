@@ -183,7 +183,7 @@ public partial class MainActivity
         _settingsScroll.AddView(_settingsFlow, new FrameLayout.LayoutParams(-1, -2));
 
         // #19：说明收进底部帮助行（原每行下挂的操作提示统一收到这一行，全宽常驻不抢眼）
-        var help = new TextView(this) { Text = "点按切换 · 点面板外空白处收起", TextSize = UiScale.Caption };
+        var help = new TextView(this) { Text = "点按切换 · 点 ✕ 或返回键收起", TextSize = UiScale.Caption };
         help.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
         InkTranslucency.ApplyReadabilityShadow(help);
         help.SetPadding(Dp(14), Dp(8), Dp(14), Dp(4));

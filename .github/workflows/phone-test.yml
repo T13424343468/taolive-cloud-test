@@ -171,6 +171,12 @@ jobs:
           adb shell "dumpsys dropbox --print" > dropbox.txt 2>/dev/null || echo "NO_DROPBOX"
           grep -c taolive dropbox.txt > dropbox-taolive-count.txt || true
 
+      - name: Full-state walkthrough screenshots (制度必截状态清单)
+        run: |
+          chmod +x scripts/phone-walkthrough.sh
+          scripts/phone-walkthrough.sh walk
+          ls -la walk/
+
       - name: Dump emulator log
         if: always()
         run: cat emulator.log 2>/dev/null | tail -150 || echo "NO_EMULATOR_LOG"
@@ -189,4 +195,7 @@ jobs:
             proc-info.txt
             proc-ps.txt
             emulator.log
+            walk/*.png
+            walk/ui-tree-final.xml
+            walk/walkthrough-logcat.txt
           if-no-files-found: warn

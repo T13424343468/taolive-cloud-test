@@ -1,0 +1,23 @@
+TaoLive TV 1.18 vc103 交付说明
+================================
+
+包名: com.taolive.tv
+版本: versionCode 103 / versionName 1.18
+APK: com.taolive.tv-Signed.apk (22,259,313 字节)
+SHA256: dc1fe0025755f77a45e4d2cbf11acfe2b706eba1a0c27c0a80d7cb68f9d2a205
+全测: 406/406 绿 (Release)
+
+本次改动（vc103，回退 vc102）
+----------------------------
+问题：vc102（1.17）把首帧出画门槛改回 7 秒后，真机全台不出画——
+慢源 1 分钟都攒不满 7 秒门槛，永远不开画。vc101（1 秒门槛）能出画只是卡黑。
+
+修复：首帧出画门槛回退 7 秒 → 1 秒（BufferPolicy.SilentRefetchOpenMs），
+先开画、出画后静默补满窗口的口径不变；卡后重入门槛 12 秒不动；
+补库存底水 ProactiveInventoryFloor=TargetMs(7s) 联动不动。
+测试断言同步回退 1 秒口径，并恢复「出画门槛 ≠ 补库存底水」防空拨回归断言。
+
+验证
+----
+- aapt2 badging 亲验：versionCode='103' versionName='1.18'
+- dotnet test：406/406 通过

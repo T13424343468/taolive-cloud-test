@@ -18,10 +18,11 @@ public class InventoryGateTests
     // ---- 第 6 刀：首帧出画门槛分档 ----
 
     [Fact]
-    public void SilentRefetch_opens_frame_at_seven_seconds()
+    public void SilentRefetch_opens_frame_at_one_second()
     {
-        // vc102 老板令「1秒出画 改回7秒」：两档门槛统一 7 秒，先稳后快
-        Assert.Equal(7000, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
+        // vc103 回退（老板 2026-11-27 真机实锤）：vc102 的 7 秒门槛在慢源上永远攒不满、全台不出画；
+        // 回退 1 秒先开画（上个包能出只是卡黑），出画后静默补满窗口口径不变
+        Assert.Equal(1000, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
         Assert.Equal(BufferInventory.SilentRefetchOpenMs, BufferInventory.FirstFrameOpenMs(BufferInventory.Mode.SilentRefetch));
     }
 
@@ -33,11 +34,21 @@ public class InventoryGateTests
     }
 
     [Fact]
-    public void Default_mode_is_silent_refetch_so_kernel_gate_eats_seven_seconds()
+    public void Default_mode_is_silent_refetch_so_kernel_gate_eats_one_second()
     {
-        // 空拨根治断言：默认档=SilentRefetch，内核门槛取值必须=7 秒档（vc102 老板令改回）
-        Assert.Equal(BufferInventory.Mode.SilentRefetch, BufferInventory.Default);
-        Assert.Equal(7000, BufferInventory.FirstFrameOpenMs(BufferInventory.Default));
+        // 空拨根治断言：默认档=SilentRefetch，内核门槛取值必须=1 秒档（vc103 回退口径）
+        AdvancedTuning.ResetToDefaults(); // 出厂口径还原，防其他用例改档影响 NotEqual 判据
+        try
+        {
+            Assert.Equal(BufferInventory.Mode.SilentRefetch, BufferInventory.Default);
+            Assert.Equal(1000, BufferInventory.FirstFrameOpenMs(BufferInventory.Default));
+            // 防空拨回归：出画门槛常量不得与 7 秒补库存底水联动（1 秒 ≠ 7 秒）
+            Assert.NotEqual((double)BufferInventory.SilentRefetchOpenMs, PlaybackSession.ProactiveInventoryFloor.TotalMilliseconds);
+        }
+        finally
+        {
+            AdvancedTuning.ResetToDefaults();
+        }
     }
 
     [Fact]

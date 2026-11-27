@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# TaoLive 手机版逐屏走查出图 v8（制度：视觉模型比对与评分制度 2026-11-26）
+# TaoLive 手机版逐屏走查出图 v9（制度：视觉模型比对与评分制度 2026-11-26）
+# v9 改法（对照 v8 实拍复盘，run 46080373435 证据包）：
+#   ① 05 进阶调优：v8 拍到的是诊断日志页——设置面板入场动画未稳，tap_text dump 的 bounds 落指时
+#      内容已下移约 247px，点进调优坐标落到诊断日志行。v9 点「进阶调优」后 dump 验证该页独有文本
+#      「自愈门槛」（SettingsUi.cs 进阶调优面板旋钮行），不对则返回键收掉误开页重试（仿 open_drawer）。
+#   ② 06 诊断页签：v8 tap_text「崩溃日志」在设置页无独立文本（只有入口副标题整串
+#      「运行台账 · 崩溃日志 · 自诊断」），MISS 后坐标兜底落空。v9 改先点入口行「诊断日志」
+#      （独立文本，SettingsUi.cs:631），进诊断页后三页签为独立 TextView，再分别点
+#      「崩溃日志」「自诊断」页签各拍一张（dump 验证页签文本在才点）。
+#   ③ 10 横屏设置：v8 疑似入口组卡片不可见，加 dump ui-settings-landscape.xml 核实
+#      （未渲染/滚动折叠/真缺陷，v9 定论）。
+#   ④ 设置面板打开后等待 2→3s，让入场动画走稳再 dump+点按，从根上压时序竞态。
 # v8 改法（对照 v7 实拍复盘，vc121 改版后按钮盒 44dp、两端让位、信息三行 → 旧坐标全落空）：
 #   坐标全部按 v7 实拍截图裁剪测量更新（1080x2400 竖屏 / 2400x1080 横屏）：
 #   竖屏按钮行 y 2189→2334；☰ x 504→710；⚙ x 656→810（实测 ⏮70 ⏭170 ☰710 ⚙810 ⛶910 🔒1010）。
 #   横屏按钮行 y 991→1016；☰ x 1346→2025；⚙ x 1498→2131（实测 ☰2025 ⚙2131 ⛶2238 🔒2344）。
-# v7 改法（对照 v6 实拍缺陷，vc122 云测 run 46075783452 复盘）：
-#   ① 根因修复：v6 在 03c 按返回键关抽屉，但 03 抽屉根本没开（控制条 3s 窗口已过，点 ☰ 落空），
-#      vc112 拍板口径「播放页返回=停播攒流退后台」生效 → 应用退到桌面，此后 04~17 共 20+ 张全拍到
-#      桌面/Google/Chrome，走查整段白测。v7 加 ensure_fg()：每段开始前核对前台，掉前台即 am start 拉回。
-#   ② 抽屉打开加验证：点 ☰ 后 dump 查「全部」页签，没开就重显控制条再点一次（v6 盲点）。
-#   ③ 17 退出确认框整段重写：vc112 已删退出确认弹窗（返回=退后台），v6 还在等一个不存在的弹窗；
-#      v7 改拍「返回退后台」真实态，拍完 ensure_fg 拉回。
-# v6 改法：浮层关闭一律 keyevent 4；05 直点「进阶调优」；06 坐标兜底；HUD 拖 3s 三连拍；03c 返回键关抽屉。
-# v5 改法：横屏坐标转置；HUD 起终点改视频带内；设置滚动起点改面板内容区。
-# v3 改法：控制条按钮源码推算坐标直点；HUD 手势进行中快拍；dump 带 timeout；证据补传 walk/*.xml。
+# v7 改法：ensure_fg 每段核对前台；抽屉打开加 dump 验证重试；17 改拍退后台真实态。
+# v6 改法：浮层关闭一律 keyevent 4；HUD 拖 3s 三连拍；03c 返回键关抽屉。
 # 必截状态：正常/加载/失败/换台信息条/亮度HUD/音量HUD/极端数据(83台) × 横竖屏；退后台态（vc112）。
 set -u
 OUT=${1:-walk}
@@ -94,6 +97,25 @@ tap_text() {
 
 dump_ui() { timeout 12 adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1; timeout 8 adb shell cat /sdcard/ui.xml > "$OUT/$1" 2>/dev/null; return 0; }
 
+# open_sub：点子页入口→dump 验证该页独有文本在；不对则返回键收掉误开页重试（v9 ①，仿 open_drawer）
+open_sub() { # $1=入口文本 $2=入口兜底x $3=入口兜底y $4=子页独有验证文本 $5=重试次数(默认3)
+  local entry="$1" fx="$2" fy="$3" verify="$4" max="${5:-3}" try=1
+  while [ $try -le $max ]; do
+    tap_text "$entry" "$fx" "$fy" || true
+    sleep 1.5
+    if timeout 10 adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 \
+       && timeout 6 adb shell cat /sdcard/ui.xml 2>/dev/null | grep -qF "$verify"; then
+      echo "SUB $entry open (try $try, verify=$verify)"
+      return 0
+    fi
+    echo "SUB $entry miss (try $try, verify=$verify) -> back+retry"
+    adb shell input keyevent 4; sleep 1.5
+    try=$((try+1))
+  done
+  echo "SUB $entry FAILED after $max tries"
+  return 1
+}
+
 sleep 3
 SHOT 01-play-portrait
 
@@ -112,21 +134,31 @@ adb shell input keyevent 4; sleep 1.5
 SHOT 03c-drawer-closed
 ensure_fg
 
-# —— 竖屏：设置页（坐标直点 ⚙） ——
+# —— 竖屏：设置页（坐标直点 ⚙；v9 ④ 等待 3s 让面板入场动画走稳） ——
 adb shell input tap "$CX" "$CY"; sleep 0.8
 adb shell input tap 810 $P_BAR_Y
-sleep 2
+sleep 3
 SHOT 04-settings-portrait
 dump_ui ui-settings-portrait.xml
-# 进阶调优子页（v6：直点入口，坐标兜底自 ui-settings-portrait.xml 实证 [285,724][565,860]）
-tap_text "进阶调优" 425 792 || true
-sleep 1.5
-SHOT 05-settings-advanced
-adb shell input keyevent 4; sleep 1.2   # 收进阶子页回设置
-# 诊断日志页（三标签；tap_text 坐标兜底自实证 [727,583][1007,719]）
-tap_text "崩溃日志" 867 651 || true
+# 进阶调优子页（v9 ①：点后 dump 验证「自愈门槛」，不对重试）
+open_sub "进阶调优" 425 792 "自愈门槛" 3
 sleep 1
-SHOT 06-diagnostics
+SHOT 05-settings-advanced
+dump_ui ui-advanced-portrait.xml
+adb shell input keyevent 4; sleep 1.5   # 收进阶子页回设置
+# 诊断日志页（v9 ②：先点入口行「诊断日志」，进页后三页签为独立文本，逐页签点拍）
+open_sub "诊断日志" 867 651 "崩溃日志" 3
+sleep 1
+SHOT 06-diagnostics            # 默认页签=运行台账
+dump_ui ui-diagnostics-ledger.xml
+tap_text "崩溃日志" || true
+sleep 1
+SHOT 06c-diagnostics-crash
+dump_ui ui-diagnostics-crash.xml
+tap_text "自诊断" || true
+sleep 1.5
+SHOT 06d-diagnostics-selfcheck
+dump_ui ui-diagnostics-selfcheck.xml
 adb shell input keyevent 4; sleep 1.5   # 收诊断页（返回键）
 SHOT 06b-settings-closed
 ensure_fg
@@ -189,8 +221,9 @@ ensure_fg
 
 adb shell input tap "$L_CX" "$L_CY"; sleep 0.8
 adb shell input tap 2131 $L_BAR_Y
-sleep 2
+sleep 3
 SHOT 10-settings-landscape
+dump_ui ui-settings-landscape.xml       # v9 ③：横屏设置 dump，核实入口组卡片是否缺失
 adb shell input keyevent 4; sleep 1.5   # 收设置（返回键）
 ensure_fg
 

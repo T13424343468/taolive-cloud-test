@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.taolive.phone"
-    android:versionCode="57"
-    android:versionName="2.0.0">
+    android:versionCode="1"
+    android:versionName="1.0.0">
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
   <uses-permission android:name="android.permission.INTERNET" />
-  <application android:label="TaoLive" android:icon="@mipmap/ic_launcher">
-    <activity android:name="TaoLive.Phone.MainActivity" android:exported="true">
-      <intent-filter>
-        <action android:name="android.intent.action.MAIN" />
-        <category android:name="android.intent.category.LAUNCHER" />
-      </intent-filter>
-    </activity>
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!-- 手机口径：明文直播源放行 + 全屏主题（水墨深底，与电视端同源）；
+       主入口 Activity 不在清单声明（vc53 口径）：MainLauncher 特性已在壳层注册，
+       清单再声明一次=两个启动器入口=桌面出两个图标（真机 11-15 老板镜实锤） -->
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+  <application android:label="TaoLive 手机版" android:icon="@mipmap/ic_launcher"
+               android:theme="@style/TaoLiveTheme"
+               android:usesCleartextTraffic="true">
   </application>
 </manifest>

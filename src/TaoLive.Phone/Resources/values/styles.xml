@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- 道映水墨主题基础样式（vc53 同源：全屏、无标题栏）
+       #65 老板令 2026-11-15：窗底改不透明水墨深底（与切台遮罩同色 #2B333B）——
+       开机到首帧之间不再露暖宣浅底白屏，黑底+延迟亮牌 Loading，首帧出画自动消失 -->
+  <style name="TaoLiveTheme" parent="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+    <item name="android:windowBackground">#2B333B</item>
+  </style>
+</resources>

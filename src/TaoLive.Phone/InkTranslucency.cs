@@ -88,6 +88,28 @@ public static class InkTranslucency
     /// <summary>自适应信息条底色：#66 起改高透+按系统亮度连续自适应（亮屏深托字、暗房高透），文字由可读性阴影兜底。</summary>
     public static Color InfoColor(Context ctx) => Color.Argb(HintAlphaFor(ctx), InkR, InkG, InkB);
 
+    /// <summary>vc116 提示胶囊皮（界面元素统一皮口径）：全透明填充 + 胶囊描边（纸白 FocusStrokeAlpha），
+    /// 去水墨实底——提示条不再自带深底，可读性由文字投影兜底。每次亮条重取。</summary>
+    public static GradientDrawable PillBackground(Context ctx)
+    {
+        var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
+        d.SetColor(Color.Transparent);
+        d.SetStroke(1, Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
+        d.SetCornerRadius(999f); // 胶囊
+        return d;
+    }
+
+    /// <summary>vc116 界面元素统一线框皮：全透明填充 + 圆角方形描边（纸白，透明度入参）——
+    /// 控制条按钮/页头 ⟳✕ 钮/筛选框统一用皮；按压态传高透明度即强描边版。</summary>
+    public static GradientDrawable OutlineBox(Context ctx, float cornerDp, int strokeAlpha)
+    {
+        var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
+        d.SetColor(Color.Transparent);
+        d.SetCornerRadius(cornerDp * ctx.Resources!.DisplayMetrics!.Density);
+        d.SetStroke(1, Color.Argb(strokeAlpha, PaperR, PaperG, PaperB));
+        return d;
+    }
+
     /// <summary>信息条完整皮：自适应水墨底 + 纸白细边框圆角（同 FocusDrawable 效果层同构），
     /// #66 风格统一口径——画面上的提示与面板/焦点效果同一套水墨语言。每次亮条重取，亮度变化即生效。</summary>
     public static GradientDrawable HintBackground(Context ctx)

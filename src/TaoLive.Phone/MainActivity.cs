@@ -863,6 +863,9 @@ public partial class MainActivity : Activity
 
     // —— 视图（vc53 BuildUi 皮：视频垫底 + 半透明水墨抽屉 + 信息条 + 节目单 + 亮牌） ———
 
+    /// <summary>vc116⑦ 统一靠边对齐边距（dp）：列表页头/水位行/筛选框统一 16dp 贴边，行内容经 ListView 8dp 内距对齐同一边线。</summary>
+    private const int ListEdgePad = 16;
+
     private void BuildRoot()
     {
         // 水墨主题底（#65 老板令 2026-11-15：改水墨深底 #2B333B，与窗底/切台遮罩同色——
@@ -930,7 +933,7 @@ public partial class MainActivity : Activity
         _emptyState.SetTextColor(InkTranslucency.TextPrimary(this));
         _emptyState.TextSize = UiScale.Item;
         var emptyBg = new GradientDrawable();
-        emptyBg.SetColor(Color.Argb(36, 224, 120, 86)); // 原型 --cinw：警示橙 14% 透明底
+        emptyBg.SetColor(Color.Transparent); // vc116⑪：全透明填充（界面元素统一皮），警示橙描边保留
         emptyBg.SetStroke(UiScale.Px(1), Color.ParseColor("#E07856")); // 原型 --cin 描边
         emptyBg.SetCornerRadius(UiScale.Px(12));
         _emptyState.Background = emptyBg;
@@ -980,7 +983,8 @@ public partial class MainActivity : Activity
         var header = new LinearLayout(this) { Orientation = Orientation.Vertical };
         // 老板令 2026-11-17：列表整体上移让出台标——顶 padding 40→12，页头升到台标上方，
         // 台标横条不再与水位小字叠字；横向一个像素不动，宽度仍由 ApplyListWidth 钳制
-        header.SetPadding(UiScale.Px(48), UiScale.Px(12), UiScale.Px(48), UiScale.Px(8)); // #15 尺寸令
+        // vc116⑦ 统一靠边对齐：页头 padding 顶 20/左右 16/底 16（顶部加高+与水位行/筛选框同边线）
+        header.SetPadding(UiScale.Px(ListEdgePad), UiScale.Px(20), UiScale.Px(ListEdgePad), UiScale.Px(16));
         var titleRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var title = new TextView(this) { Text = "频道列表", TextSize = UiScale.Title };
         title.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -990,19 +994,24 @@ public partial class MainActivity : Activity
         // 页头右侧常驻 ✕ 关闭（与设置面板同款），返回键口径不变
         var titleStretch = new Space(this); // 标题与右侧钮之间弹性撑开，钮顶到右缘
         titleRow.AddView(titleStretch, new LinearLayout.LayoutParams(0, 1, 1f));
-        // vc113 对照原型（02 节列表页头）：⟳ 刷新钮——重拉订阅/重绘列表/刷新当前台节目单
+        // vc116⑧ 页头钮统一皮：⟳ 刷新/✕ 关闭改定尺寸线框钮——40×40 定尺寸、图标居中、OutlineBox 描边、
+        // 垂直居中、间距 8dp（旧纯文字加 padding 撑热区退场）
+        Android.Graphics.Drawables.Drawable HeaderBtnBg() =>
+            InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha);
         var listRefresh = new TextView(this) { Text = "⟳", TextSize = UiScale.Title, Gravity = GravityFlags.Center };
         listRefresh.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(listRefresh);
-        listRefresh.SetPadding(UiScale.Px(24), 0, 0, 0);
+        listRefresh.Background = HeaderBtnBg();
         listRefresh.Click += (_, _) => RefreshChannelList();
-        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(-2, -2) { Gravity = GravityFlags.CenterVertical });
+        titleRow.AddView(listRefresh, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(40))
+        { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(8) });
         var drawerClose = new TextView(this) { Text = "✕", TextSize = UiScale.Title, Gravity = GravityFlags.Center };
         drawerClose.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(drawerClose);
-        drawerClose.SetPadding(UiScale.Px(24), 0, 0, 0);
+        drawerClose.Background = HeaderBtnBg();
         drawerClose.Click += (_, _) => ShowPlayer();
-        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(-2, -2) { Gravity = GravityFlags.CenterVertical });
+        titleRow.AddView(drawerClose, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(40))
+        { Gravity = GravityFlags.CenterVertical, LeftMargin = UiScale.Px(8) });
         header.AddView(titleRow);
         _listPage.AddView(header);
 
@@ -1038,7 +1047,8 @@ public partial class MainActivity : Activity
         _waterLevelText.SetSingleLine(true); // 走查令 2026-11-27：水位行不竖排换行（宽度由 ApplyListWidth 页头项兜底，极端钳制走省略号）
         _waterLevelText.Ellipsize = TextUtils.TruncateAt.End;
         UpdateWaterLevel();
-        _listPage.AddView(_waterLevelText, new LinearLayout.LayoutParams(-1, -2) { LeftMargin = UiScale.Px(48), RightMargin = UiScale.Px(48) });
+        _listPage.AddView(_waterLevelText, new LinearLayout.LayoutParams(-1, -2)
+        { LeftMargin = UiScale.Px(ListEdgePad), RightMargin = UiScale.Px(ListEdgePad) }); // vc116⑦ 统一靠边
 
         // 筛选输入框（老板 2026-11-27 20:2x 拍板「元素肯定都要」；v11 设计稿口径）：数字=频道号前缀、文字=台名包含，
         // 系统输入法；空串恢复全量。过滤只动行装配，不碰频道表与编号语义
@@ -1050,18 +1060,22 @@ public partial class MainActivity : Activity
         filterBox.SetSingleLine(true);
         filterBox.SetTextColor(InkTranslucency.TextPrimary(this));
         filterBox.SetHintTextColor(Color.ParseColor("#8894A0"));
-        filterBox.SetBackgroundResource(0); // 去系统下划线底，走面板同色
-        filterBox.SetBackgroundColor(Color.ParseColor("#223A4750")); // 半透明深底条
+        filterBox.SetBackgroundResource(0); // 去系统下划线底
+        filterBox.Background = InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha); // vc116⑨：全透明+圆角线框（界面元素统一皮）
         filterBox.SetPadding(UiScale.Px(24), UiScale.Px(12), UiScale.Px(24), UiScale.Px(12));
         filterBox.TextChanged += (_, e) =>
         {
             if (_list?.Adapter is ChannelListAdapter adapter)
                 adapter.SetFilter(e.Text?.ToString() ?? "");
         };
-        _listPage.AddView(filterBox, new LinearLayout.LayoutParams(-1, -2) { LeftMargin = UiScale.Px(48), RightMargin = UiScale.Px(48), TopMargin = UiScale.Px(4), BottomMargin = UiScale.Px(8) });
+        _listPage.AddView(filterBox, new LinearLayout.LayoutParams(-1, -2)
+        { LeftMargin = UiScale.Px(ListEdgePad), RightMargin = UiScale.Px(ListEdgePad), TopMargin = UiScale.Px(4), BottomMargin = UiScale.Px(8) }); // vc116⑦ 统一靠边
 
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
+        // vc116⑦：列表左右 8dp 内距+不裁内距——选中态描边收进 8..W-8 不被屏缘裁，行内容对齐 16dp 边线
+        _list.SetPadding(UiScale.Px(8), 0, UiScale.Px(8), 0);
+        _list.SetClipToPadding(false);
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _list.Selector = InkTranslucency.FocusDrawable();
         _list.Adapter = new ChannelListAdapter(this, _channels, _favorites, ch => _precheck.MarkOf(ch), () => _channels[_currentIndex].Id, favoriteOrder: _favStore.Numbers);
@@ -2141,8 +2155,8 @@ public partial class MainActivity : Activity
         return extra.Count;
     }
 
-    /// <summary>列表宽度定宽（v27 老板令定稿，对齐真机 vc113 拍板）：竖屏固定全屏、横屏 45% 屏宽右侧贴边，
-    /// 左侧露出底层画面（规格表「横屏宽度」口径），不随内容/页签/收藏变。
+    /// <summary>列表宽度定宽（v27 老板令定稿，对齐真机 vc113 拍板）：竖屏固定全屏、横屏 45% 屏宽，
+    /// vc116⑩ 老板令：横屏列表改左侧贴边出现（原右侧贴边退场），不随内容/页签/收藏变。
     /// 沿革：vc65 恒定估宽→走查令改实式估宽+上限 0.98 屏→定宽 480dp（真机被钳到满屏，2026-11-27 三单③根因）→45% 比例宽。
     /// 转屏在 OnConfigurationChanged 重算（定宽不依赖内容，转屏即定）。</summary>
     private void ApplyListWidth(IReadOnlyList<Channel> channels)
@@ -2153,7 +2167,7 @@ public partial class MainActivity : Activity
             ? Math.Max((int)(screenW * 0.45f), 1) // 横屏 45% 屏宽（原型 .landscape .overlay-list{width:45%}）
             : screenW; // 竖屏固定全屏
         _listPage.LayoutParameters = new FrameLayout.LayoutParams(width, FrameLayout.LayoutParams.MatchParent,
-            landscape ? GravityFlags.Right : GravityFlags.Left); // 横屏右贴边，左侧露出画面
+            GravityFlags.Left); // vc116⑩：横竖屏统一左侧贴边
     }
 
     /// <summary>vc111 页签一页放全兜底（老板令：系统显示大小三档都要一屏显全）：布局后实测总宽，
@@ -2204,6 +2218,19 @@ public partial class MainActivity : Activity
         _listPage.SetPadding(0, top, 0, 0);
     }
 
+    /// <summary>vc116⑬ 子页面顶部安全区避让：挖孔/状态栏高度 + 8dp 呼吸边，与列表页同口径——
+    /// 设置面板/诊断/统计/进阶调优/关于页统一调用，子页面标题不再顶到挖孔里。</summary>
+    private int SafeTopInset(int basePx)
+    {
+        if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } insets)
+        {
+            int cutout = insets.GetInsets(WindowInsets.Type.DisplayCutout()).Top;
+            int status = insets.GetInsets(WindowInsets.Type.StatusBars()).Top;
+            return Math.Max(basePx, Math.Max(cutout, status) + UiScale.Px(8));
+        }
+        return basePx;
+    }
+
     // —— 预测式返回（2026-11-27 真机反馈第7条：去「再次滑动返回」二次确认，滑一次即走） ———
 
     private Java.Lang.Object? _backCallback; // 持引用防 GC 回收（Java 侧注册的是代理对象）
@@ -2224,8 +2251,7 @@ public partial class MainActivity : Activity
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         if (landscape)
         {
-            RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏退全屏回竖屏
-            ShowToast("竖屏");
+            RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏退全屏回竖屏（vc116⑭ 去提示弹条）
         }
         else
         {
@@ -2299,14 +2325,14 @@ public partial class MainActivity : Activity
     {
         _toast = new LinearLayout(this) { Orientation = Orientation.Horizontal }; // Gravity 只读，SetGravity 落后置
         _toast.SetGravity(GravityFlags.CenterVertical);
-        _toast.Background = InkTranslucency.HintBackground(this); // #66 高透自适应水墨皮
+        _toast.Background = InkTranslucency.PillBackground(this); // vc116：全透明+胶囊描边（界面元素统一皮）
         _toast.SetPadding(UiScale.Px(20), UiScale.Px(8), UiScale.Px(20), UiScale.Px(8));
         _toast.Visibility = ViewStates.Invisible;
 
         _toastLeft = new TextView(this) { TextSize = UiScale.Item };
         _toastLeft.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(_toastLeft);
-        _toastLeft.SetSingleLine(true);
+        _toastLeft.SetMaxLines(2); // vc116⑫：胶囊最多两行自适应（单行截断退场），超长仍走省略号
         _toastLeft.Ellipsize = TextUtils.TruncateAt.End;
         _toast.AddView(_toastLeft, new LinearLayout.LayoutParams(-2, -2));
 
@@ -2375,7 +2401,7 @@ public partial class MainActivity : Activity
     private void ShowToast(string text)
     {
         _toastLeft.Text = text;
-        _toast.Background = InkTranslucency.HintBackground(this);
+        _toast.Background = InkTranslucency.PillBackground(this); // vc116：全透明+胶囊描边（界面元素统一皮）
         _toast.Visibility = ViewStates.Visible;
         PositionToastPill();
         _main.RemoveCallbacks(_toastHide);
@@ -2658,7 +2684,8 @@ public partial class MainActivity : Activity
             var ctx = _ctx;
             var density = ctx.Resources!.DisplayMetrics!.Density;
             var h = new RowHolder { Line = new LinearLayout(ctx) { Orientation = Orientation.Horizontal } };
-            h.Line.SetPadding(UiScale.Px(48), UiScale.Px(20), UiScale.Px(48), UiScale.Px(20)); // #15 尺寸令：行高随档
+            // vc116⑦：行内左右 8dp（叠加 ListView 8dp 内距=内容对齐 16dp 边线）、垂直 20→12 降行高
+            h.Line.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12));
 
             h.Header = new TextView(ctx);
             h.Header.Ellipsize = TextUtils.TruncateAt.End; // vc65：面板钳到半屏等极端场景走省略号，不折行

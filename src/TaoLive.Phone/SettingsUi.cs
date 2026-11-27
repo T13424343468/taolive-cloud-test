@@ -172,7 +172,7 @@ public partial class MainActivity
         // vc111 老板令「全页面统一电视端水墨透光」：面板改自适应透底（亮屏76/暗房108），画面透出、
         // 文字清晰由可读性投影兜底（电视端 vc53 同口径）；不再用近实色底闷住画面。
         panel.SetBackgroundColor(InkTranslucency.PanelColor(this));
-        panel.SetPadding(Dp(20), Dp(10), Dp(20), Dp(12));
+        panel.SetPadding(Dp(20), SafeTopInset(Dp(10)), Dp(20), Dp(12)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
         panel.Visibility = ViewStates.Gone;
 
         // 页头：返回 + 标题（v26 原型口径）
@@ -529,12 +529,13 @@ public partial class MainActivity
         // —— vc113 原型对照令（03 节设置页定稿）：分组卡片+真实 switch 控件——
         // 开关组卡片（即时生效）+ 入口组卡片（逐级进入），两组卡片分隔；行=标题+副标题+右缘控件/箭头。
 
-        // 卡片容器（原型 .set-card：card 底、edge 描边、12 圆角、行间 1px 分隔线）
+        // 卡片容器（原型 .set-card：edge 描边、12 圆角、行间 1px 分隔线；vc116⑮ 界面元素统一皮：
+        // 实底 #2B333B 退场，改全透明填充+描边线框风）
         LinearLayout NewCard()
         {
             var card = new LinearLayout(this) { Orientation = Orientation.Vertical };
             var bg = new GradientDrawable();
-            bg.SetColor(Color.ParseColor("#2B333B")); // 原型 --card
+            bg.SetColor(Color.Transparent); // vc116⑮：全透明填充
             bg.SetStroke(Dp(1), Color.ParseColor("#3A444D")); // 原型 --line 作描边
             bg.SetCornerRadius(Dp(12));
             card.Background = bg;
@@ -851,7 +852,7 @@ public partial class MainActivity
     {
         int pad = Dp(24);
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        box.SetPadding(pad, pad, pad, pad);
+        box.SetPadding(pad, SafeTopInset(pad), pad, pad); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
         box.SetBackgroundColor(InkTranslucency.PanelColor(this));
         var titleView = new TextView(this) { Text = title, TextSize = UiScale.Title };
         titleView.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -959,7 +960,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(20);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, Dp(10), pad, Dp(14));
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // topbar：返回 + 标题 + 三常驻钮（📄📁🗑）
@@ -1080,7 +1081,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(20);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, Dp(10), pad, Dp(14));
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(14)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
@@ -1240,7 +1241,7 @@ public partial class MainActivity
         {
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int padAdv = Dp(24);
-            box.SetPadding(padAdv, padAdv, padAdv, padAdv);
+            box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, padAdv); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边
             box.SetBackgroundColor(InkTranslucency.PanelColorDeep(this)); // 底色加深一档，不跟画面亮度走
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -1381,7 +1382,12 @@ public partial class MainActivity
             overlay.Click += (_, _) => CloseAdvGearSheetOnly();
 
             var sheet = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            sheet.SetBackgroundColor(InkTranslucency.PanelColorDeep(this)); // 底部档位层底色加深一档，不跟画面亮度走
+            // vc116⑯：档位弹层与底页隔断——底色加深至 216、描边+四角圆角 14dp、左右/底部 margin 12dp（仍半透明口径）
+            var sheetBg = new GradientDrawable();
+            sheetBg.SetColor(Color.Argb(216, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
+            sheetBg.SetStroke(1, Color.Argb(InkTranslucency.FocusStrokeAlpha, InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
+            sheetBg.SetCornerRadius(Dp(14));
+            sheet.Background = sheetBg;
             int padSheet = Dp(20);
             sheet.SetPadding(padSheet, Dp(14), padSheet, Dp(18));
 
@@ -1426,10 +1432,11 @@ public partial class MainActivity
                     refresh(); // 原位刷新行文案，不整页重建
                     CloseAdvGearSheetOnly();
                 };
-                sheet.AddView(opt, new LinearLayout.LayoutParams(-1, -2));
+                sheet.AddView(opt, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(6) }); // vc116⑯：选项行间距，治零间距贴死
             }
 
-            overlay.AddView(sheet, new FrameLayout.LayoutParams(-1, -2) { Gravity = GravityFlags.Bottom });
+            overlay.AddView(sheet, new FrameLayout.LayoutParams(-1, -2)
+            { Gravity = GravityFlags.Bottom, LeftMargin = Dp(12), RightMargin = Dp(12), BottomMargin = Dp(12) }); // vc116⑯：弹层与底页隔断
             _advGearOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
         }

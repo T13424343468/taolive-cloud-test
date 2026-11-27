@@ -1,0 +1,41 @@
+TaoLive 手机版 1.0.0 vc110 交付说明（2026-11-27 晚，老板批次 11 条全落码）
+============================================================================
+
+包名: com.taolive.phone
+版本: versionCode 110 / versionName 1.0.0（版本只增不重，上一交付 vc2）
+应用名: TaoLive（老板令：桌面图标名去掉「手机版」）
+APK: com.taolive.phone-Signed.apk (22,667,060 字节)
+SHA256: 0eab7a30a0e270b1eca3cd7fbfb463555bf83a75592a08bbe0521376fb0fa13b
+源码: /root/workspace/taolive-work/taolive-2p0（phone-src，HEAD f1423b8 + b46005e）
+
+本批落码（老板 11 条清单 + 追加拍板，全部完成）
+------------------------------------------------
+1  音量加减按钮去掉（控制条竖屏 6 钮单行）
+2  锁屏按钮三态图标：解锁=开锁 / 锁定横屏=横屏锁 / 锁定竖屏=竖屏锁（自绘单色）
+3  翻转按钮两态图标：竖屏=进全屏 / 横屏=返回竖屏（自绘单色）
+4  亮度/音量手势整屏触控区+行程整屏，指示条缩小
+5  画面等比拉满：横屏满高外溢、竖屏满宽黑边（ApplyVideoAspect 重写）
+6  指示条移黑区：竖屏顶部黑区居中 / 横屏右侧黑区竖向居中，转屏即重落位
+7  横屏侧滑返回+预测式返回（API 33+ OnBackInvokedCallback；横屏退全屏回竖屏、竖屏走退出确认）
+8  切后台音画即停，回前台无缝续播
+9  设置页 v26 原型卡片式重做（页头返回+流式开关行+三页签诊断卡片：运行台账/崩溃日志/自诊断+一键清理）；
+   列表页筛选框/分类/路源标/源数量随 vc109 源码重出包即齐
+10 节目单拆底部条（控制条行内读数，独立浮层撤除）
+11 边缘手势（TouchUi）
+追加 拍板①：尺寸跟系统「显示大小」三档（17sp 基准×系统字体缩放，间距随密度自动跟随），
+      App 内撤「显示大小」设置项；老板当前=较小档，装上即小一档
+追加 拍板②：应用名去「手机版」→「TaoLive」（badging 亲验 application-label='TaoLive'）
+
+版本锚（三处一致）
+------------------
+- AndroidManifest: versionCode=110 / versionName=1.0.0
+- csproj: ApplicationVersion=110 / ApplicationDisplayVersion=1.0.0
+- aapt2 badging 亲验: versionCode='110' versionName='1.0.0' ✔
+
+验证
+----
+- Release 编译: 0 错 0 警（2 分 52 秒）
+- dotnet test: 406/406 通过（0 失败 0 跳过）
+- aapt2 badging: 包名/版本/应用名逐项亲验 ✔
+- strings 亲验: APK 程序集存储含「筛选：数字=频道号」✔
+- 签名链: C1 证书链（keystore/debug.keystore，与历史交付同链，覆盖安装不双图标）

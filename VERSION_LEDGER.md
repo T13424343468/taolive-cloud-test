@@ -233,3 +233,13 @@
 - 换票频控 4→2（老板令）：官方源被拒流时 4 次换票全是白打，60 秒内 2 次封顶省下的时间交备源顶上；频控测试对齐新阈值
 - 统一验证：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（0 失败 0 跳过）；badging 亲验 146/1.0.36；apksigner verify 过；全量代码审查两轮（diff 全扫+改动区逐行），实锤 5 缺陷全修
 - 交付包：dist-phone/TaoLive-1.0.36-vc146/（apk sha256 2d202c2d…252a6）+ 同名 zip，文件卡片已发
+
+## vc147 / 1.0.37（2026-11-28 深夜 老板令「再审 直到审不出问题」——全量逐行审读归零 + 四刀修正收口）
+- 版本锚：csproj 147/1.0.37 = manifest 147/1.0.37 = badging 147/1.0.37（三处对账一致，亲验）
+- 全量逐行审读归零：手机端全部非 Tv 非 Test 源文件逐行通读完毕（Session/Foundation/Model/Phone 全层），本轮实锤 1 缺陷（刀⑧）已修，其余无新缺陷；Tv 端老板口径低优先未审
+- 刀①Heal 清 _currentFiller（MediaCache.cs L110）：自愈重建缓存层时旧灌水器引用不清，残引用继续写已废弃实例
+- 刀②Shutdown 补停（PlaybackSessionManager.cs）：Current/Standby 双会话 Supersede 补齐，关播后台会话不残留
+- 刀③淘汰落盘（ChannelPrecheck.WriteSourceResult 补 HealthStore?.MarkDirty()）：探活淘汰结果不落盘，重启后白淘汰
+- 刀④贴边自滚失效（MainActivity.cs L2540 PumpEdgeScroll：SmoothScrollBy(_dragScrollDx, 0) → SmoothScrollBy(0, _dragScrollDx)）：ListView 纵向滚动只认 dy，原 dx 恒 0 无效
+- 统一验证（刀⑧落码后按改动自查令重跑）：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（0 失败）；badging 亲验 147/1.0.37；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.37-vc147/（apk sha256 25aec036…53cdb）+ 同名 zip，文件卡片已发

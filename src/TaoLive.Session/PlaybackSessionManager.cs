@@ -176,6 +176,10 @@ public sealed class PlaybackSessionManager
         {
             session.Supersede(); // vc68 起非 Idle 一律停，含 Failed 态漏音内核
         }
+        // vc147 刀⑥：Begin() 建的 Current 未 Playing 前不在会话表（vc73 起 Playing 才 TryAdd 入表），
+        // 只遍历表会漏停——Current/Standby 再各自补一刀（Supersede 幂等，重复无害）。
+        Current?.Supersede();
+        Standby?.Supersede();
         Current = null;
         Standby = null;
     }

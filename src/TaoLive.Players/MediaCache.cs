@@ -107,6 +107,7 @@ public static class MediaCache
             try { _cache?.Release(); } catch { /* 释放失败无害：目录连根拔兜底 */ }
             _cache = null;
             _fetchFactory = null; // 统一出口作废：下个装配周期按新缓存重建（Wrap 单例键解除）
+            _currentFiller = null; // vc146 刀④：旧灌水器随缓存作废，水位读数回 null（显示层保持上一拍），不喂陈旧账
             try { if (_dirPath is not null && Directory.Exists(_dirPath)) Directory.Delete(_dirPath, true); }
             catch { /* 目录拔不掉无害：Get 初始化失败路径再拔 */ }
             _retryNotBeforeMs = now + HealMinIntervalMs; // 重建闸：窗内直连便道

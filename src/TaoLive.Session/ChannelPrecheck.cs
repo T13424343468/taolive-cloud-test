@@ -244,6 +244,7 @@ public class ChannelPrecheck
             if (!ok && entry.ConsecutiveFails >= RetireAfterConsecutiveFails)
             {
                 _sourceHealth.TryRemove(key, out _); // 连挂自动淘汰：不再被选源取用，交回预检重探
+                HealthStore?.MarkDirty(); // vc147 刀⑦：淘汰即删账，删除也要落盘——否则盘上死账滞留到下次写账才消失
                 retired = true;
             }
             else

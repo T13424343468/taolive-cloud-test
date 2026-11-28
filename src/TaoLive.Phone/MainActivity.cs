@@ -2537,7 +2537,7 @@ public partial class MainActivity : Activity
     private void PumpEdgeScroll()
     {
         if (_dragChannel is null || _dragScrollDx == 0) { _dragScrolling = false; return; }
-        _list.SmoothScrollBy(_dragScrollDx, 0);
+        _list.SmoothScrollBy(0, _dragScrollDx); // vc147 刀⑧：ListView 纵向列表 SmoothScrollBy 只认 dy（dx 被忽略），原 (量,0) 贴边自滚恒为 0 整个失效
         _edgeScrollRunnable ??= new Java.Lang.Runnable(PumpEdgeScroll);
         _edgeScrollHandler.PostDelayed(_edgeScrollRunnable, 16);
     }

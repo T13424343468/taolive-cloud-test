@@ -57,6 +57,7 @@ public partial class MainActivity : Activity
     private View _toastBalR = default!;           // vc121 包孔扶正：右侧平衡占位（左段更宽时补差值，默认 0 宽）
     private int _cutoutHoleW;                     // 挖孔宽（px，0=无挖孔信息走兜底居中）
     private int _cutoutHoleCenterX;               // 挖孔中心 X（px）
+    private int _pillGeoRetries;                  // vc133：挖孔几何未就绪时的等帧重试计数（首颗胶囊 insets 未挂上踩空）
     private int _cutoutHoleCenterY;               // 挖孔中心 Y（px）
     // vc124 老板令（真机「胶囊从来没包住孔」实锤）：空态胶囊重构成系统胶囊同款三段式——
     // 左状态行 + 中段孔位空档 + 右可点链接行，孔落在胶囊正中、内容分两侧（系统状态栏胶囊口径）
@@ -2712,16 +2713,17 @@ public partial class MainActivity : Activity
                 int pw = _toast.PaddingLeft + _toast.PaddingRight + Math.Max(topW, botW);
                 int ph = _toast.PaddingTop + _toast.PaddingBottom + Math.Max(topH, botH) * 2 + Math.Max(1, _cutoutHoleW);
                 ph = Math.Max(ph, _toast.MinimumHeight);
-                // vc132 老板令（14:32「向下拉高」）：高度不足孔正中所需时拉高补足（孔居竖向正中），
-                // 超出时向下加高不裁字；vc126/131 的「宁裁字不偏心」钳制造场
-                int minPh = Math.Max(1, (_cutoutHoleCenterY - UiScale.Dp(8)) * 2);
-                if (ph < minPh) { ph = minPh; lp.Height = ph; }
-                else lp.Height = ViewGroup.LayoutParams.WrapContent; // 解除上一帧钳制，防陈旧高度裁字
+                // vc133 老板令（15:07 拍板方案A）：横屏撤「向下拉高」补足——横屏孔心在屏竖向正中，
+                // minPh=2×(Cy−8dp) 会把胶囊拉到近全屏高（真机实锤 583px≈96%），文字挤顶、空档脱离
+                // 真孔、下段盖控制条。恢复内容高+孔居竖向正中（vc131 口径），胶囊只包住孔和文字。
+                lp.Height = ViewGroup.LayoutParams.WrapContent;
                 _toast.LayoutParameters = lp;
-                float tx = _cutoutHoleCenterX - pw / 2f; // 孔横向尽量居中；孔贴左缘时钳 0，孔仍完整包住
-                if (tx < 0) tx = 0;
+                // vc133 老板令（15:07 拍板方案B项）：左缘钳 8dp——孔贴左缘机型 tx=max(0,…) 恒 0，
+                // 左弧贴屏缘被裁（真机实锤 x=0）；钳 8dp 后左弧完整，孔心右偏 8dp 仍完整包住
+                //（胶囊内距 10dp/侧 > 8dp 偏移，孔不会出胶囊）。
+                float tx = Math.Max(UiScale.Dp(8), _cutoutHoleCenterX - pw / 2f);
                 _toast.TranslationX = tx;
-                float ty = Math.Max(UiScale.Dp(8), _cutoutHoleCenterY - ph / 2f); // 尽量孔居竖向正中；孔贴顶机型钳 8dp 向下拉高（vc132）
+                float ty = Math.Max(UiScale.Dp(8), _cutoutHoleCenterY - ph / 2f); // 尽量孔居竖向正中；孔贴顶机型钳 8dp
                 _toast.TranslationY = ty;
                 onPositioned?.Invoke(); // 终位落定再亮相，杜绝先现身后跳位
             });
@@ -2792,6 +2794,26 @@ public partial class MainActivity : Activity
         }
         else
         {
+            // vc133 老板令（15:06 拍板方案A）：首颗胶囊在 OnCreate 连接流程亮起时 DecorView 未完成
+            // 首次布局，挖孔几何读到 (0,0,0)——直接落兜底位=顶部居中，位置不对（真机实锤仅首次错）。
+            // 改为等一帧重读几何（最多 3 次），拿到孔位即转包孔定位亮相；仍拿不到才落兜底位。
+            // 首颗亮相即在终位，不闪不跳；无孔机型最多多等 3 帧（≈50ms）可忽略。
+            if (_pillGeoRetries < 3)
+            {
+                _pillGeoRetries++;
+                _toast.Post(() =>
+                {
+                    ReadCutoutGeometry();
+                    if (_cutoutHoleCenterY > 0)
+                    {
+                        _pillGeoRetries = 0;
+                        PositionToastPill(onPositioned); // 几何就绪，转包孔定位（onPositioned 仍在终位后回调）
+                    }
+                    // 未就绪：不亮相不落位，等下一帧重试（onPositioned 未调，胶囊保持隐形）
+                });
+                return; // 兜底 lp 不落，防闪现兜底位
+            }
+            _pillGeoRetries = 0;
             _toast.Orientation = Orientation.Horizontal;
             _toast.SetGravity(GravityFlags.CenterVertical);
             _toastLeft.SetMaxLines(2);

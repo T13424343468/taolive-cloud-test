@@ -100,7 +100,7 @@ public sealed class PlaybackSession
         _player = player ?? throw new ArgumentNullException(nameof(player));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         // 内核回调守卫（闪退镜黄⑤ 11-15）：矩阵外跳转等异常不掀回调链崩进程，落 KernelCallbackFailed 交壳层记台账
-        _player.OnError += (_, e) => GuardKernel(() => OnPlayerError(e.Code));
+        _player.OnError += (_, e) => GuardKernel(() => OnPlayerError(e.Code, e.Message));
         _player.OnFirstFrame += (_, _) => GuardKernel(NotifyFirstFrame);
         // 卡流自救接线（方案书 v99 四镜·卡顿镜 11-15 修）：内核缓冲事件接会话，播放中卡流进 Reconnecting 走看门狗。
         // NotifyStalled 内部有 Playing 态守卫，起播期缓冲不误触发。
@@ -1093,12 +1093,17 @@ public sealed class PlaybackSession
         _player.Dispose();
     }
 
-    private void OnPlayerError(string code)
+    private void OnPlayerError(string code, string? message = null)
     {
         if (!_active)
         {
             return;
         }
+        // vc143 诊断盲区修（真机 19:03 全频道断实锤）：内核已拼好的 cause 链此前在会话层被丢弃，
+        // 诊断页只见裸错误码查不到因——透传落账，宽限/落账/换源行直接见真因
+        var detail = string.IsNullOrWhiteSpace(message)
+            ? $"player error {code}"
+            : $"player error {code} | {message}";
         if (_state is not (PlaybackState.Buffering or PlaybackState.Playing or PlaybackState.Reconnecting))
         {
             return;
@@ -1143,13 +1148,13 @@ public sealed class PlaybackSession
         // 判定必须在 Transition(Failed) 之前：落账后 _state 已是 Failed，宽限判 Buffering 永远轮不到（vc86 审查修正）
         if (_state == PlaybackState.Buffering
             && IsTimeoutClassError(code)
-            && TrySlowConnectGrace($"player error {code}"))
+            && TrySlowConnectGrace(detail))
         {
             return;
         }
-        Transition(PlaybackState.Failed, $"player error {code}");
+        Transition(PlaybackState.Failed, detail);
         // 换源账随真实码（真机诊断 11-15）：诊断页换源行能看到具体错误码，不再只剩裸词
-        TryFailover($"player error {code}");
+        TryFailover(detail);
     }
 
     /// <summary>慢连宽限预算（vc86 老板拍板）：每台封顶 2 次——同族慢源最坏 2×24s 有界，不无限黑屏。</summary>

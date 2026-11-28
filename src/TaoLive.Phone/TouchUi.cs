@@ -389,8 +389,9 @@ public partial class MainActivity
             // 可视盒=视图全域（触控区不变），图标可视盒落圆角让位线（封顶 20dp）
             b.Background = BarButtonBackground();
             b.Click += click;
-            // vc116④：相邻按钮统一 8dp 间距（首钮贴组首不留头距）
-            into.AddView(b, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = into.ChildCount > 0 ? UiScale.Px(8) : 0 });
+            // vc116④：相邻按钮统一间距（首钮贴组首不留头距）；vc143 老板令（2026-11-28 19:07「补10」）：
+            // 原 Px(8) 裸像素≈3dp 物理偏窄（vc127 实锤单位坑），改 Dp(10) 物理 dp 口径
+            into.AddView(b, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = into.ChildCount > 0 ? UiScale.Dp(10) : 0 });
             return b;
         }
 
@@ -407,7 +408,7 @@ public partial class MainActivity
             Clickable = true,
         };
         flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
-        { LeftMargin = UiScale.Px(8) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场
+        { LeftMargin = UiScale.Dp(10) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场；vc143 老板令「补10」Px(8)→Dp(10)
         flipBtn.Background = BarButtonBackground(); // vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，可视盒=视图全域
         flipBtn.Click += (_, _) =>
         {
@@ -421,7 +422,7 @@ public partial class MainActivity
         // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
         var lockBtn = new LockIconView(this) { Clickable = true };
         lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
-        { LeftMargin = UiScale.Px(8) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场
+        { LeftMargin = UiScale.Dp(10) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场；vc143 老板令「补10」Px(8)→Dp(10)
         lockBtn.Background = BarButtonBackground(); // vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，可视盒=视图全域
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
@@ -443,7 +444,8 @@ public partial class MainActivity
         var space = new View(this);
         btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
         btnRow.AddView(right, new LinearLayout.LayoutParams(-2, -2) { RightMargin = cornerClear });
-        _controlBar.AddView(btnRow);
+        // vc143 老板令（2026-11-28 19:07「补10」）：文字行→按钮行上间距补 10dp（原 0 紧贴），横竖屏同口径
+        _controlBar.AddView(btnRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent) { TopMargin = UiScale.Dp(10) });
 
         RefreshLockButton();
         _controlBar.Visibility = ViewStates.Gone;

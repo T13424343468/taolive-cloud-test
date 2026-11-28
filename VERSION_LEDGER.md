@@ -183,6 +183,15 @@
 - 交付包：dist-phone/TaoLive-1.0.32-vc142/（apk sha256 0956c311…ac3d1）+ 同名 zip，文件卡片已发
 - git：commit 0825bcf 已推 phone-src（触发云测）
 
+## vc143 / 1.0.33（2026-11-28 19:14 老板令「快出」——vc142 真机全频道断流根因追查诊断盲区修 + 控制条按钮间距补10）
+- 版本锚：csproj 143/1.0.33 = manifest 143/1.0.33 = badging 143/1.0.33（三处对账一致，亲验）
+- 诊断盲区修（老板令「马上全速去查 必须查到根因」追查产物）：PlaybackSession L103 错误订阅只取 e.Code，内核已拼好的 cause 链（ExoPlayerPlayer L930-933 error.Message+Cause）在会话层被丢弃——诊断页只见裸「player error ERROR_CODE_IO_UNSPECIFIED」查不到因。改为透传 e.Message：OnPlayerError(code, message) 拼 detail 落宽限/Failed/换源三行，诊断页直接见真因
+- 根因追查留账（未结）：病灶钉死在 vc140 接入的缓存层（MediaCache/SimpleCache）——探针绕缓存层同源同刻成功、内核全 URL 亚秒全败、vc140 起缓存路径真机从未播通过；media3 1.11.1 源码核实 SimpleCache 初始化/索引 IO 失败即永久记 initializationException，之后每次 startReadWrite 秒抛 CacheException（FLAG_IGNORE_CACHE_ON_ERROR 只免下一次且每次新实例重置），与真机日志逐条吻合。真机侧触发因（坏索引/磁盘等）待 vc143 诊断页读真因后手术
+- 控制条按钮间距补10（老板拍板）：TouchUi.cs 四处——AddIcon/flipBtn/lockBtn LeftMargin Px(8)→Dp(10)（vc127 实锤单位坑，裸像素≈3dp 物理），btnRow 加 TopMargin Dp(10)（原 0 紧贴）；横竖屏同口径
+- 统一验证：Release -m:1 编译 0 错 0 警；dotnet test 全测 417/417 全绿；badging 亲验 143/1.0.33；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.33-vc143/（apk sha256 8346809d…67b9cc）+ 同名 zip，文件卡片已发
+
+
 ## vc140 / 1.0.30（2026-11-28 晚 老板拍板「大手术一次到位」——vc94 试探并发引擎收编进灌水器，vc139 不出包作废）
 - 版本锚：csproj 140/1.0.30 = manifest 140/1.0.30 = badging 140/1.0.30（三处对账一致，亲验）
 - 手术内容（老板 2026-11-28 全程拍板）：①全局分析令「各策略互相配合不拆台」→ 揪出 vc94 内存预取器 30 秒水位 vs vc139 磁盘灌水器 60 秒水位双拉拆台；推荐 C（预取器收编进统一数据面）+ 终局唯一解法=一个水位大脑，老板批「大手术要做」「直接手术」「一次到位」，vc139 不出包 ②Foundation 新增 FillThrottle 试探引擎（纯 C# 可测）：档位 0..2、采样 5 秒、观察期 20 秒、被拒归零+SourceTemperStore、指数退避 2s~5min、水满不发新路、Reset 清档位退避（脾气账持久化不清）、PruneBackoff 同台滚动重整 ③MediaCache.CacheFiller 升级为唯一水位大脑：PumpTick 按档位 budget=1+ProbeLevel 发并发路（每路经统一出口 _fetchFactory 写穿落盘）、在途账 _inFlight 防重发、成功 OnGood/429·403 OnRejected/其他 OnFailed、换台 throttle.Reset() 同台滚动只 PruneBackoff、水位=aheadMs 已落盘领先量 ④拆旧件：ParallelPrefetcher+FetchRequest 删除；ParallelPrefetchDataSource 瘦身（清单 Open 解析+多档带宽回调+ServeBytes）；RacingDataSourceFactory 单参构造；ExoPlayerPlayer 清装配/回滚/Dispose 段（_temperStore 保留传入 Wrap）⑤测试改写：Vc94ParallelWaterTests 预取器段改指 FillThrottle（escalation/rejection/good/backoff/prune/reset 九用例语义保留，generation/byte-cap/effective-water 随死件删）；Vc96PrefetchGateTests 删除（开关拆除）。

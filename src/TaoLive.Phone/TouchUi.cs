@@ -166,8 +166,8 @@ public partial class MainActivity
         }
     }
 
-    /// <summary>悬浮指示条落位（vc121 老板令定稿：竖横屏永远亮左、音右，各在黑区；
-    /// 竖屏特殊点=在上半区黑区，横屏=左右黑区垂直居中）。转屏重算。</summary>
+    /// <summary>悬浮指示条落位（vc129 老板令定稿：竖屏亮左/音右在上半区黑区；横屏两条都垂直居中、
+    /// 各贴画面左右缘外侧留 8dp，对称落位）。转屏重算。</summary>
     internal void PositionHud()
     {
         if (_playerPage is null) return;
@@ -189,30 +189,27 @@ public partial class MainActivity
         int barW = bar.Width, barH = bar.Height;
         if (landscape)
         {
-            // 横屏：条落各自侧黑区水平居中——按画面实际区域算，黑区窄于条兜底 8dp 贴边
-            int screenW = Resources!.DisplayMetrics!.WidthPixels;
-            int screenH = Resources.DisplayMetrics.HeightPixels;
+            // vc129 老板令（2026-11-28「上下都居中 左右贴画面缘往外留边距」拍板）：横屏两条对称落位——
+            // 都垂直居中；亮度条贴画面左缘外侧、音量条贴画面右缘外侧，各留 8dp。不再按黑区居中、
+            // 不再避孔（vc128 顶对齐避孔口径退场；真实孔径若切条真机见再调）。
+            int margin = UiScale.Px(8);
+            int effW = barW > 0 ? barW : UiScale.Px(28 + HudTrackWidthDp + 28); // 面板宽=左右padding+轨道宽
             int videoLeft = _videoView is { } vv && vv.Width > 0 ? vv.Left : 0;
+            int screenW = Resources!.DisplayMetrics!.WidthPixels;
             int videoRight = _videoView is { } vv2 && vv2.Width > 0 ? vv2.Right : screenW;
-            int blackW = left ? videoLeft : screenW - videoRight;
-            int margin = blackW > 0 ? (blackW - barW) / 2 : UiScale.Px(8);
+            lp.TopMargin = 0; lp.LeftMargin = 0; lp.RightMargin = 0;
             if (left)
             {
-                lp.LeftMargin = Math.Max(margin, UiScale.Px(8)); lp.RightMargin = 0;
-                // vc128 老板令（真机截图「横屏亮度元素依然被孔区覆盖」实锤）：横屏孔落左缘垂直居中，
-                // 亮度条原垂直居中正好扎进孔带——改顶对齐，条顶压到孔带下缘之下；孔位走统一
-                // ReadHoleRect（真值优先、推算兜底），条底出屏再钳回。
-                var (hcx, hcy, hd) = ReadHoleRect();
-                int holeBottom = hcy > 0 ? hcy + hd / 2 : screenH / 2;
-                lp.Gravity = GravityFlags.Top | GravityFlags.Left;
-                int barHEst = barH > 0 ? barH : UiScale.Px(HudIconDp + 12 + HudTrackDp) + UiScale.Px(40);
-                lp.TopMargin = Math.Min(holeBottom + UiScale.Px(8), Math.Max(screenH - barHEst - UiScale.Px(8), 0));
+                // 条右缘=画面左缘−8dp；画面未布局兜底贴屏左 8dp
+                lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Left;
+                lp.LeftMargin = Math.Max(videoLeft - margin - effW, UiScale.Px(8));
             }
             else
             {
+                // 条左缘=画面右缘+8dp；黑区窄于条兜底贴屏右 8dp
                 lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Right;
-                lp.RightMargin = Math.Max(margin, UiScale.Px(8)); lp.LeftMargin = 0;
-                lp.TopMargin = 0;
+                int rightGap = screenW - videoRight;
+                lp.RightMargin = rightGap > margin + effW ? rightGap - margin - effW : UiScale.Px(8);
             }
         }
         else
@@ -336,19 +333,21 @@ public partial class MainActivity
         _cbNowTime = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
         _cbNowTime.SetPadding(UiScale.Dp(8), 0, 0, 0);
         infoRow.AddView(_cbNowTime);
-        _cbAuxWater = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        // vc129 老板令（真机「节目单信息字号用原来的小字号」）：水位回 vc127 说明字号口径
+        _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
         _cbAuxWater.SetPadding(UiScale.Dp(8), 0, 0, 0);
         infoRow.AddView(_cbAuxWater);
         _controlBar.AddView(infoRow);
 
         // 行2（vc128 老板令）：节目单整行——当前播放 +「· 接下来：…」完整显示，允许自然换行不设上限
         // （老板拍板「节目单显示完整」，多少行都显示；原行2 节目名省略截断口径退场）
+        // vc129 老板令：接下来回 vc127 说明字号口径（真机「节目单信息字号用原来的小字号」）
         var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         _cbNowName = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
         _cbNowName.SetSingleLine(false); // 覆盖 NewBarText 单行口径：当前节目完整可换行
         _cbNowName.Ellipsize = null!;
         nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
-        _cbAuxNext = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        _cbAuxNext = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
         _cbAuxNext.SetSingleLine(false); // 覆盖 NewBarText 单行口径：接下来完整可换行
         _cbAuxNext.Ellipsize = null!;
         nowRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));

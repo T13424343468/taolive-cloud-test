@@ -1545,8 +1545,10 @@ public partial class MainActivity : Activity
                 if (seq != _epgSeq) return; // 换台后旧节目单作废
                 _epgNowTitle = result?.Now.Title;
                 // vc113 对照原型（v24–v26 节目单口径）：接下来两条「HH:mm 节目名」，缺表降级不显
+                // vc129 老板令（真机「换行断点切进节目名，生命树第8集被拆生/命树」实锤）：条目间改
+                // 显式换行——每条节目独占一行，换行只落在条目边界，不再靠自然换行拆开节目名
                 _epgNextText = result is { } r && r.Next.Count > 0
-                    ? string.Join(" · ", r.Next.Take(2).Select(e => $"{e.Start:HH:mm} {e.Title}"))
+                    ? string.Join("\n", r.Next.Take(2).Select(e => $"{e.Start:HH:mm} {e.Title}"))
                     : null;
                 RefreshControlBarInfo();
             });

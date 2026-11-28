@@ -50,6 +50,7 @@ public static class MediaCache
     private static string? _dirPath;        // vc144 自愈：缓存目录（连根拔病索引用）
     internal const long HealMinIntervalMs = 5 * 60_000; // 自愈限频窗：5 分钟最多重建一次，防反复擦建
     private static BackupFiller? _backupFiller;
+    private static CacheFiller? _currentFiller; // vc146 刀④：最新装配的灌水器（页头水位读数口，最新实例口径）
     // vc139 统一出口（老板 2026-11-28 拍板「预取器收编进统一数据面」）：灌水器/备源攒水/预取器后台
     // 拉片共用本工厂——缓存命中零网络，未命中走竞速+换票壳（无预取层，不递归不互扰）边拉边写穿。
     // 双拉拆台根除：预取器与灌水器谁先到谁落盘，另一方命中缓存，弱线带宽不再烧两遍。
@@ -200,7 +201,26 @@ public static class MediaCache
             // 是实例账本），调用方（ExoPlayerPlayer）持有观测工厂复用，内核盲区档重建不再新建 filler，
             // 旧 filler 的 FillLoop(while true) 不再逐个泄漏；Dispose 时经 Filler.Stop 停车。
             var filler = new CacheFiller(_fetchFactory, new FillThrottle(WaterAheadMs, temper));
+            _currentFiller = filler; // vc146 刀④：登记最新装配实例（热备双内核并发装配时后建者为准）
             return new ObservingFactory(BuildPlayerCacheFactory(upstream, ctx), filler);
+        }
+    }
+
+    /// <summary>磁盘缓存真实库存（vc146 刀④，老板 2026-11-28 20:23 批）：最新装配灌水器的领先量读数
+    /// （消费位之后已落盘未播分片时长和）——页头「实时水位」改读此数；内核未装配返回 null（显示层保持上一拍）。
+    /// 内核 BufferedMs 小库存读数挪统计页做参考（vc146 起口径）。</summary>
+    public static long? CurrentAheadMs => _currentFiller?.CurrentAheadMs;
+
+    /// <summary>清掉指定分片的残片缓存（vc146 刀⑤，央1马赛克根因修）：灌水器拉片中途失败（超预算/
+    /// 断流/被拒）时，CacheDataSource 已写入的缓存段不回滚，残片留在库内——播放器随后读该片走
+    /// 「缓存前缀+上游续传」，上游续传失败/过期即喂出错位数据，解码器整屏马赛克到下一分片边界。
+    /// 拉片失败当场清库，残片不落库；误清他人已写满的同键分片无害（下次重拉）。缓存未装配时静默。</summary>
+    internal static void PurgePartial(string url)
+    {
+        lock (_lock)
+        {
+            try { _cache?.RemoveResource(url); }
+            catch { /* 残片清除失败无害：TTL 清扫与 FlagIgnoreCacheOnError 重写兜底 */ }
         }
     }
 
@@ -403,6 +423,24 @@ public static class MediaCache
         /// <summary>停车（vc141）：内核 Dispose 时调，FillLoop 退出、后续 Kick 静默——防孤儿循环泄漏。</summary>
         public void Stop() => _stopped = true;
 
+        /// <summary>磁盘缓存真实库存读数（vc146 刀④，老板 2026-11-28 20:23 批「可以」）：消费位之后
+        /// 已落盘未播分片的时长和（毫秒）——灌水器内部账直接读出，页头水位改读此数（内核贴直播边缘播时
+        /// BufferedMs 常年 0，真实家底在灌水器账上）；清单未换代（无分片表）返回 null，显示层保持上一拍不闪归零。</summary>
+        public long? CurrentAheadMs
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    if (_segments.Count == 0) return null;
+                    long aheadMs = 0;
+                    for (int i = _consumedIndex + 1; i < _segments.Count; i++)
+                        if (_filled.Contains(_segments[i].Url)) aheadMs += (long)(_segments[i].DurationSec * 1000);
+                    return aheadMs;
+                }
+            }
+        }
+
         /// <summary>清单换代：解析成功即换代；换台（清单地址变）旧账全清（分片表/已灌/在途/消费位）
         /// +试探档位退避整账清零（源脾气为持久化账不清）；同台滚动只重整账（滚出清单的条目作废）。</summary>
         public void UpdatePlaylist(string text, string url)
@@ -539,6 +577,7 @@ public static class MediaCache
                 _throttle.OnRejected(url);
                 return;
             }
+            bool failed = false;
             AndroidX.Media3.DataSource.IDataSource? ds = null;
             try
             {
@@ -560,6 +599,7 @@ public static class MediaCache
             }
             catch (Exception ex)
             {
+                failed = true;
                 // 429/403=源拒绝：档位归零+源脾气入账；其他失败=per-URL 指数退避
                 if (ex is AndroidX.Media3.DataSource.HttpDataSourceInvalidResponseCodeException http
                     && (http.ResponseCode == 429 || http.ResponseCode == 403))
@@ -575,6 +615,10 @@ public static class MediaCache
             finally
             {
                 try { ds?.Close(); } catch { /* 回收失败无害 */ }
+                // vc146 刀⑤：拉片失败残片不落库——CacheDataSource 已写段不回滚，残片留库会让播放器
+                // 读到「缓存前缀+上游续传」的错位数据（央1马赛克根因）。须在 ds.Close() 释放分片锁后清，
+                // 锁未放时缓存层会跳过被锁残片，清了等于白清
+                if (failed) MediaCache.PurgePartial(url);
             }
         }
     }

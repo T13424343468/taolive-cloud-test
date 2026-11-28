@@ -205,8 +205,10 @@ public sealed class TicketResolver
 
     /// <summary>vc93 换票频控窗：60 秒。</summary>
     internal const long ReissueWindowMs = 60_000;
-    /// <summary>vc93 换票频控上限：同端点 60 秒内最多 4 次换票，超出熔断交会话退避。</summary>
-    internal const int ReissueMaxPerWindow = 4;
+    /// <summary>vc93 换票频控上限：同端点 60 秒内最多换票次数，超出熔断交会话退避。
+    /// vc146 老板令（2026-11-28「这三点你先落」）4→2：官方源被风控拒流时 4 次换票全是白打，
+    /// 每张新票照样 403——同台 60 秒内 2 次换票封顶，省下的时间交备源顶上。</summary>
+    internal const int ReissueMaxPerWindow = 2;
     private readonly object _reissueGate = new();
     private readonly Dictionary<string, List<long>> _reissueTimes = new();
 

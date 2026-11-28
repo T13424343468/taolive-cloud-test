@@ -95,6 +95,17 @@ public partial class MainActivity : Activity
     private bool _sortMode;      // 收藏排序状态机（v1.0.8 第14项）：列表内长按确认进入，退出恢复默认键位
     private Channel? _sortChannel;
     private readonly List<int> _sortBackup = new();
+    // vc146 收藏拖动排序（老板 2026-11-28 令「像安卓原生拖软件图标那种感觉」）：长按浮起、跟手、
+    // 压到哪行把哪行挤下去（丝滑过渡）、边缘自滚、松手落位保存
+    private Channel? _dragChannel;      // 被拖的台（null=未在拖）
+    private ImageView? _dragGhost;      // 浮起的行截图
+    private float _dragGrabDy;          // 起手时触点相对行顶的偏移（跟手不跳）
+    private GestureDetector? _sortDragDetector;
+    private float _lastListTouchY;      // 最近一次按下在列表内的纵坐标（长按拿起算抓取偏移用）
+    private bool _dragScrolling;        // 边缘自滚循环在跑
+    private int _dragScrollDx;          // 边缘自滚步长（0=停）
+    private readonly Handler _edgeScrollHandler = new(Looper.MainLooper!);
+    private Java.Lang.Runnable? _edgeScrollRunnable;
     private static bool _precheckEnabled = true; // vc105 老板令：以 93 为基线——预检握手+预热入口接回（vc101 拆除令被「以93为基线」覆盖），读盘持久化恢复；
 
     /// <summary>开机全表备货避让节拍（老板批 2026-11-16 第③条·避让）：先让预检探出默认台/收藏台首批绿点，备货再上路。</summary>
@@ -1101,8 +1112,8 @@ public partial class MainActivity : Activity
         _listPage.AddView(tabRow);
         tabRow.Post(() => FitTabsOnePage(tabRow)); // vc111：布局后实测，超屏自动再收（兜系统字体放大等 ROM 差异）
 
-        // 老板令 2026-11-16：页头挂「实时水位」——内核当前攒着还没播的库存（BufferedMs 实时读数），
-        // 1 秒独立泵跟刷，抽屉开着数字一直新鲜；vc85 施工包5 同行并入「画面时刻」（现在−水位换算，源头延迟可标定）；
+        // 老板令 2026-11-16：页头挂「实时水位」——vc146 刀④起改读磁盘缓存层真实库存（灌水器已落盘领先量，
+        // 内核贴边播时 BufferedMs 常年 0 的假象根除），1 秒独立泵跟刷，抽屉开着数字一直新鲜；vc85 施工包5 同行并入「画面时刻」（现在−水位换算，源头延迟可标定）；
         // vc113 原型对照令：水位行在页签行之后、筛选框之前（v31 原型 topbar→tabs→water-line→search-row）
         _waterLevelText = new TextView(this) { TextSize = UiScale.Caption };
         _waterLevelText.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
@@ -1172,13 +1183,26 @@ public partial class MainActivity : Activity
                 ShowToast($"{channel.Name}  暂无信号");
                 return;
             }
-            PlayAt(_channels.ToList().FindIndex(c => c.Id == channel.Id));
+            PlayUserAt(_channels.ToList().FindIndex(c => c.Id == channel.Id));
+        };
+        // vc146 收藏全套+拖动排序（老板 2026-11-28 令）：长按未收藏台=收藏；长按收藏台=拿起拖动
+        // （原生拖图标手感：浮起跟手、压位挤行、松手落位）
+        _list.ItemLongClick += (_, e) =>
+        {
+            var channel = ((ChannelListAdapter)_list.Adapter!).ChannelAt(e.Position);
+            if (channel is null) return;
+            if (_favorites.Contains(channel.Id))
+            {
+                EnterSortMode(channel, silent: true);
+                if (e.View is not null) StartDrag(channel, e.View, _lastListTouchY);
+            }
+            else ToggleFavoriteSelected(channel);
         };
         // vc124 老板令（2026-11-28「左右滑动不能切换分类吗」）：列表横滑切页签——横向位移累计过
         // 60dp 且横向主导即切上一/下一页签（循环）；触摸监听只旁路手势识别不拦截事件，
         // 行点击、纵向滚动、筛选框输入一概不受影响
         var tabSwipe = new GestureDetector(this, new TabSwipeGesture(this));
-        _list.SetOnTouchListener(new TabSwipeTouchListener(tabSwipe));
+        _list.SetOnTouchListener(new SortDragTouchListener(new TabSwipeTouchListener(tabSwipe), this));
         _listPage.AddView(_list, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         // 手机版触屏层（界面岗 2026-11-27）：手势+控制条+方向锁，遥控键位保留兼容
@@ -1223,6 +1247,7 @@ public partial class MainActivity : Activity
     /// <summary>抽屉收起回播放（vc53 口径）：画面本就没停，撤面板+亮回节目单条即可。</summary>
     private void ShowPlayer()
     {
+        if (_dragChannel is not null) EndDrag(); // 拖拽中收抽屉：先落位收浮块，残影不留屏
         _listOpen = false;
         BackgroundLane.PlayingGapOverrideMs = 0; // 抽屉收起回默认 10 秒：没人盯绿点，画面平稳优先
         BackgroundLane.SetDrawerOpen(false); // vc86：抽屉档随收起撤销，水位稳闸恢复全口径
@@ -1272,6 +1297,22 @@ public partial class MainActivity : Activity
         _currentIndex = index;
         SwitchToCurrent();
         ShowPlayer();
+    }
+
+    /// <summary>用户发起的切台入口（vc146 老板令：切的就是当前台=不做任何处理——不重起播、不亮牌、
+    /// 不刷信息条，只回播放页收抽屉）。会话已挂/在连该台才免动；失败/空闲档放行走 PlayAt 重起播（=手动重试）。
+    /// 重连/重试等内部路径仍走 PlayAt（同台重起播口径不变，静默重连不受此闸）。</summary>
+    private void PlayUserAt(int index)
+    {
+        if (index < 0 || index >= _channels.Count) return;
+        if (_manager.Current is { } cur
+            && cur.CurrentChannel?.Id == _channels[index].Id
+            && cur.State is PlaybackState.Playing or PlaybackState.Buffering)
+        {
+            ShowPlayer();
+            return;
+        }
+        PlayAt(index);
     }
 
     /// <summary>预检真拉流（vc142 老板令「健康点真拉流」）：只测取票口=假绿根因（票通≠流通）。
@@ -1337,6 +1378,31 @@ public partial class MainActivity : Activity
                 if (!ok) CrashNet.Record($"[探活] {ch.Name} 源探活异常（{HostOf(ep)}）：{ex.Message}"); // 单源失败落下一源；全断才判死
             }
         }
+        // vc146 刀①（老板令 2026-11-28「这三点你先落」）：官方源全死≠整台死——备源注册表真拉一遍，
+        // 备源活=整台不判死（健康点不落❌）。封顶 2 路防探活轮变备源风暴；官方源缓过来下一轮自动回正。
+        if (!ok)
+        {
+            var tried = 0;
+            foreach (var fb in FallbackSourceRegistry.GetAll(ch.Name))
+            {
+                if (tried >= 2) break;
+                tried++;
+                try
+                {
+                    if (await StreamProbe.PullAsync(fb.Url, Catalog.TicketResolver.ClientUserAgent).ConfigureAwait(false))
+                    {
+                        ok = true;
+                        CrashNet.Record($"[探活] {ch.Name} 官方源死但备源活（{HostOf(fb.Url)}），整台不判死（备源可用）");
+                        break;
+                    }
+                    CrashNet.Record($"[探活] {ch.Name} 备源真拉流失败（{HostOf(fb.Url)}）");
+                }
+                catch (Exception ex)
+                {
+                    CrashNet.Record($"[探活] {ch.Name} 备源探活异常（{HostOf(fb.Url)}）：{ex.Message}");
+                }
+            }
+        }
         return ok;
     }
 
@@ -1345,6 +1411,13 @@ public partial class MainActivity : Activity
     {
         try { return new Uri(ep.Url, UriKind.Absolute).Host; }
         catch { return ep.Url.Length > 48 ? ep.Url[..48] : ep.Url; }
+    }
+
+    /// <summary>台账备源 URL 主机（vc146 刀①）：与端点版同口径，吃裸 URL。</summary>
+    private static string HostOf(string url)
+    {
+        try { return new Uri(url, UriKind.Absolute).Host; }
+        catch { return url.Length > 48 ? url[..48] : url; }
     }
 
     /// <summary>断网恢复沿（方案书 v82）：网络恢复自动重连失败终态的当前台，静默自愈不打断用户操作；
@@ -1756,7 +1829,8 @@ public partial class MainActivity : Activity
     private string? _epgNowTitle;       // 当前节目名：null=官方缺表降级（控制条只显画面时刻）
     private string? _epgNextText;       // 接下来两条「HH:mm 节目名 · …」（vc113 对照原型 v24–v26 节目单口径）
 
-    /// <summary>当前画面水位读数单点：无会话按 0 计；读数不可靠（重接/换票/准备期）返回 null，各显示点自行保持上一拍。</summary>
+    /// <summary>当前画面水位读数单点（vc146 刀④起为车道/统计参考读数）：无会话按 0 计；读数不可靠（重接/换票/准备期）返回 null，各显示点自行保持上一拍。
+    /// vc146 刀④起页头水位不再读此数（改读缓存层真实库存 MediaCache.CurrentAheadMs），本读数保留给水位稳闸与统计页。</summary>
     private long? BufferedMsNow()
     {
         var session = _manager.Current;
@@ -1767,20 +1841,21 @@ public partial class MainActivity : Activity
     /// <summary>画面绝对时刻单点：现在−水位换算（源头延迟可标定），HH:mm:ss。</summary>
     private static string PictureClock(long bufferedMs) => DateTime.Now.AddMilliseconds(-bufferedMs).ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
 
-    /// <summary>列表页头第二行（vc85 施工包5）：「实时水位：XX秒 · 画面时刻：XX:XX:XX」。
-    /// 实时水位=当前会话内核攒着还没播的量（BufferedMs 实时读数），无会话按 0 秒计；
+    /// <summary>列表页头第二行（vc85 施工包5；vc146 刀④ 老板 2026-11-28 20:23 批「可以」）：「实时水位：XX秒 · 画面时刻：XX:XX:XX」。
+    /// 实时水位=磁盘缓存层真实库存（灌水器已落盘领先量 MediaCache.CurrentAheadMs）——内核贴直播边缘播时
+    /// BufferedMs 常年 0，页头读内核小库存是「水位 0 秒」假象根因；内核读数挪统计页做参考。
     /// 画面时刻=现在−水位换算的绝对时刻（源头延迟可标定），同一拍一并跟刷，两读数同源不错位。
-    /// 读数不可靠（重接/换票/准备期）保持上一拍显示，只有真没货才显 0。</summary>
+    /// 读数不可靠（清单未换代/无灌水器）保持上一拍显示，只有真没货才显 0。</summary>
     private void UpdateWaterLevel()
     {
         if (_waterLevelText is null) return;
-        long? bufferedMs = BufferedMsNow();
-        if (bufferedMs is null)
+        long? aheadMs = _manager.Current is null ? 0 : MediaCache.CurrentAheadMs; // 无会话按 0 计（原口径）
+        if (aheadMs is null)
         {
             if (_lastWaterText.Length > 0) _waterLevelText.Text = _lastWaterText; // 读不出≠没货：保持上一拍
             return;
         }
-        _lastWaterText = HeadlineLine(bufferedMs.Value);
+        _lastWaterText = HeadlineLine(aheadMs.Value);
         _waterLevelText.Text = _lastWaterText;
     }
 
@@ -2168,15 +2243,21 @@ public partial class MainActivity : Activity
         return -1;
     }
 
-    private void ToggleFavoriteSelected()
+    /// <summary>列表内收藏/取消当前选中台（vc146 收藏全套，老板 2026-11-28 令「收藏的全套操作都落」）：
+    /// 触屏长按行与遥控器长按确认共走此口；两账同步写，星标即时刷新即效果（列表可见不弹胶囊，画面收藏才弹）。</summary>
+    private void ToggleFavoriteSelected(Channel? channel = null)
     {
-        var pos = _list.SelectedItemPosition;
-        if (pos < 0) return;
         if (_list.Adapter is not ChannelListAdapter adapter) return;
-        var channel = adapter.ChannelAt(pos);
+        if (channel is null)
+        {
+            var pos = _list.SelectedItemPosition;
+            if (pos < 0) return;
+            channel = adapter.ChannelAt(pos);
+        }
         if (channel is null) return;
         SyncFavorite(channel); // 两账同步（11-15 通读修，同 ToggleFavoriteOnCurrent 口径）
         PersistFavorites();
+        // 老板 2026-11-28 令：列表里星标即时可见（能看到效果就不弹），画面收藏无星标才需要胶囊
         adapter.Refresh(_favorites, _tab, _favStore.Numbers);
     }
 
@@ -2191,24 +2272,31 @@ public partial class MainActivity : Activity
 
     // —— 收藏排序模式（vc53 v1.0.8 第14项 逐成员对照基线原文） ——
 
-    /// <summary>入口：列表内长按确认键且焦点在收藏台上；非收藏台亮牌说明，不硬进。</summary>
+    /// <summary>进入排序模式（v1.0.8 第14项 vc53 口径）：记顺序账备份；遥控器长按确认与触屏长按共口。</summary>
+    private void EnterSortMode(Channel row, bool silent = false)
+    {
+        if (_sortMode) return;
+        _sortMode = true;
+        _sortChannel = row;
+        _sortBackup.Clear();
+        _sortBackup.AddRange(_favStore.Numbers);
+        if (!silent) ShowToast("排序中：上下移动，确认放下");
+        RefreshSortList();
+    }
+
     private void TryEnterSortMode()
     {
         if (_list.Adapter is not ChannelListAdapter adapter) return;
         var pos = _list.SelectedItemPosition;
         if (pos < 0 || pos >= adapter.Count) return;
         var row = adapter.ChannelAt(pos);
-        if (row is null || !_favorites.Contains(row.Id)) // 排序入口认收藏账（11-15 通读修）：顺序账只管次序，收藏与否以收藏账为准
+        if (row is null) return;
+        if (!_favorites.Contains(row.Id)) // 排序入口认收藏账（11-15 通读修）：顺序账只管次序，收藏与否以收藏账为准
         {
-            ShowToast("请在收藏组内长按确认键排序");
+            ToggleFavoriteSelected(row); // vc146 收藏全套：未收藏台长按确认=先收藏（星标亮起即效果）
             return;
         }
-        _sortMode = true;
-        _sortChannel = row;
-        _sortBackup.Clear();
-        _sortBackup.AddRange(_favStore.Numbers);
-        ShowToast("排序中：上下移动，确认放下");
-        RefreshSortList();
+        EnterSortMode(row);
     }
 
     /// <summary>排序键位（vc53 原文口径）：上下逐位挪、左右按屏快速挪、确认放下保存、返回取消复原、信息键一键置顶。</summary>
@@ -2233,12 +2321,13 @@ public partial class MainActivity : Activity
                 _sortMode = false;
                 PersistFavorites();
                 _sortChannel = null;
-                ShowToast("排序已保存");
-                RefreshSortList();
+                RefreshSortList(); // 老板 2026-11-28 令：不弹胶囊，列表归位即效果
                 break;
             case Keycode.Back or Keycode.Menu: // 取消复原
+                if (_dragChannel is not null) EndDrag(); // 拖拽中按返回：先落位收浮块，残影不留屏
                 _sortMode = false;
                 _favStore.Restore(string.Join(",", _sortBackup));
+                PersistFavorites(); // 拖拽落位已写盘，复原后回写，防盘上残留拖后顺序
                 _sortChannel = null;
                 ShowToast("已取消排序");
                 RefreshSortList();
@@ -2250,16 +2339,247 @@ public partial class MainActivity : Activity
         }
     }
 
-    /// <summary>排序中/排序后重建列表（焦点跟随被排序的台，vc53 RefreshSortList 口径）。</summary>
-    private void RefreshSortList()
+    /// <summary>排序列表刷新（vc146 丝滑令）：换位前后记各行顶坐标，刷新后从旧位滑到新位（180ms 减速曲线），
+    /// 「压到哪行把哪行挤下去」不生硬跳变；拖动中不抢焦点（focusFollow=false）。</summary>
+    private void RefreshSortList(bool focusFollow = true)
     {
         if (!_listOpen) return;
         if (_list.Adapter is not ChannelListAdapter adapter) return;
+        var oldTops = new Dictionary<string, int>();
+        for (int i = 0; i < _list.ChildCount; i++)
+        {
+            var c = _list.GetChildAt(i);
+            if (c is null) continue;
+            var pos = _list.GetPositionForView(c);
+            if (pos < 0) continue;
+            var id = adapter.ChannelAt(pos)?.Id;
+            if (id != null) oldTops[id] = c.Top;
+        }
         adapter.Refresh(_favorites, _tab, _favStore.Numbers);
-        // 焦点跟随被排序的台，不落到底层
-        var pos = PositionOfChannel(_sortChannel);
-        if (pos >= 0) _list.SetSelection(pos);
+        _list.Post(() =>
+        {
+            for (int i = 0; i < _list.ChildCount; i++)
+            {
+                var c = _list.GetChildAt(i);
+                if (c is null) continue;
+                var pos = _list.GetPositionForView(c);
+                if (pos < 0) continue;
+                var id = adapter.ChannelAt(pos)?.Id;
+                if (id != null && oldTops.TryGetValue(id, out int oldTop) && oldTop != c.Top)
+                {
+                    c.TranslationY = oldTop - c.Top;
+                    c.Animate()!.TranslationY(0).SetDuration(180)
+                        .SetInterpolator(new Android.Views.Animations.DecelerateInterpolator());
+                }
+            }
+        });
+        if (focusFollow)
+        {
+            var pos2 = PositionOfChannel(_sortChannel);
+            if (pos2 >= 0) _list.SetSelection(pos2);
+        }
     }
+
+    // —— 收藏拖动排序（vc146，老板 2026-11-28 令：原生拖图标手感——长按浮起、跟手、压位挤行、松手落位） ——
+
+    /// <summary>排序模式触控分流：拖动中全吞自管；未拿起时长按识别开拖，滚动/点击让位列表。</summary>
+    private bool OnSortDragTouch(View? v, MotionEvent? e)
+    {
+        if (e is null) return false;
+        if (_dragChannel is not null)
+        {
+            switch (e.Action)
+            {
+                case MotionEventActions.Move: DragMove(e); return true;
+                case MotionEventActions.Up or MotionEventActions.Cancel: EndDrag(); return true;
+                default: return true; // 拖动中其余事件全吞，防底层误触
+            }
+        }
+        _sortDragDetector ??= new GestureDetector(this, new SortDragGesture(this));
+        return _sortDragDetector.OnTouchEvent(e);
+    }
+
+    private sealed class SortDragGesture : GestureDetector.SimpleOnGestureListener
+    {
+        private readonly MainActivity _act;
+        public SortDragGesture(MainActivity act) { _act = act; }
+        public override bool OnDown(MotionEvent e) => false; // 让位列表滚动
+        public override bool OnScroll(MotionEvent? e1, MotionEvent e2, float distanceX, float distanceY) => false; // 未拿起前纵向滚列表
+        public override void OnLongPress(MotionEvent e) => _act.TryStartDragAtY(e.GetY()); // 长按拿起（原生拖图标手感）
+    }
+
+    /// <summary>按触点纵坐标找行拿起：排序模式内长按收藏台即浮起开拖。</summary>
+    private void TryStartDragAtY(float yInList)
+    {
+        if (!_sortMode || _dragChannel is not null) return;
+        var child = FindChildAtY(yInList);
+        if (child is null) return;
+        var pos = _list.GetPositionForView(child);
+        if (pos < 0 || _list.Adapter is not ChannelListAdapter adapter) return;
+        var ch = adapter.ChannelAt(pos);
+        if (ch is null || !_favorites.Contains(ch.Id)) return;
+        StartDrag(ch, child, yInList);
+    }
+
+    private View? FindChildAtY(float yInList)
+    {
+        for (int i = 0; i < _list.ChildCount; i++)
+        {
+            var c = _list.GetChildAt(i);
+            if (c is null) continue;
+            if (yInList >= c.Top && yInList <= c.Bottom) return c;
+        }
+        return null;
+    }
+
+    private View? FindChildByChannel(Channel ch)
+    {
+        if (_list.Adapter is not ChannelListAdapter adapter) return null;
+        for (int i = 0; i < _list.ChildCount; i++)
+        {
+            var c = _list.GetChildAt(i);
+            if (c is null) continue;
+            var pos = _list.GetPositionForView(c);
+            if (pos >= 0 && adapter.ChannelAt(pos)?.Id == ch.Id) return c;
+        }
+        return null;
+    }
+
+    private float ListTopInRoot()
+    {
+        int[] rloc = new int[2]; _root.GetLocationOnScreen(rloc);
+        int[] lloc = new int[2]; _list.GetLocationOnScreen(lloc);
+        return lloc[1] - rloc[1];
+    }
+
+    /// <summary>收藏顺序账查位（Numbers 为 IReadOnlyList，无 IndexOf 扩展）。</summary>
+    private static int OrderIndexOf(IReadOnlyList<int> order, int number)
+    {
+        for (int i = 0; i < order.Count; i++)
+            if (order[i] == number) return i;
+        return -1;
+    }
+
+    /// <summary>拿起：行截图浮起（放大 6%+投影+触感），原行留淡缺口，随后压位挤行。</summary>
+    private void StartDrag(Channel ch, View rowView, float touchYInList)
+    {
+        if (_dragChannel is not null || rowView.Width <= 0 || rowView.Height <= 0) return;
+        _dragChannel = ch;
+        _dragGrabDy = Math.Max(0, touchYInList - rowView.Top);
+        if (_list.Adapter is ChannelListAdapter adapter)
+            adapter.DragChannel = ch; // 原行留缺口（淡显占位），其余行让位（setter 内已刷行）
+        var bmp = Bitmap.CreateBitmap(rowView.Width, rowView.Height, Bitmap.Config.Argb8888!);
+        rowView.Draw(new Canvas(bmp));
+        var ghost = new ImageView(this);
+        ghost.SetImageBitmap(bmp);
+        ghost.Alpha = 0.96f;
+        ghost.Elevation = UiScale.Px(12);
+        int[] rloc = new int[2]; _root.GetLocationOnScreen(rloc);
+        int[] lloc = new int[2]; rowView.GetLocationOnScreen(lloc);
+        _root.AddView(ghost, new FrameLayout.LayoutParams(-2, -2)
+        {
+            Gravity = GravityFlags.Top | GravityFlags.Left,
+            LeftMargin = lloc[0] - rloc[0],
+            TopMargin = lloc[1] - rloc[1],
+        });
+        ghost.Animate()!.ScaleX(1.06f).ScaleY(1.06f).SetDuration(120)
+            .SetInterpolator(new Android.Views.Animations.DecelerateInterpolator());
+        rowView.PerformHapticFeedback(FeedbackConstants.LongPress); // 拿起触感
+        _dragGhost = ghost;
+    }
+
+    /// <summary>拖动：浮块跟手；浮块中线压到哪行，收藏顺序账实时换位把那行挤下去；贴上下缘自滚。</summary>
+    private void DragMove(MotionEvent e)
+    {
+        if (_dragGhost is null || _dragChannel is null) return;
+        int[] rloc = new int[2]; _root.GetLocationOnScreen(rloc);
+        float touchYInRoot = e.RawY - rloc[1];
+        var lp = (FrameLayout.LayoutParams)_dragGhost.LayoutParameters!;
+        lp.TopMargin = (int)(touchYInRoot - _dragGrabDy);
+        _dragGhost.LayoutParameters = lp;
+
+        float ghostTopInList = e.GetY() - _dragGrabDy; // 浮块顶在列表坐标
+        float centerYInList = ghostTopInList + _dragGhost.Height / 2f;
+        var targetChild = FindChildAtY(centerYInList);
+        if (targetChild is not null && _list.Adapter is ChannelListAdapter adapter)
+        {
+            var pos = _list.GetPositionForView(targetChild);
+            if (pos >= 0)
+            {
+                var over = adapter.ChannelAt(pos);
+                if (over is not null && over.Id != _dragChannel.Id)
+                {
+                    int targetIdx = OrderIndexOf(_favStore.Numbers, over.Number);
+                    int cur = OrderIndexOf(_favStore.Numbers, _dragChannel.Number);
+                    if (targetIdx >= 0 && targetIdx != cur)
+                    {
+                        _favStore.MoveBy(_dragChannel.Number, targetIdx - cur); // 压位换位：那行被挤下去
+                        RefreshSortList(focusFollow: false); // 让位丝滑动画在刷新器内做
+                    }
+                }
+            }
+        }
+
+        float edge = UiScale.Px(48);
+        int dx = centerYInList < edge ? -(int)UiScale.Px(14)
+            : centerYInList > _list.Height - edge ? (int)UiScale.Px(14) : 0;
+        if (dx != _dragScrollDx)
+        {
+            _dragScrollDx = dx;
+            if (dx != 0 && !_dragScrolling)
+            {
+                _dragScrolling = true;
+                PumpEdgeScroll();
+            }
+        }
+    }
+
+    private void PumpEdgeScroll()
+    {
+        if (_dragChannel is null || _dragScrollDx == 0) { _dragScrolling = false; return; }
+        _list.SmoothScrollBy(_dragScrollDx, 0);
+        _edgeScrollRunnable ??= new Java.Lang.Runnable(PumpEdgeScroll);
+        _edgeScrollHandler.PostDelayed(_edgeScrollRunnable, 16);
+    }
+
+    /// <summary>松手落位：浮块滑回缺口当前位置（140ms）后收掉，真行现身，顺序账落盘。</summary>
+    private void EndDrag()
+    {
+        if (_dragChannel is null) return;
+        _dragScrollDx = 0; _dragScrolling = false;
+        var ghost = _dragGhost; _dragGhost = null;
+        var ch = _dragChannel; _dragChannel = null;
+        if (ghost is not null)
+        {
+            float targetY = ListTopInRoot();
+            var gapChild = FindChildByChannel(ch);
+            if (gapChild is not null)
+            {
+                int[] rloc = new int[2]; _root.GetLocationOnScreen(rloc);
+                int[] cloc = new int[2]; gapChild.GetLocationOnScreen(cloc);
+                targetY = cloc[1] - rloc[1];
+            }
+            var lp = (FrameLayout.LayoutParams)ghost.LayoutParameters!;
+            float dy = targetY - lp.TopMargin;
+            var endCb = new Java.Lang.Runnable(() =>
+            {
+                _root.RemoveView(ghost);
+            });
+            ghost.Animate()!.ScaleX(1f).ScaleY(1f).TranslationY(dy).SetDuration(140)
+                .SetInterpolator(new Android.Views.Animations.DecelerateInterpolator())
+                .WithEndAction(endCb);
+        }
+        if (_list.Adapter is ChannelListAdapter ad)
+        {
+            ad.DragChannel = null;
+            ad.Refresh(_favorites, _tab, _favStore.Numbers);
+        }
+        PersistFavorites();
+        // 老板 2026-11-28 令：不弹胶囊，浮块落位即效果
+        _sortMode = false;
+        _sortChannel = null;
+    }
+
 
     private int PositionOfChannel(Channel? channel)
     {
@@ -2306,6 +2626,22 @@ public partial class MainActivity : Activity
         if (idx < 0 || tabs.Length == 0) return;
         int n = tabs.Length;
         SelectTab(tabs[((idx + (next ? 1 : n - 1)) % n + n) % n]);
+    }
+
+    /// <summary>排序拖动触控壳（vc146）：排序模式接管触摸做拖动排序（长按拿起/跟手/松手落位），
+    /// 其余场景原样让位横滑监听；按下纵坐标随手记，长按拿起算抓取偏移用。</summary>
+    private sealed class SortDragTouchListener : Java.Lang.Object, View.IOnTouchListener
+    {
+        private readonly View.IOnTouchListener _wrapped;
+        private readonly MainActivity _act;
+        public SortDragTouchListener(View.IOnTouchListener wrapped, MainActivity act) { _wrapped = wrapped; _act = act; }
+        public bool OnTouch(View? v, MotionEvent? e)
+        {
+            if (e is null) return false;
+            if (e.Action == MotionEventActions.Down) _act._lastListTouchY = e.GetY();
+            if (_act._sortMode) return _act.OnSortDragTouch(v, e);
+            return _wrapped.OnTouch(v, e);
+        }
     }
 
     /// <summary>列表横滑手势（vc124 老板令）：横向位移自按下点累计过 60dp 且横向主导即触发一次切签；
@@ -2603,7 +2939,7 @@ public partial class MainActivity : Activity
             var key = _debouncer.Target;
             _debouncer.Clear();
             var idx = _channels.ToList().FindIndex(c => c.Id == key);
-            if (idx >= 0) PlayAt(idx);
+            if (idx >= 0) PlayUserAt(idx);
         }, SwitchDebouncer.WindowMs + 20);
     }
 
@@ -2620,7 +2956,7 @@ public partial class MainActivity : Activity
             var number = int.Parse(_digits);
             _digits = "";
             // 编号=列表顺序（一期口径：编号永久直达）
-            if (number >= 1 && number <= _channels.Count) PlayAt(number - 1);
+            if (number >= 1 && number <= _channels.Count) PlayUserAt(number - 1);
             else ShowToast($"无此频道 {number}");
         });
         _main.PostDelayed(_digitCommit, 1200);
@@ -3132,6 +3468,10 @@ public partial class MainActivity : Activity
         private string _filter = ""; // 筛选令（老板 2026-11-27 20:2x 拍板）：数字=频道号前缀、文字=台名包含
         private List<Row> _rows;
         private IReadOnlyList<int> _favOrder; // 收藏顺序（vc53 排序口径：收藏页签按此顺序铺开）
+        private Channel? _dragChannel; // vc146 拖动排序：被拖台的原行淡显留缺口，其余行让位
+
+        /// <summary>拖动中的台（vc146 拖动排序）：其行淡显占位；null=无拖动。</summary>
+        public Channel? DragChannel { get => _dragChannel; set { _dragChannel = value; NotifyDataSetChanged(); } }
 
         public ChannelListAdapter(Context ctx, IReadOnlyList<Channel> channels, HashSet<string> favorites,
             Func<Channel, ChannelHealth> markOf, Func<string?> currentId, ListTabs.Tab tab = ListTabs.Tab.All,
@@ -3320,15 +3660,20 @@ public partial class MainActivity : Activity
             h.Line.AddView(h.Header);
 
             h.Logo = new ImageView(ctx);
-            // #61 尺寸令补漏：台标高度与首字占位块同框（40×28 基准），vc120 去写死令：改统一缩放口径 Px()（跟档自动走）
-            h.Line.AddView(h.Logo, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(28))
+            // vc146 尺寸令（老板 2026-11-28 真机「台标尺寸小了点，肉眼应该跟字体一样大」）：
+            // 台标高度=台名（UiScale.Item）实测线高（vc120 肉眼对齐口径），宽按 40:28 原比例放大——
+            // 原 40×28 基准是裸像素口径（PxScale≈1 时仅 ≈14dp 物理高），比台名字号矮一截，肉眼偏小；
+            // 改跟台名文字同高，随字号档/系统缩放自动走。只动台标与首字占位两处，行内其余元素不碰。
+            int logoH = UiScale.TextLineHeight(ctx, UiScale.Item);
+            int logoW = (int)(logoH * 40f / 28f + 0.5f);
+            h.Line.AddView(h.Logo, new LinearLayout.LayoutParams(logoW, logoH)
             { RightMargin = UiScale.Px(16), Gravity = GravityFlags.CenterVertical });
 
             h.Placeholder = new TextView(ctx);
             Style(h.Placeholder, InkTranslucency.TextSecondary, UiScale.Item);
             h.Placeholder.Gravity = GravityFlags.Center;
             h.Placeholder.SetBackgroundColor(Color.ParseColor("#3A4750"));
-            h.Line.AddView(h.Placeholder, new LinearLayout.LayoutParams(UiScale.Px(40), UiScale.Px(28)) // #15 尺寸令；vc120 统一口径
+            h.Line.AddView(h.Placeholder, new LinearLayout.LayoutParams(logoW, logoH) // vc146：与台标同框（#61 尺寸令补漏口径不变）
             { RightMargin = UiScale.Px(16), Gravity = GravityFlags.CenterVertical });
 
             h.Spacer = new View(ctx);
@@ -3382,6 +3727,8 @@ public partial class MainActivity : Activity
         private void BindRow(RowHolder h, Row row)
         {
             var ctx = _ctx;
+            // vc146 拖动排序：被拖台原行淡显留缺口（原生拖图标手感），其余行回置不透明
+            h.Line.Alpha = row.Channel is not null && _dragChannel?.Id == row.Channel.Id ? 0.15f : 1f;
             if (row.Header != null)
             {
                 // 分组/空态行：只有标题（vc53 v22 第 15 项：空态行次色平铺，不作分组标题渲染）

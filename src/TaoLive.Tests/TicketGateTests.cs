@@ -120,7 +120,7 @@ public class TicketReissueScopeTests
 public class TicketReissueRateLimitTests
 {
     [Fact]
-    public async Task Reissue_storm_beyond_four_per_window_is_circuit_broken()
+    public async Task Reissue_storm_beyond_two_per_window_is_circuit_broken()
     {
         var resolver = new TicketResolver();
         var url = "https://cdn.example.com/live/master.m3u8";
@@ -128,11 +128,12 @@ public class TicketReissueRateLimitTests
         _ = await resolver.ResolveAsync(endpoint, "cctv1", "cctv1");
 
         string? last = null;
-        for (var i = 0; i < 6; i++)
+        for (var i = 0; i < 4; i++)
         {
             last = await resolver.ReissueAsync("https://cdn.example.com/live/seg0.ts?x=" + i);
+            if (i < 2) Assert.NotNull(last); // vc146 老板令 4→2：前 2 次放行
         }
-        Assert.Null(last); // 第 5、6 次被频控熔断（前 4 次放行）
+        Assert.Null(last); // 第 3、4 次被频控熔断
     }
 
     [Fact]

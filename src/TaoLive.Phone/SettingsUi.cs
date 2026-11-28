@@ -531,6 +531,10 @@ public partial class MainActivity
             lines.Add($"✓ 内核：ExoPlayer（Media3）· 缓冲水位 {BufferPolicy.MaxWatermarkSeconds(mi.TotalMem)} 秒 · 总内存 {mi.TotalMem / (1024L * 1024L * 1024L)}GB");
         }
         catch (Exception ex) { lines.Add($"! 内核检查失败：{ex.Message}"); }
+        // vc146 刀④（老板 2026-11-28 20:23 批）：内核小库存读数挪统计页做参考——页头水位已改读缓存层真实库存
+        lines.Add(BufferedMsNow() is { } kb
+            ? $"✓ 内核贴边库存 {kb / 1000} 秒（vc146 起页头水位改读缓存层真实库存，此数为内核参考读数）"
+            : "! 内核贴边库存读数不可靠（重接/换票/准备期）");
         // 运行日志
         string tail = "";
         try { tail = DiagLog.ReadTail(System.IO.Path.Combine(FilesDir!.AbsolutePath!, "taolive_crash.log"), 256 * 1024); }

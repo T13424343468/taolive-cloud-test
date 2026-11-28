@@ -58,6 +58,14 @@ public sealed class PlaybackSession
     private bool _freshTicketRetried;
     private long? _ticketRetrySinceMs;
 
+    // vc146 刀②③（老板令 2026-11-28「这三点你先落」）：官方源拒流账——同台连续 HTTP 状态错计数，
+    // 满 2 次=官方源被源端拒流（风控/防盗链），本轮不再取票撞墙（坏票重试路径跳过），并记 3 分钟
+    // 跳官方窗：自愈慢轮/轻试探活直接从备源起轮，不弹回官方乒乓。官方源出画即清账（缓过来自动回正）。
+    internal const int OfficialRejectStrikes = 2;
+    internal static readonly TimeSpan OfficialSkipWindow = TimeSpan.FromMinutes(3);
+    private int _httpStrikeCount;
+    private long _officialSkipUntilMs;
+
     // vc87 票账降权（老板拍板「三方案一次到位」）：端点起播时刻账——起播后 ShortTicketGraceMs 内
     // 即报 HTTP 状态错=短命票（拿到票 6 秒就被源端拒的坏票循环病灶），实测账降权不给头名。
     private long? _endpointStartedAtMs;
@@ -382,6 +390,8 @@ public sealed class PlaybackSession
         _channel = channel;
         _selfHealDueAtMs = null; // vc82：用户主动换台即接管，自愈慢轮收摊，不背着旧台的全断账
         _selfHealAttempts = 0;
+        _httpStrikeCount = 0; // vc146 刀②：拒流账只记本台，换台清零不跟人走
+        _officialSkipUntilMs = 0;
         _autoFailoverTimes.Clear(); // 限速账同口径：换台重开一轮
         _queue = channel.Sources.Where(s => s.IsValid).ToList();
         if (_queue.Count == 0)
@@ -532,6 +542,12 @@ public sealed class PlaybackSession
             if (CurrentEndpoint is { } goodEndpoint)
             {
                 QualityBook?.ReportGood(_channel?.EpgKey ?? "", _channel?.SourceId ?? "", goodEndpoint.Url);
+                // vc146 刀②：官方源出画即清拒流账——官方缓过来下一轮自动回正，跳官方窗提前作废
+                if (goodEndpoint.Kind == SourceKind.Web)
+                {
+                    _httpStrikeCount = 0;
+                    _officialSkipUntilMs = 0;
+                }
             }
         }
     }
@@ -697,6 +713,12 @@ public sealed class PlaybackSession
     {
         if (_state == PlaybackState.Reconnecting)
         {
+            // vc146 刀②：官方源出画即清拒流账——官方缓过来下一轮自动回正，跳官方窗提前作废
+            if (CurrentEndpoint is { } okEp && okEp.Kind == SourceKind.Web)
+            {
+                _httpStrikeCount = 0;
+                _officialSkipUntilMs = 0;
+            }
             Transition(PlaybackState.Playing, "stream recovered");
         }
     }
@@ -734,12 +756,12 @@ public sealed class PlaybackSession
                 {
                     // 轻试探活：只重放队首一拍（既有播放重试路径），不重开限速账不重记坏票账
                     Transition(PlaybackState.Buffering, "self-heal reprobe");
-                    _endpointIndex = 0;    // 轻试重放队首：端点索引先归零，打点按队首身份记账（vc96 第 5 轮：与慢轮同序）
+                    _endpointIndex = QueueStartIndex(); // vc146 刀③：跳官方窗内直走备源，不弹回官方乒乓
                     MarkEndpointStarted(); // vc87 票账降权：轻试探活也是端点起播
                     _stallTimes.Clear();   // 轻试探活：停滞账清零重记（vc96 P1，与慢轮同口径）
                     _smoothnessTimes.Clear();
                     _videoStallTimes.Clear();
-                    _player.Play(new PlaybackParams(probeChannel, _queue[0], _preferLowLatency));
+                    _player.Play(new PlaybackParams(probeChannel, _queue[_endpointIndex], _preferLowLatency));
                     ReattachSurface();
                 }
                 return true;
@@ -753,14 +775,14 @@ public sealed class PlaybackSession
             _videoStallTimes.Clear(); // vc87：停滞账同口径清零
             _lightErrorTimes.Clear();
             _autoFailoverTimes.Clear(); // 自愈慢轮重开一轮限速账，慢试不受旧窗拖累
-            _endpointIndex = 0; // 从头慢轮：整条队列重试，源头可能已缓过来
+            _endpointIndex = QueueStartIndex(); // vc146 刀③：跳官方窗内直走备源起轮，不弹回官方乒乓；窗外照旧从头慢轮
             _freshTicketRetried = false; // 坏票重试机会重记
             _ticketRetrySinceMs = null;
             Transition(PlaybackState.Buffering, $"self-heal retry #{_selfHealAttempts}");
             if (_channel is { } healChannel && _queue.Count > 0)
             {
                 MarkEndpointStarted(); // vc87 票账降权：自愈慢轮重试也是端点起播
-                _player.Play(new PlaybackParams(healChannel, _queue[0], _preferLowLatency));
+                _player.Play(new PlaybackParams(healChannel, _queue[_endpointIndex], _preferLowLatency));
                 ReattachSurface();
             }
             return true;
@@ -1115,7 +1137,22 @@ public sealed class PlaybackSession
         // 每线路一次（TryFailover 切线时重记），防坏票死循环；未接作废器（测试/壳层未接）不启用重试。
         // vc145 摘闸（真机 vc144 实锤）：换票是恢复路，冷却中不许换票=频道锁死——取票口主机与流主机
         // 分账，流主机冷却不挡换票；取票口自身频控由取票器冷却快速失败管着，此处不再重复设卡。
+        // vc146 刀②（老板令 2026-11-28「这三点你先落」）：官方源拒流账——同台连续 HTTP 状态错满
+        // 2 次=源端在拒流（风控/防盗链），换新票也是白打，本轮不再取票直接走备源（跳官方窗见刀③）。
+        if (code.Contains("HTTP", StringComparison.OrdinalIgnoreCase))
+        {
+            _httpStrikeCount++;
+            // 满 2 次布窗；窗过期后拒流仍在继续（计数只增不再等于 2）须重布窗，否则跳官方窗只生效一轮
+            if (_httpStrikeCount >= OfficialRejectStrikes
+                && _clock.NowMs >= _officialSkipUntilMs
+                && CurrentEndpoint is { } strikeEp && strikeEp.Kind == SourceKind.Web)
+            {
+                _officialSkipUntilMs = _clock.NowMs + (long)OfficialSkipWindow.TotalMilliseconds;
+                SessionTrace.Emit($"[官方源拒流] {DescribeChannel()} 连续 {_httpStrikeCount} 次 HTTP 状态错，本轮不再取票，直接走备源（{OfficialSkipWindow.TotalMinutes:0} 分钟内自愈不弹回官方）");
+            }
+        }
         if (code.Contains("HTTP", StringComparison.OrdinalIgnoreCase)
+            && _httpStrikeCount < OfficialRejectStrikes
             && !_freshTicketRetried
             && TicketCacheInvalidator is { } invalidate
             && _channel is { } retryChannel
@@ -1278,6 +1315,7 @@ public sealed class PlaybackSession
         _lightErrorTimes.Clear(); // vc82：轻错账同口径只记本线，切线清账
         FailoverCount++;
         _freshTicketRetried = false; // vc69：坏票重试机会每线路一次，切线重记
+        _httpStrikeCount = 0; // vc146 刀②修正（全测红实锤）：拒流账只记本线，切线重记——否则首线烧满 2 次后，后续线路永远拿不到原地换票机会
         _ticketRetrySinceMs = null;
         _lastFailoverAtMs = _clock.NowMs; // 预防性介入冷却账起算（老板令 #24）
         Transition(PlaybackState.Buffering, $"failover after {reason}");
@@ -1285,6 +1323,22 @@ public sealed class PlaybackSession
         _player.Play(new PlaybackParams(_channel, _queue[next], _preferLowLatency));
         ReattachSurface();
         Failover?.Invoke(this, new FailoverEventArgs(from, _queue[next], FailoverCount, reason));
+    }
+
+    /// <summary>自愈起轮索引（vc146 刀③）：跳官方窗内直接从首个备源起轮，不弹回官方乒乓；
+    /// 窗外或队列全是官方源时照旧从 0 起（从头慢轮原口径不变）。</summary>
+    private int QueueStartIndex()
+    {
+        if (_clock.NowMs < _officialSkipUntilMs)
+        {
+            var idx = _queue.FindIndex(s => s.Kind != SourceKind.Web);
+            if (idx > 0)
+            {
+                SessionTrace.Emit($"[官方源拒流] {DescribeChannel()} 跳官方窗内自愈直走备源（线路 {idx + 1}/{_queue.Count} 起）");
+                return idx;
+            }
+        }
+        return 0;
     }
 
     /// <summary>备源水备好（vc139 老板令「先攒后切」）：备源已在缓存攒满门槛水，执行切换——

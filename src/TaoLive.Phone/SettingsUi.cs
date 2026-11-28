@@ -172,7 +172,7 @@ public partial class MainActivity
         // vc111 老板令「全页面统一电视端水墨透光」：面板改自适应透底（亮屏76/暗房108），画面透出、
         // 文字清晰由可读性投影兜底（电视端 vc53 同口径）；不再用近实色底闷住画面。
         panel.SetBackgroundColor(InkTranslucency.PanelColor(this));
-        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Math.Max(0, Dp(12) + BottomCornerClearPx() - Dp(20))); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线；vc121 同类排查：底部随系统圆角让位，关闭行不落弧区；vc136 老板令（15:44「底部按钮整体下移20」）：底部内距统一减 20dp，横竖屏同口径
+        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Dp(20)); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线；vc121 同类排查：底部随系统圆角让位，关闭行不落弧区；vc137 老板令（15:59「直到离底部边缘20间距」）：底部内距固定 20dp，圆角让位退场（按钮左右 24dp 边距探不进弧区）
         panel.Visibility = ViewStates.Gone;
 
         // 页头：标题（v26 原型口径）。vc117 令11（2026-11-28 老板拍板）：左上角「←」全删，
@@ -214,7 +214,7 @@ public partial class MainActivity
         return panel;
     }
 
-    /// <summary>切诊断页签：高亮当前页签（v26 原型胶囊选中态）、换操作行、异步装正文。</summary>
+    /// <summary>切诊断页签：vc137 老板令「改成Tab那种样式 不要用按钮」——去框线去底色，选中态=文字提亮+底部下划线指示条；换操作行、异步装正文。</summary>
     private void SwitchDiagTab(int tab)
     {
         _diagTab = tab;
@@ -222,20 +222,34 @@ public partial class MainActivity
         {
             var t = _diagTabs[i];
             bool selected = i == tab;
-            var pill = new GradientDrawable();
-            pill.SetCornerRadius(Dp(14));
-            // vc126 老板令「所有按钮都是框线透明底」：选中/未选中都走透明底，靠描边深浅+文字色分层
-            pill.SetColor(Color.Transparent);
-            pill.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
-                InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
-            t.Background = pill;
             t.SetTextColor(selected
-                ? InkTranslucency.TextPrimary(this)
+                ? Color.White
                 : Color.ParseColor(InkTranslucency.TextSecondary));
+            t.Typeface = selected ? Typeface.DefaultBold! : Typeface.Default!; // vc137 老板令（「统一总列表页那种蓝色」）：选中态对齐总列表当前台口径=白粗体+深蓝指示条
+            t.Background = t.HasFocus ? InkTranslucency.FocusDrawable() : new TabIndicatorDrawable(selected); // 选中态底部指示条；焦点高亮优先沿用全局口径
             InkTranslucency.ApplyReadabilityShadow(t);
         }
         RefreshDiagButtons();
         LoadDiagBody();
+    }
+
+    /// <summary>vc137 Tab 页签指示条：选中态沿视图底边画 3dp 圆角横条（深蓝 #3D6E9E，对齐总列表当前台描边色），未选中不画（透明）。</summary>
+    private sealed class TabIndicatorDrawable : Drawable
+    {
+        private readonly bool _selected;
+        private readonly Paint _paint = new(PaintFlags.AntiAlias) { Color = Color.ParseColor("#3D6E9E") };
+        public TabIndicatorDrawable(bool selected) => _selected = selected;
+        public override void Draw(Canvas canvas)
+        {
+            if (!_selected) return;
+            var b = Bounds;
+            float h = UiScale.Px(3);
+            _paint.SetStyle(Paint.Style.Fill);
+            canvas.DrawRoundRect(b.Left, b.Bottom - h, b.Right, b.Bottom, h / 2f, h / 2f, _paint);
+        }
+        public override void SetAlpha(int alpha) { }
+        public override void SetColorFilter(ColorFilter? colorFilter) { }
+        public override int Opacity => (int)Format.Transparent;
     }
 
     /// <summary>页签操作行重建（vc113 对照原型 04 节）：📄📁🗑 三钮上收 topbar 常驻，操作行只留「导出日志」
@@ -875,7 +889,7 @@ public partial class MainActivity
     {
         int pad = Dp(24);
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        box.SetPadding(pad, SafeTopInset(pad), pad, Math.Max(0, Dp(12) + BottomCornerClearPx() - Dp(20))); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场——子页按钮行与设置页关闭行同屏同位；vc136 老板令：底部内距统一减 20dp
+        box.SetPadding(pad, SafeTopInset(pad), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场——子页按钮行与设置页关闭行同屏同位；vc137 老板令：底部内距固定 20dp
         box.SetBackgroundColor(InkTranslucency.PanelColor(this));
         var titleView = new TextView(this) { Text = title, TextSize = UiScale.Title };
         titleView.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -1002,7 +1016,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Math.Max(0, Dp(12) + BottomCornerClearPx() - Dp(20))); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc136 老板令：底部内距统一减 20dp
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc137 老板令：底部内距固定 20dp
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // topbar：标题 + 三常驻钮（📄📁🗑）。vc117 令11：左上角「←」全删，统一底部「关闭」行收页
@@ -1018,7 +1032,7 @@ public partial class MainActivity
                 new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) });
             head.AddView(DiagHeadBtn(BarIconView.IconKind.Trash, "清空", ConfirmClearCrashLog),
                 new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) });
-            box.AddView(head, new LinearLayout.LayoutParams(-1, -2));
+            box.AddView(head, new LinearLayout.LayoutParams(-1, -2) { BottomMargin = Dp(UiScale.RowGapDp) }); // vc137 老板令（15:59「诊断日志和运行统计的内容和顶部元素之间的间距 参考进阶调优」）：标题与内容间距对齐进阶调优 10dp 口径
 
             // 页签行（运行台账/崩溃日志/自诊断，v5 老板令三标签同页）
             var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
@@ -1028,6 +1042,8 @@ public partial class MainActivity
                 var tab = new TextView(this) { Text = tabNames[i], TextSize = UiScale.Item };
                 tab.SetPadding(Dp(16), Dp(8), Dp(16), Dp(8));
                 tab.Focusable = true;
+                tab.FocusChange += (_, e) => // vc137 老板令（「改成Tab那种样式 不要用按钮」）：焦点高亮沿用全局 FocusDrawable，原胶囊描边退场
+                    tab.Background = e.HasFocus ? InkTranslucency.FocusDrawable() : null;
                 int idx = i;
                 tab.Click += (_, _) => SwitchDiagTab(idx);
                 tabRow.AddView(tab);
@@ -1047,7 +1063,7 @@ public partial class MainActivity
             var diagWrap = new LinearLayout(this) { Orientation = Orientation.Vertical };
             diagWrap.AddView(_diagBody);
             _diagBodyScroll.AddView(diagWrap);
-            box.AddView(_diagBodyScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+            box.AddView(_diagBodyScroll, new LinearLayout.LayoutParams(-1, 0, 1f) { TopMargin = Dp(UiScale.RowGapDp) }); // vc137 老板令（「参考进阶调优」）：正文与页签行间距对齐进阶调优内容块 10dp 口径
 
             _diagBtnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             diagWrap.AddView(_diagBtnRow, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(UiScale.RowGapDp) });
@@ -1137,7 +1153,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Math.Max(0, Dp(12) + BottomCornerClearPx() - Dp(20))); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc136 老板令：底部内距统一减 20dp
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc137 老板令：底部内距固定 20dp
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // vc117 令11：页头「←」删，标题起头；底部统一「关闭」行收页
@@ -1147,7 +1163,7 @@ public partial class MainActivity
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             head.AddView(title);
-            box.AddView(head, new LinearLayout.LayoutParams(-1, -2));
+            box.AddView(head, new LinearLayout.LayoutParams(-1, -2) { BottomMargin = Dp(UiScale.RowGapDp) }); // vc137 老板令：标题与内容间距对齐进阶调优 10dp 口径
 
             var body = new TextView(this) { Text = "统计中…", TextSize = UiScale.Caption };
             body.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
@@ -1158,7 +1174,7 @@ public partial class MainActivity
             var statsWrap = new LinearLayout(this) { Orientation = Orientation.Vertical };
             statsWrap.AddView(body);
             scroll.AddView(statsWrap);
-            box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+            box.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f) { TopMargin = Dp(UiScale.RowGapDp) }); // vc137 老板令（「参考进阶调优」）：标题→正文间距对齐进阶调优内容块 10dp 口径
 
             // vc117 令11：底部「关闭」行收页（返回键口径不变）
             var statsClose = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
@@ -1303,7 +1319,7 @@ public partial class MainActivity
         {
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int padAdv = Dp(24);
-            box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, Math.Max(0, Dp(12) + BottomCornerClearPx() - Dp(20))); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场；vc136 老板令：底部内距统一减 20dp
+            box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场；vc137 老板令：底部内距固定 20dp
             box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档（跟普通面板浅档）
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -1324,7 +1340,7 @@ public partial class MainActivity
                 // vc119 老板令（触发点令）：标题与说明整块可点——说明行同样挂弹层，点哪儿都触发
                 var row = new TextView(this) { TextSize = UiScale.Item };
                 row.SetTextColor(Color.ParseColor("#F7F5EE"));
-                row.SetPadding(Dp(24), Dp(12), Dp(24), Dp(4));
+                row.SetPadding(Dp(24), Dp(8), Dp(24), Dp(2)); // vc137 老板令（「每一行元素压缩一点 不要出现滚动条」）：行上下距 12/4→8/2
                 row.Focusable = true;
                 InkTranslucency.ApplyReadabilityShadow(row);
                 row.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur);
@@ -1333,14 +1349,14 @@ public partial class MainActivity
                 var sub = new TextView(this) { Text = desc, TextSize = UiScale.Caption };
                 sub.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
                 InkTranslucency.ApplyReadabilityShadow(sub);
-                sub.SetPadding(Dp(24), 0, Dp(24), Dp(UiScale.RowGapDp));
+                sub.SetPadding(Dp(24), 0, Dp(24), Dp(6)); // vc137 老板令：说明底距 10→6，滚动能力保留
                 sub.Click += (_, _) => ShowGearSheet(valueText(), steps, gearLabel, set, cur); // vc119：说明也可点
                 body.AddView(sub);
 
                 // vc120 老板令（2026-11-28「进阶调优那个选项页的横线」）：调优行间横线补回——
                 // vc119「只保留横线」令在此页同样执行走样成全去掉。档位弹层 OptLine 同款口径（#3A444D 1dp 全宽）
                 View TuningLine() => new View(this) { Background = new Android.Graphics.Drawables.ColorDrawable(Color.ParseColor("#3A444D")) };
-                body.AddView(TuningLine(), new LinearLayout.LayoutParams(-1, Dp(1)) { TopMargin = Dp(2) });
+                body.AddView(TuningLine(), new LinearLayout.LayoutParams(-1, Dp(1)) { TopMargin = Dp(1) }); // vc137 老板令：横线上距 2→1
 
                 void Refresh() => row.Text = $"{valueText()} ›";
                 refreshers.Add(Refresh);
@@ -1399,7 +1415,7 @@ public partial class MainActivity
             };
             tip.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(tip);
-            tip.SetPadding(Dp(24), Dp(6), Dp(24), Dp(10));
+            tip.SetPadding(Dp(24), Dp(4), Dp(24), Dp(6)); // vc137 老板令：提示行上下距 6/10→4/6，整页压紧一屏装下
             body.AddView(tip);
 
             var btns = new LinearLayout(this) { Orientation = Orientation.Horizontal };
@@ -1425,7 +1441,7 @@ public partial class MainActivity
             btns.AddView(reset, new LinearLayout.LayoutParams(0, btnH, 1f));
             // vc119 老板令：两钮之间补间距（原肩并肩零缝），走全局按钮间距口径
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f) { LeftMargin = Dp(UiScale.BtnGapDp) });
-            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = padAdv }); // vc128 老板令：关闭钮钉面板底，正文上方滚动（vc127 随正文走口径退场）
+            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = Dp(12) }); // vc128 老板令：关闭钮钉面板底，正文上方滚动（vc127 随正文走口径退场）；vc137 老板令：按钮区上距 24→12 压紧
 
             var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档

@@ -509,9 +509,12 @@ public partial class MainActivity
             // vc136 修（老板 15:45 报「横屏锁定没起作用，还是会根据陀螺仪换回竖屏」）：
             // 锁向改用存档（orientation_lock_landscape），不再按当前配置现读——页面重建时系统
             // 瞬时报竖屏会把横屏锁翻成竖屏锁，根因即此；存量安装无存档回落当前配置（旧口径）。
+            // vc137 修（老板 15:59 令「锁定即为锁定翻转 翻转都不生效 解锁状态下任何角度都可以正常翻转」）：
+            // 锁定改用固定方向（Landscape/Portrait），不用 Sensor 系——SensorLandscape 允许横屏两向
+            // 互翻 180°，老板实测「翻转到另一侧横屏」即此；固定方向连 180° 也不动，彻底钉死。
             bool landscape = _prefs.GetBoolean("orientation_lock_landscape",
                 Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape);
-            RequestedOrientation = landscape ? ScreenOrientation.SensorLandscape : ScreenOrientation.SensorPortrait;
+            RequestedOrientation = landscape ? ScreenOrientation.Landscape : ScreenOrientation.Portrait;
         }
         else
         {

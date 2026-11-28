@@ -2175,7 +2175,8 @@ public partial class MainActivity : Activity
         var extra = SubscriptionSourceStore.Shared.GetNewChannels(_channels.Select(c => c.Name));
         if (extra.Count == 0) return 0;
         var merged = new List<Channel>(_channels);
-        int number = merged.Max(c => c.Number);
+        // vc122 审查修（P3 同款）：频道表为空时 Max() 对空表抛异常——空表从 0 起编
+        int number = merged.Count > 0 ? merged.Max(c => c.Number) : 0;
         foreach (var (name, entries) in extra)
         {
             number++;

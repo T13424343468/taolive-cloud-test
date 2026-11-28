@@ -1551,6 +1551,30 @@ public partial class MainActivity : Activity
         if (_scrim is null) return;
         bool need = _listOpen || _settingsPanelOpen;
         _scrim.Visibility = need ? ViewStates.Visible : ViewStates.Gone;
+        UpdateEmptyPillSuppression(); // vc122 审查修（轻微）：有浮层在位时空态胶囊让位，不再透底压面板标题
+    }
+
+    /// <summary>空态胶囊让位（vc122 审查修）：面板/抽屉/子页是透底水墨，空态胶囊垫在下面会透出来
+    /// 压住面板标题——任一浮层在位即隐形让位，全收后若仍在失败态再按原口径亮相。</summary>
+    private bool _emptyPillSuppressed;
+    private void UpdateEmptyPillSuppression()
+    {
+        bool windowOpen = _listOpen || _settingsPanelOpen
+            || _diagOverlay is not null || _statsOverlay is not null
+            || _advOverlay is not null || _advGearOverlay is not null || _licenseOverlay is not null;
+        if (windowOpen)
+        {
+            if (_emptyState.Visibility == ViewStates.Visible)
+            {
+                _emptyState.Visibility = ViewStates.Invisible;
+                _emptyPillSuppressed = true;
+            }
+        }
+        else if (_emptyPillSuppressed)
+        {
+            _emptyPillSuppressed = false;
+            if (_manager.Current?.State == PlaybackState.Failed) ShowEmptyState();
+        }
     }
 
     /// <summary>画面等比拉满（2026-11-27 真机反馈第5条）：竖屏满宽（高 16:9 上下黑边）、横屏满高（宽 16:9 外溢裁切）。
@@ -2170,7 +2194,8 @@ public partial class MainActivity : Activity
         var extra = SubscriptionSourceStore.Shared.GetNewChannels(_channels.Select(c => c.Name));
         if (extra.Count == 0) return 0;
         var merged = new List<Channel>(_channels);
-        int number = merged.Max(c => c.Number);
+        // vc122 审查修（P3）：频道表为空（订阅先于内置表就绪并入）时 Max() 对空表抛异常——空表从 0 起编
+        int number = merged.Count > 0 ? merged.Max(c => c.Number) : 0;
         foreach (var (name, entries) in extra)
         {
             number++;
@@ -2488,6 +2513,8 @@ public partial class MainActivity : Activity
                 topSafe = Math.Max(topSafe, cut.Top + UiScale.Px(8));
             }
             _toastLeft.SetMaxLines(3); // 横屏竖排给三行余量，靠左往下换行
+            // vc122 审查修（轻微）：横屏左挂加宽度钳制——长文案不出右屏沿（钳在文字上，胶囊随之收窄）
+            _toastLeft.SetMaxWidth(Resources.DisplayMetrics!.WidthPixels - leftSafe - UiScale.Px(16));
             lp.Gravity = GravityFlags.Top | GravityFlags.Left;
             lp.LeftMargin = leftSafe;
             lp.TopMargin = topSafe;
@@ -2580,6 +2607,13 @@ public partial class MainActivity : Activity
         HideControlBar(); // vc115 A1：失败横幅与控制条互斥，横幅出场先收控制条
         ReadCutoutGeometry(); // vc117 老板令：亮相前先取准孔位，不拿上次亮条留的旧几何错位
         _emptyState.TextFormatted = BuildEmptyStateText();
+        // 长播无源退级提示（老板 2026-11-17 拍板，归文案项一并落）：空态满 5 分钟起如实报已等
+        // 时长并建议检查网络——自愈慢轮+重探在后台自动复活，不用用户盯屏干等；离开空态即停表撤字。
+        // vc122 审查修（P2）：记账+起拍提到分支前——原竖屏包孔分支提前 return 跳过这两行，
+        // 竖屏（主用姿态）退级提示永不生效且残留旧起点。
+        _emptyStateAtMs = System.Environment.TickCount64;
+        _main.RemoveCallbacks(_emptyHintTick); // 重复亮相不叠拍
+        _main.PostDelayed(_emptyHintTick, 30_000);
         // vc117 令4/5：胶囊挂位——竖屏顶部挖孔区居中（孔下 8dp），横屏左侧挖孔区文字靠左往下换行
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         var lp = _emptyState.LayoutParameters as FrameLayout.LayoutParams;
@@ -2606,23 +2640,26 @@ public partial class MainActivity : Activity
                     int w = _emptyState.Width, h = _emptyState.Height;
                     if (w > 0)
                     {
-                        _emptyState.TranslationX = _cutoutHoleCenterX - w / 2f;
+                        // vc122 审查修（轻微同类）：包孔居中后加左右钳制——孔偏侧时胶囊不出屏
+                        float tx = _cutoutHoleCenterX - w / 2f;
+                        int screenW = Resources.DisplayMetrics!.WidthPixels;
+                        if (tx < 0) tx = 0;
+                        if (tx + w > screenW) tx = screenW - w;
+                        _emptyState.TranslationX = tx;
                         float ty = _cutoutHoleCenterY - h / 2f;
                         int safeTop = SafeTopInset(0);
                         if (ty < safeTop) ty = safeTop;
                         _emptyState.TranslationY = ty;
                     }
                     _emptyState.Visibility = ViewStates.Visible; // 终位落定再亮相
+                    UpdateEmptyPillSuppression(); // vc122 审查修：亮相后若浮层在位即让位（失败态可能在面板开着时到来）
                 });
                 return; // 落位后由 Post 亮相
             }
             _emptyState.LayoutParameters = lp;
         }
         _emptyState.Visibility = ViewStates.Visible;
-        // 长播无源退级提示（老板 2026-11-17 拍板，归文案项一并落）：空态满 5 分钟起如实报已等
-        // 时长并建议检查网络——自愈慢轮+重探在后台自动复活，不用用户盯屏干等；离开空态即停表撤字。
-        _emptyStateAtMs = System.Environment.TickCount64;
-        _main.PostDelayed(_emptyHintTick, 30_000);
+        UpdateEmptyPillSuppression(); // vc122 审查修：同上，横屏分支同口径
     }
 
     /// <summary>失败终态文案装配单点（vc113 原型对照令 v31 retry-tag）。
@@ -2679,9 +2716,10 @@ public partial class MainActivity : Activity
 
     private void HideEmptyState()
     {
-        if (_emptyState.Visibility != ViewStates.Visible) return;
+        if (_emptyState.Visibility != ViewStates.Visible) { _emptyPillSuppressed = false; return; }
         _emptyState.Visibility = ViewStates.Invisible;
         _main.RemoveCallbacks(_emptyHintTick);
+        _emptyPillSuppressed = false; // vc122 审查修：状态离开失败态即清让位账，防陈旧恢复
     }
 
     // —— 列表适配器（vc53 ChannelAdapter 皮整套搬运）：

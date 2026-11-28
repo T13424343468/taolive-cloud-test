@@ -239,6 +239,10 @@ public partial class MainActivity
     {
         if (_diagBtnRow is null) return;
         _diagBtnRow.RemoveAllViews();
+        // vc122 审查修（P3）：重建前先摘旧导出钮的导航引用——反复切页签时旧钮已离屏却留在
+        // _settingsRows 里积累死引用，焦点会落空。
+        if (_diagExportBtn is not null) _settingsRows.Remove(_diagExportBtn);
+        _diagExportBtn = null;
         if (_diagTab != 2) return;
         var b = new TextView(this) { Text = "导出日志", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
         b.SetPadding(Dp(20), Dp(12), Dp(20), Dp(12));
@@ -255,6 +259,7 @@ public partial class MainActivity
         };
         StyleOverlayButton(b);
         _diagBtnRow.AddView(b, new LinearLayout.LayoutParams(-2, -2));
+        _diagExportBtn = b;
         _settingsRows.Add(b); // 显式焦点导航覆盖操作钮（#61 口径）
     }
 
@@ -658,6 +663,7 @@ public partial class MainActivity
 
     /// <summary>vc117 令11：设置页底部「关闭」行（面板只建一次；重建行序列时补回导航尾位）。</summary>
     private TextView? _settingsCloseRow;
+    private TextView? _diagExportBtn; // vc122 审查修（P3）：导出钮导航引用随建随摘，防切页签积累死引用
 
     /// <summary>焦点落到指定行并滚入可视区。</summary>
     private void FocusSettingsRow(int idx)

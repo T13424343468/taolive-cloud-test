@@ -122,9 +122,8 @@ public partial class MainActivity : Activity
     private static EventHandler<FailoverEventArgs>? _failoverRelay; // 换源回调转接器：进程级唯一（幂等 -=/+=），换壳不双收
     private static EventHandler? _slowGraceRelay; // 慢连宽限回调转接器（vc86 F7）：宽限窗挂「正在换信号」提示，换壳不双收
     private static EventHandler<SourceEndpoint>? _weakFillRelay; // 灌速探针转接器（vc89）：弱线起播期后台焐热备线票，换壳不双收
-    // vc86 C 预检对齐（老板令 F4 拍板）：5s→8s——内核连接超时 12s/读超时 15s 已放宽，预检先行超时
-    // 会把「慢而通」的源探成死票错标；8s 与死循环方案 F4 预检超时对齐，慢源不再被预检抢杀
-    private static readonly HttpClient PrecheckHttp = new() { Timeout = TimeSpan.FromSeconds(8) };
+    // vc142 真拉流令：预检 HttpClient 退役——探活改走 StreamProbe（拉清单+拉一片分片，自带 8 秒预算与 UA 对齐），
+    // 原「只测取票口/只取头」的假绿口径随壳退场
 
     // ---- vc82 统一调度器（方案三，老板拍板单开工程）：后台各路活全部登记排班，自跑循环退役 ----
     // 排班归调度器（谁先谁后、轮次串行），车道纪律由各路活内部逐请求自过（绝不并发）——两层职责正交互为保险。
@@ -1152,7 +1151,10 @@ public partial class MainActivity : Activity
             _list.VerticalScrollbarThumbDrawable = new Android.Graphics.Drawables.ColorDrawable(Color.Transparent);
         // vc119 老板令：列表左右内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐统一边线（vc138 起 20dp）
         // vc121 同类排查：底部内距=圆角让位——滚到底最后一行能滚出系统圆角弧区，不贴底被削
-        _list.SetPadding(UiScale.Dp(12), 0, UiScale.Dp(12), BottomCornerClearPx()); // vc138 老板令（「左右一律20」+「框线移了内部元素没移会覆盖」排查）：列表左右内距 16→12——行内容（12+行内8）对齐 20dp 边线与页头/筛选框对齐；当前台描边框画在 12dp 内距边线，与行内容保持 8dp 实距（vc124 口径不变）；vc139 左右切物理 dp 口径
+        // vc142 老板令（2026-11-28 晚「边距以上半区为准 列表页去对齐」）：列表左右内距 12→20dp——
+        // 行卡片描边与页头/页签/水位行/筛选框同落 20dp 边线（实测旧 12dp 描边比上半区探出 8dp）；
+        // 行内 8dp 呼吸边保留，行文字与筛选框文字同口径内缩
+        _list.SetPadding(UiScale.Dp(ListEdgePad), 0, UiScale.Dp(ListEdgePad), BottomCornerClearPx()); // vc139 左右切物理 dp 口径
         _list.SetClipToPadding(false);
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _list.Selector = InkTranslucency.FocusDrawable();
@@ -1270,9 +1272,9 @@ public partial class MainActivity : Activity
         ShowPlayer();
     }
 
-    /// <summary>预检轻探（vc53 口径）：Web 取票口换票成功即服务器可达（结果落 5 分钟缓存）；直连源只取头数据验证，不建视频传输。
-    /// 探测结果回灌断网监测（方案书 v82，白屏镜红①）：成功=网络可达；全源失败=一次失败回灌；
-    /// 恢复沿触发当前台静默自动重连。</summary>
+    /// <summary>预检真拉流（vc142 老板令「健康点真拉流」）：只测取票口=假绿根因（票通≠流通）。
+    /// Web 源取票成功后真拉一次流（拉清单+拉一片分片，StreamProbe），拉不动判死落下一源；
+    /// 直连源同口径真拉（清单→分片/直连流首块验通+广告壳判死）。探测结果回灌断网监测（方案书 v82）。</summary>
     private async Task<bool> ProbeChannelAsync(Channel ch)
     {
         var ok = await ProbeChannelCoreAsync(ch).ConfigureAwait(false);
@@ -1304,9 +1306,14 @@ public partial class MainActivity : Activity
                     var url = await _resolver.ResolveAsync(ep, ch.Id, ch.Name).ConfigureAwait(false);
                     if (!string.IsNullOrEmpty(url))
                     {
-                        if (!ok) { ok = true; continue; } // 首通：继续走剩余备援焐票
-                        if (++warmed >= 2) break;         // 备援票封顶，焐够即收
-                        continue;
+                        // vc142 真拉流：票通≠流通——真拉一次（清单+一片分片），拉不动判死落下一源
+                        if (await StreamProbe.PullAsync(url, Catalog.TicketResolver.ClientUserAgent).ConfigureAwait(false))
+                        {
+                            if (!ok) { ok = true; continue; } // 首通：继续走剩余备援焐票
+                            if (++warmed >= 2) break;         // 备援票封顶，焐够即收
+                            continue;
+                        }
+                        CrashNet.Record($"[探活] {ch.Name} 取票成功但真拉流失败（{HostOf(ep)}），判死");
                     }
                     // 探活失败明细（埋点补充 2026-11-15）：此前单源失败静默落下一源，全断才判死——补失败源与原因明细
                     if (!ok) CrashNet.Record($"[探活] {ch.Name} 取票口失败（{HostOf(ep)}，返回空）");
@@ -1314,30 +1321,13 @@ public partial class MainActivity : Activity
                 else
                 {
                     if (ok) break; // 已有通路：直连无票可焐，不再多连（保温只对取票口端点）
-                    using var req = new HttpRequestMessage(HttpMethod.Get, ep.Url);
-                    req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 8191);
-                    using var res = await PrecheckHttp.SendAsync(req).ConfigureAwait(false);
-                    if ((int)res.StatusCode < 400)
+                    // vc142 真拉流：直连同口径真拉（清单→分片/直连流首块验通+广告壳判死），不再只测头
+                    if (await StreamProbe.PullAsync(ep.Url, Catalog.TicketResolver.ClientUserAgent).ConfigureAwait(false))
                     {
-                        // vc86 老板令·广告源剔除（央六慢连跳广告源实锤）：内容校验——读分片首字节，
-                        // 首个非空白字节是 '<' 即 HTML 广告壳（真源是 #EXTM3U/0x47 二进制），判死落下一源
-                        var head = await res.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-                        byte first = 0;
-                        foreach (var b in head)
-                        {
-                            if (!char.IsWhiteSpace((char)b)) { first = b; break; }
-                        }
-                        if (first == (byte)'<')
-                        {
-                            CrashNet.Record($"[探活] {ch.Name} 直连探活命中 HTML 广告壳（{HostOf(ep)}），判死");
-                        }
-                        else
-                        {
-                            ok = true; // 首通：继续走剩余取票口备援焐票
-                            continue;
-                        }
+                        ok = true; // 首通：继续走剩余取票口备援焐票
+                        continue;
                     }
-                    CrashNet.Record($"[探活] {ch.Name} 直连探活 HTTP {(int)res.StatusCode}（{HostOf(ep)}）");
+                    CrashNet.Record($"[探活] {ch.Name} 直连真拉流失败（{HostOf(ep)}），判死");
                 }
             }
             catch (Exception ex)
@@ -1874,6 +1864,31 @@ public partial class MainActivity : Activity
         }
     }
 
+    // —— 系统返回手势兜底（vc142 老板令「任何页面 系统的返回手势都应该可以回到上一级或者关闭」：
+    //    子级回上一级、顶级关闭。按浮层栈从上到下逐级收口，与 OnKeyDown 遥控器口径同构） ——
+    // CA1422：OnBackPressed 在 API 33+ 标记过时（预测性返回手势），本项目 minSdk<33 且未接
+    // OnBackPressedDispatcher，override 仍是全机型统一兜底口径——显式压警（零警告出包硬门禁）。
+#pragma warning disable CA1422
+    public override void OnBackPressed()
+    {
+        // ① 自绘确认框（最上层小浮层）：返回=取消收框
+        if (_confirmOverlay is not null) { CloseConfirmOverlay(); return; }
+        // ② 进阶调优档位弹层：子级回上一级（收弹层回进阶调优页）
+        if (_advGearOverlay is not null) { CloseAdvGearSheetOnly(); ShowAdvancedTuningPanel(); return; }
+        // ③~⑥ 各全屏子页：回设置页（关闭即上一级）
+        if (_advOverlay is not null) { CloseAdvancedPanel(); return; }
+        if (_diagOverlay is not null) { CloseDiagPanel(); return; }
+        if (_statsOverlay is not null) { CloseStatsPanel(); return; }
+        if (_licenseOverlay is not null) { CloseLicensePanel(); return; }
+        // ⑦ 设置面板：收面板回播放页
+        if (_settingsPanelOpen) { CloseSettingsPanel(); return; }
+        // ⑧ 频道抽屉：排序中=取消复原；普通=收抽屉（顶级=默认退后台）
+        if (_sortMode) { HandleSortKey(Keycode.Back); return; }
+        if (_listOpen) { ExitOrCollapseList(); return; }
+        base.OnBackPressed(); // 顶级：默认退后台
+    }
+#pragma warning restore CA1422
+
     // —— 遥控器键位（vc53 交互口径 + 2.0 频道号直达：菜单呼/收抽屉、上下换台、左右切页签、确认收藏） ——
 
     public override bool OnKeyDown([GeneratedEnum] Keycode keyCode, KeyEvent? e)
@@ -1886,6 +1901,13 @@ public partial class MainActivity : Activity
         }
 
         // vc112：退出确认弹窗已整删（返回=停播攒流退后台），无弹窗按键接管
+
+        // vc142 老板令：自绘确认框开着时，返回/菜单=取消收框；其余键不穿透，防误触底层键位
+        if (_confirmOverlay is not null)
+        {
+            if (keyCode is Keycode.Back or Keycode.Menu or Keycode.Escape) CloseConfirmOverlay();
+            return true;
+        }
 
         // vc117 令12：档位弹层与底层页互斥——弹层开着时底层进阶调优页已收，须独立接住：
         // 返回/菜单=收弹层回进阶调优页；其余键不穿透，防误触底层键位
@@ -3420,8 +3442,8 @@ public partial class MainActivity : Activity
             // vc115 D2：当前台改 deep #3D6E9E 描边（原型 .chan-row.current），去棕色 Accent 填充。
             // vc117 令6：描边内收与行内容同边线；vc121 老板拍板方案A（2026-11-28 真机「框线盖到台标」）：
             // 描边盒内缩改 4dp——vc124 老板令（2026-11-28 真机「框线还是压台标」实锤：低缩放档 4dp≈2px，
-            // 描边与台标视觉压线）内缩 4dp 退场，改 0 内缩——描边画在列表 16dp 内距边线上，
-            // 与台标（24dp 边线起笔）拉开 8dp 实距，行内容位置一概不动
+            // 描边与台标视觉压线）内缩 4dp 退场，改 0 内缩——vc142 起描边随列表内距画在 20dp 边线上
+            //（与页头/筛选框同线），行内容再内缩 8dp 呼吸边，行内元素位置一概不动
             if (isCur)
             {
                 var curBg = new Android.Graphics.Drawables.GradientDrawable();

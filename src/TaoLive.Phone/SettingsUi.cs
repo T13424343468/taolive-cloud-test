@@ -33,6 +33,7 @@ public partial class MainActivity
     private FrameLayout? _advOverlay;
     private FrameLayout? _advGearOverlay; // vc111 v10 原型：进阶调优底部档位弹层（点行弹出，点遮罩收层）
     private FrameLayout? _licenseOverlay;
+    private FrameLayout? _confirmOverlay; // vc142 老板令：二次确认统一自绘浮层（白底 AlertDialog 退场，风格对齐现有浮层体系）
     private ScrollView? _licenseScroll;
     private TextView? _licenseCloseBtn;
 
@@ -142,6 +143,7 @@ public partial class MainActivity
         CloseAdvancedOverlayOnly();
         CloseDiagOverlayOnly();           // vc113：诊断日志/运行统计子页同入唯一闸
         CloseStatsOverlayOnly();
+        CloseConfirmOverlay();            // vc142：自绘确认框同入唯一闸（开新先关旧）
     }
 
     private void OpenSettingsPanel()
@@ -1234,27 +1236,85 @@ public partial class MainActivity
         _diagTabs.Clear();
     }
 
-    /// <summary>🗑 清空（原型 04 节：清空需二次确认）——确认后删崩溃日志文件并刷新正文。</summary>
+    /// <summary>🗑 清空（原型 04 节：清空需二次确认）——确认后删崩溃日志文件并刷新正文。
+    /// vc142 老板令：白底 AlertDialog 退场，统一走自绘确认浮层（风格对齐现有浮层体系）。</summary>
     private void ConfirmClearCrashLog()
     {
-        var builder = new Android.App.AlertDialog.Builder(this); // 绑定只收资源 ID 重载，文案落 strings.xml
-        builder.SetTitle(Resource.String.diag_clear_title);
-        builder.SetMessage(Resource.String.diag_clear_msg);
-        builder.SetPositiveButton(Resource.String.diag_clear_ok, (object? s, DialogClickEventArgs e) =>
-        {
-            try
+        ShowConfirmOverlay(
+            GetString(Resource.String.diag_clear_title),
+            GetString(Resource.String.diag_clear_msg),
+            GetString(Resource.String.diag_clear_ok),
+            GetString(Resource.String.diag_clear_cancel),
+            onOk: () =>
             {
-                var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
-                if (path.Exists()) System.IO.File.Delete(path.AbsolutePath!);
-                ShowToast("崩溃日志已清空");
-            }
-            catch { ShowToast("清理失败，请重试"); }
-            LoadDiagBody();
-            (s as Android.Content.IDialogInterface)?.Dismiss();
-        });
-        builder.SetNegativeButton(Resource.String.diag_clear_cancel, (object? s, DialogClickEventArgs e) =>
-            (s as Android.Content.IDialogInterface)?.Dismiss());
-        builder.Show();
+                try
+                {
+                    var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
+                    if (path.Exists()) System.IO.File.Delete(path.AbsolutePath!);
+                    ShowToast("崩溃日志已清空");
+                }
+                catch { ShowToast("清理失败，请重试"); }
+                LoadDiagBody();
+            });
+    }
+
+    // —— 自绘二次确认浮层（vc142 老板令「这个询问框能不能统一风格自绘」：系统白底 AlertDialog 退场）——
+    //    遮罩/卡片/文字/按钮全对齐现有浮层体系：OutlineBox 圆角线框卡片、StyleOverlayButton 框线透明底按钮、
+    //    清空类改动性按钮走朱砂 accent；点遮罩=取消；确认框是诊断页之上的独立小浮层，不进 EnforceSingleWindow 之外的闸。
+
+    /// <summary>弹自绘确认框：标题+正文+双按钮横排（okText=改动性 accent，cancelText=普通）；点遮罩=取消。</summary>
+    private void ShowConfirmOverlay(string title, string message, string okText, string cancelText, Action onOk)
+    {
+        CloseConfirmOverlay(); // 幂等：重复弹先收旧
+        var overlay = new FrameLayout(this) { Clickable = true };
+        overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
+        overlay.Click += (_, _) => CloseConfirmOverlay(); // 点遮罩=取消
+
+        var card = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        card.Background = InkTranslucency.OutlineBox(this, 12, InkTranslucency.FocusStrokeAlpha); // 圆角 12 对齐浮层卡片口径
+        int pad = Dp(24);
+        card.SetPadding(pad, pad, pad, pad);
+
+        var titleView = new TextView(this) { Text = title, TextSize = UiScale.Title };
+        titleView.SetTextColor(InkTranslucency.TextPrimary(this));
+        InkTranslucency.ApplyReadabilityShadow(titleView);
+        card.AddView(titleView, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = Dp(10) });
+
+        var msgView = new TextView(this) { Text = message, TextSize = UiScale.Caption };
+        msgView.SetTextIsSelectable(false);
+        msgView.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(msgView);
+        card.AddView(msgView, new LinearLayout.LayoutParams(-2, -2) { BottomMargin = Dp(20) });
+
+        // 双按钮横排：取消=普通（左），确认/清空=改动性 accent 朱砂（右）
+        var btnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        var cancelBtn = new TextView(this) { Text = cancelText, Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+        cancelBtn.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
+        cancelBtn.Click += (_, _) => CloseConfirmOverlay();
+        StyleOverlayButton(cancelBtn);
+        var okBtn = new TextView(this) { Text = okText, Gravity = GravityFlags.Center, TextSize = UiScale.Item };
+        okBtn.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
+        okBtn.Click += (_, _) => { CloseConfirmOverlay(); onOk(); };
+        StyleOverlayButton(okBtn, accent: true);
+        btnRow.AddView(cancelBtn, new LinearLayout.LayoutParams(0, Dp(60), 1f) { RightMargin = Dp(10) });
+        btnRow.AddView(okBtn, new LinearLayout.LayoutParams(0, Dp(60), 1f) { LeftMargin = Dp(10) });
+        card.AddView(btnRow);
+
+        // 卡片居中窄幅（对齐对话框体感，宽度跟档缩放封顶）
+        int cardW = Math.Min(Dp(340), (Resources?.DisplayMetrics?.WidthPixels ?? Dp(360)) - Dp(40) * 2);
+        overlay.AddView(card, new FrameLayout.LayoutParams(cardW, -2) { Gravity = GravityFlags.Center });
+        _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        _confirmOverlay = overlay;
+        cancelBtn.RequestFocus(); // 焦点落在取消上：误触确认的代价更小
+    }
+
+    /// <summary>收自绘确认框（幂等，重复调无害）。</summary>
+    private void CloseConfirmOverlay()
+    {
+        if (_confirmOverlay is null) return;
+        _root.RemoveView(_confirmOverlay);
+        _confirmOverlay.Dispose();
+        _confirmOverlay = null;
     }
 
     /// <summary>运行统计页（原型 05 节）：只读一页无按钮，聚合台账分组展示；空态「暂无运行台账」不白板；

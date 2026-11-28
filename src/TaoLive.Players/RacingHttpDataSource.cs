@@ -165,20 +165,21 @@ public sealed class RacingDataSourceFactory : Java.Lang.Object, AndroidX.Media3.
             () => new ParallelPrefetchDataSource(CreateInner, observer)));
     }
 
-    internal static AndroidX.Media3.DataSource.IDataSource CreateInner()
+    /// <summary>裸 HTTP 工厂（vc142 老板令「后台拉片不碰换票链」）：超时与 UA 与播放链同口径单点对齐，
+    /// 无竞速壳无换票壳——灌水器/备源攒水等后台拉片专用：4xx 只走调用方自己的退避账，
+    /// 不触发坏票轮换（不碰票据缓存、不烧频控账）。每次返回新工厂实例（无共享状态顾虑）。</summary>
+    internal static AndroidX.Media3.DataSource.IDataSourceFactory CreateRawHttpFactory()
     {
-        // 老板令 2026-11-17 慢源宽限 A：内核 HTTP 超时放宽——连接 8→12s（与会话起播窗对齐）、
-        // 读 8→15s（连接后慢灌容忍）；真死线（拒绝连接/DNS/404）不受影响照旧快切。
-        // 链式 setter 在 xamarin 绑定空性标注下触发 CS8602，拆步落局部变量消除
+        // 链式 setter 在 xamarin 绑定空性标注下触发 CS8602，拆步落局部变量消除（CreateInner 同款）
         var factory = new AndroidX.Media3.DataSource.DefaultHttpDataSource.Factory();
         factory.SetConnectTimeoutMs(12_000);
         factory.SetReadTimeoutMs(15_000);
-        // vc100 UA 对齐（真机 11-27 实锤）：取票用浏览器 UA 成功、播放内核却带 Dalvik 默认 UA，
-        // CDN 对「票与请求指纹不符」的播放请求回 4xx——一期 LibVLC 经 http-user-agent 挂浏览器 UA 可播，
-        // 2.0 换 Media3 后漏配。播放链（Racing/TicketSwap/ParallelPrefetch）全部经本工厂出网，单点对齐。
         factory.SetUserAgent(TaoLive.Catalog.TicketResolver.ClientUserAgent);
-        return factory.CreateDataSource()!;
+        return factory;
     }
+
+    internal static AndroidX.Media3.DataSource.IDataSource CreateInner()
+        => CreateRawHttpFactory().CreateDataSource()!;
 }
 
 /// <summary>

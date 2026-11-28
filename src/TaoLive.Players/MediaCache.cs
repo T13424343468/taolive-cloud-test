@@ -20,9 +20,8 @@ namespace TaoLive.Players;
 /// 进程级落盘缓存是唯一数据面——网络分片先进缓存，播放器只从缓存读；未命中走网络边拉边写。
 /// 同线重连/宽限重试时滑动窗口内分片命中续播，不再从零重攒。直播清单（.m3u8/.mpd）永不缓存
 /// （每次必拉最新，防过期窗口）。
-/// 「永远满 60 秒」：<see cref="CacheFiller"/> 即唯一水位大脑——后台按试探档位
-/// （<see cref="FillThrottle"/>：默认单路、水位不涨逐路加、封顶 3 路、被拒即缩）把未播内容
-/// 顺灌到满 60 秒；水满收兵，清单滚动或消费前推即再灌。
+/// 「永远满 60 秒」：<see cref="CacheFiller"/> 即唯一水位大脑——后台单路（vc142 老板令「同源后台
+/// 只许 1 条」）把未播内容顺灌到满设置页「预取库存时长」旋钮的秒数；水满收兵，清单滚动或消费前推即再灌。
 /// 「吃了就清」：LRU 256MB 兜底 + 定期清扫——最近 120 秒（60 秒水位窗+余量）没被读过的分片
 /// （已播过/已换台作废）清出；水位窗内正在吃和即将吃的绝不清。缓存目录随进程存活，
 /// 内核实例重建不清（这正是「留」的关键）。
@@ -32,15 +31,18 @@ public static class MediaCache
     /// <summary>缓存上限（字节）：LRU 淘汰兜底，60 秒水位窗体量远小于此值。</summary>
     private const long MaxBytes = 256L * 1024 * 1024;
 
-    /// <summary>分片存活期（毫秒）：最后一次被读（吃）超过此时长的分片清出——60 秒水位窗内
-    /// 的分片最迟每 60 秒被吃一次（touch 刷新），120 秒线只清身后已播过/已作废的水。</summary>
-    private const long SliceTtlMs = 120_000;
+    /// <summary>缓存水位线（毫秒）：未播内容攒满设置页「预取库存时长」旋钮的秒数才停灌。
+    /// vc142 老板令（「同时要排查设置页所有旋钮是否全局生效」）：原 const 60_000 绕开旋钮属实锤，
+    /// 改读 AdvancedTuning.PrefetchWindowSec（30/45/60 秒三档，Apply 钳制 10~300）——旋钮写活不写死。</summary>
+    internal static long WaterAheadMs => AdvancedTuning.PrefetchWindowSec * 1000L;
+
+    /// <summary>分片存活期（毫秒）：最后一次被读（吃）超过此时长的分片清出——水位窗内的分片最迟
+    /// 每窗被吃一次（touch 刷新），TTL 线只清身后已播过/已作废的水。vc142：随水位窗旋钮走
+    /// （下限 120 秒=原 60 秒窗+余量口径），窗调深 TTL 同步放大，窗内水绝不清。</summary>
+    private static long SliceTtlMs => Math.Max(120_000, WaterAheadMs * 2);
 
     /// <summary>清扫周期（毫秒）：定期扫缓存把过期分片清掉。</summary>
     private const long SweepPeriodMs = 10_000;
-
-    /// <summary>缓存水位线（毫秒）：未播内容攒满 60 秒才停灌（老板 2026-11-28 16:53 拍板）。</summary>
-    internal const long WaterAheadMs = 60_000;
 
     private static SimpleCache? _cache;
     private static BackupFiller? _backupFiller;
@@ -127,7 +129,12 @@ public static class MediaCache
             {
                 var fetch = new CacheDataSource.Factory();
                 fetch.SetCache(Get(ctx));
-                fetch.SetUpstreamDataSourceFactory(new RacingDataSourceFactory(null));
+                // vc142 老板令（「同源后台只许 1 条、不碰换票链」）：灌水器统一出口 upstream 改裸 HTTP 工厂——
+                // 原 RacingDataSourceFactory(null) 带 TicketSwap 换票壳，灌水器 4xx 即触发坏票轮换
+                // （作废票据缓存+烧频控账），播放内核换不到新票→全线路不可达（CCTV 全断根因②）。
+                // 裸内层 4xx 只走灌水器自己的退避账（OnRejected/OnFailed），票据缓存分毫不动；
+                // 缓存键=URL 与播放器缓存互通，写穿落盘口径不变。
+                fetch.SetUpstreamDataSourceFactory(RacingDataSourceFactory.CreateRawHttpFactory());
                 fetch.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
                 fetch.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
                 fetch.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
@@ -289,16 +296,15 @@ public static class MediaCache
     }
 
     /// <summary>
-    /// 缓存灌水器=唯一水位大脑（vc140，老板 2026-11-28 拍板「大手术一次到位」——vc94 试探并发
-    /// 引擎收编进灌水器，<see cref="FillThrottle"/> 管档位与退避，本类管分片账与水位）：
+    /// 缓存灌水器=唯一水位大脑（vc140，老板 2026-11-28 拍板「大手术一次到位」；vc142 老板令
+    /// 「同源后台只许 1 条、不碰换票链」单路化收口）：
     /// - 清单换代：观测壳喂全文，解析分片表（复用 <see cref="HlsPlaylistInspector"/>）；
-    ///   换台（清单地址变）旧账全清+试探档位归零；同台滚动只重整已灌/在途/退避账；
+    ///   换台（清单地址变）旧账全清+退避整账清零；同台滚动只重整已灌/在途/退避账；
     /// - 消费记账：播放器开流某分片即前推消费位置（幂等不回退）；
-    /// - 顺灌：每拍按档位 <c>budget = 1 + ProbeLevel</c> 发并发路（每路经统一出口
-    ///   <see cref="HlsPlaylistInspector"/> 同款缓存工厂拉满写穿落盘）——第 0 路是基本盘不做
-    ///   host 保守检查，第 1 路起避开保守 host（源脾气账）；未播内容攒满 60 秒收兵；
-    /// - 试探纪律（<see cref="FillThrottle"/>）：默认单路；水位采样不涨才逐路加（封顶 3 路）；
-    ///   429/403 被拒即档位归零+源脾气入账；其他失败 per-URL 指数退避（2 秒~5 分钟）；
+    /// - 顺灌：每拍发单路（基本盘 1 路，试探加路已拆）从消费位+2 段起顺序选未灌/未在途/未退避
+    ///   分片，经统一出口（裸内层缓存工厂，4xx 不碰票据）拉满写穿落盘；未播内容攒满旋钮秒数收兵；
+    /// - 纪律（<see cref="FillThrottle"/> 退避与脾气账保留）：429/403 被拒即源脾气入账；
+    ///   其他失败 per-URL 指数退避（2 秒~5 分钟）；
     /// - 在途账：<see cref="_inFlight"/> 防同片重复发路；成功/失败/被拒各回报，finally 收账+Kick。
     /// </summary>
     internal sealed class CacheFiller
@@ -401,9 +407,10 @@ public static class MediaCache
             }
         }
 
-        /// <summary>顺灌一拍：锁内算磁盘领先水位（aheadMs）喂试探引擎采样——水满收兵；否则按档位
-        /// <c>budget = 1 + ProbeLevel</c> 从消费位之后顺序选未灌/未在途/未退避分片发并发路
-        /// （第 0 路基本盘不做 host 保守检查，第 1 路起避开保守 host）；锁外逐路异步拉满落盘。</summary>
+        /// <summary>顺灌一拍：锁内算磁盘领先水位（aheadMs）——水满收兵；否则从消费位之后顺序选
+        /// 一个未灌/未在途/未退避分片发单路拉取（vc142 老板令「同源后台只许 1 条」：试探加路整段拆除，
+        /// <see cref="FillThrottle"/> 的 ProbeLevel 加路逻辑不再被灌水器使用，退避与脾气账保留）；
+        /// 锁外异步拉满落盘。</summary>
         private void PumpTick()
         {
             if (_stopped) return;
@@ -419,10 +426,11 @@ public static class MediaCache
                 {
                     if (_filled.Contains(segs[i].Url)) aheadMs += (long)(segs[i].DurationSec * 1000);
                 }
-                _throttle.OnSample(aheadMs);
-                if (aheadMs >= WaterAheadMs) return; // 水满收兵（档位保留，回落自然收敛）
+                if (aheadMs >= WaterAheadMs) return; // 水满收兵（读旋钮实时值）
 
-                int budget = 1 + _throttle.ProbeLevel;
+                // vc142 老板令：同源后台只许 1 条连接——灌水器基本盘 1 路，试探加路（1+ProbeLevel）拆除；
+                // 4 条打同源抢带宽抢写锁（vc140 手术实锤）的根因随单路化根除
+                const int budget = 1;
                 picks = new List<string>(budget);
                 // vc141 根因修①：从消费位+2 段起灌（让位播放头）——播放器正要吃的段（消费位+1）留给
                 // 播放器自己拉，同段写锁竞争（播放线程被 SimpleCache.startReadWrite 无限期阻塞）根除
@@ -430,8 +438,6 @@ public static class MediaCache
                 {
                     var url = segs[i].Url;
                     if (_filled.Contains(url) || _inFlight.Contains(url) || _throttle.IsBackedOff(url)) continue;
-                    // 第 1 路起避开保守 host（源脾气账：被拒过的 host 先让基本盘顶）
-                    if (picks.Count > 0 && _throttle.IsHostConservative(SourceTemperStore.HostOf(url))) continue;
                     picks.Add(url);
                 }
                 foreach (var url in picks) _inFlight.Add(url);
@@ -460,7 +466,7 @@ public static class MediaCache
         internal const long SegmentFetchBudgetMs = 60_000;
 
         /// <summary>经统一出口拉满一片（缓存命中零网络，未命中写穿落盘）；成功/429·403 被拒/
-        /// 其他失败各回报试探引擎（档位、退避、源脾气各按账走）。</summary>
+        /// 其他失败各回报纪律账（vc142 起档位引擎闲置，退避与源脾气账照走）。</summary>
         private async Task FetchSegmentAsync(string url)
         {
             AndroidX.Media3.DataSource.IDataSource? ds = null;

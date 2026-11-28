@@ -325,7 +325,9 @@ public partial class MainActivity
         // 按钮可视盒 10dp 触控内缩同步撤除（可视盒=视图全域，触控区不变）；圆角让位封顶 20dp——
         // 图标可视盒落屏边约 20dp（小圆角机型仍按「半径+8px」动态让位，不被弧线削角）。
         // 文字两行直接扛 20dp 边线，与图标同线。
-        _controlBar.SetPadding(0, UiScale.Dp(10), 0, UiScale.Dp(6));
+        // vc142 老板令（2026-11-28 18:26「补10的上下间距」）：内缩撤除吃掉了上下各 10dp 视觉间距，
+        // 条级上下内距 10/6→20/16 补回（左右不动，左右账走让位线）。
+        _controlBar.SetPadding(0, UiScale.Dp(20), 0, UiScale.Dp(16));
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
@@ -435,7 +437,8 @@ public partial class MainActivity
         // vc132 老板令（14:25「按钮整体再往左右各靠一点」）：圆角让位收窄 8dp（钳 0），按钮更贴两缘
         // vc141 老板令（17:50「去掉 然后再改到 剩下约 20dp」）：让位封顶 20dp——图标可视盒落屏边约 20dp，
         // 小圆角机型仍按「半径+8px」动态让位不被弧线削角（条内距与触控内缩已撤，可视盒=让位线）
-        int cornerClear = Math.Min(BottomCornerClearPx(), UiScale.Dp(20));
+        // vc142 老板令（2026-11-28 18:26「左右间距从35换到30」）：让位封顶 20→30dp，图标离屏边 30dp
+        int cornerClear = Math.Min(BottomCornerClearPx(), UiScale.Dp(30));
         btnRow.AddView(left, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = cornerClear });
         var space = new View(this);
         btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
@@ -573,14 +576,14 @@ public partial class MainActivity
     private void ApplyControlBarCornerClear()
     {
         if (_controlBar is null) return;
-        int clear = Math.Min(BottomCornerClearPx(), UiScale.Dp(20)); // vc141 老板令（17:50「剩下约 20dp」）：让位封顶 20dp，可视盒=让位线
+        int clear = Math.Min(BottomCornerClearPx(), UiScale.Dp(30)); // vc142 老板令（18:26「左右间距从35换到30」）：让位封顶 30dp，可视盒=让位线
         if (_cbBtnLeft is { } l && l.LayoutParameters is LinearLayout.LayoutParams ll) ll.LeftMargin = clear;
         if (_cbBtnRight is { } r && r.LayoutParameters is LinearLayout.LayoutParams rl) rl.RightMargin = clear;
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
         _main.Post(() =>
         {
             if (_controlBar is null) return;
-            int clear2 = Math.Min(BottomCornerClearPx(), UiScale.Dp(20)); // vc141 老板令：让位封顶 20dp，与首建同口径
+            int clear2 = Math.Min(BottomCornerClearPx(), UiScale.Dp(30)); // vc142 老板令：让位封顶 30dp，与首建同口径
             if (_cbBtnLeft is { } l2 && l2.LayoutParameters is LinearLayout.LayoutParams ll2) ll2.LeftMargin = clear2;
             if (_cbBtnRight is { } r2 && r2.LayoutParameters is LinearLayout.LayoutParams rl2) rl2.RightMargin = clear2;
             _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());

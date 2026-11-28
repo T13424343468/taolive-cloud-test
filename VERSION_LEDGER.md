@@ -193,7 +193,7 @@
 - 测试：新增 SourceRateGateTests 6 用例（新鲜不冷却/冷却进出/步进封顶/OnOk 清账/同主机共账跨主机隔离/非法 URL 不抛；xUnit 口径）
 - 统一验证：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（vc143 基线 417+新增 6）；badging 亲验 144/1.0.34；apksigner verify 过
 - 交付包：dist-phone/TaoLive-1.0.34-vc144/（apk sha256 7728542b…2f93f8）+ 同名 zip，文件卡片已发
-- git：commit 待补（本段提交后回填）
+- git：commit 518355e 已推 phone-src（触发云测）
 
 ## vc143 / 1.0.33（2026-11-28 19:14 老板令「快出」——vc142 真机全频道断流根因追查诊断盲区修 + 控制条按钮间距补10）
 - 版本锚：csproj 143/1.0.33 = manifest 143/1.0.33 = badging 143/1.0.33（三处对账一致，亲验）

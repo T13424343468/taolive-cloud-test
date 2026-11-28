@@ -140,7 +140,9 @@ jobs:
           fi
           EMU=$ANDROID_HOME/emulator/emulator
           set +e
-          "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot $ACCEL -gpu swiftshader_indirect -memory 3072 -show-kernel > emulator.log 2>&1 &
+          # -dns-server 显式指定公网 DNS：基线首跑实锤模拟器 DNS 转发（10.0.2.3）在部分 runner 上挂，
+          # ExoPlayer 全程 UnknownHostException，App 表现正确但基线空转
+          "$EMU" @testavd -no-window -no-audio -no-boot-anim -no-snapshot $ACCEL -gpu swiftshader_indirect -memory 3072 -dns-server 8.8.8.8,1.1.1.1 -show-kernel > emulator.log 2>&1 &
           EMUPID=$!
           sleep 45
           if ! kill -0 $EMUPID 2>/dev/null; then

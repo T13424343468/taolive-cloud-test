@@ -184,6 +184,14 @@ open_sub() {
 }
 
 sleep 3
+# 起播门（基线必须真起播）：画面时刻=条独有文本，起播后控制条/播放页都有；
+# 环境无网（DNS 挂）时 App 会一直「信号中断」，此时基线必须红而不是假绿
+gate=0
+while [ $gate -lt 4 ]; do
+  if fresh_snap | grep -qF '画面时刻'; then echo "PLAY_GATE ok (try $gate)"; break; fi
+  echo "PLAY_GATE waiting ($gate)"; sleep 10; gate=$((gate+1))
+done
+if [ $gate -ge 4 ]; then echo "PLAY_NEVER_STARTED: no 画面时刻 after 40s — emulator network broken or stream dead"; exit 1; fi
 SHOT 01-play-portrait
 
 # —— 竖屏：控制条（show_bar 判态呼出，快拍） ——

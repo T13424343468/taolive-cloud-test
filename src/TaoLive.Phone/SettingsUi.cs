@@ -222,7 +222,10 @@ public partial class MainActivity
             bool selected = i == tab;
             var pill = new GradientDrawable();
             pill.SetCornerRadius(Dp(14));
-            pill.SetColor(selected ? Color.Argb(200, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB) : Color.Transparent);
+            // vc126 老板令「所有按钮都是框线透明底」：选中/未选中都走透明底，靠描边深浅+文字色分层
+            pill.SetColor(Color.Transparent);
+            pill.SetStroke(1, Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
+                InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
             t.Background = pill;
             t.SetTextColor(selected
                 ? InkTranslucency.TextPrimary(this)
@@ -888,23 +891,24 @@ public partial class MainActivity
     /// <summary>自管面板按钮统一皮（vc117 老板令 2026-11-28：文字按钮也上圆角线框——静默态墨色托底+细线框、
     /// 聚焦态同构提亮，圆角口径一致；诊断页签操作钮/进阶调优/关于/各子页关闭行共用，ui-remote 归一条款）。
     /// vc119：入参放宽到 View——BarIconView 自绘图标钮共用同一套托底/线框/聚焦皮。
-    /// vc119 老板令（2026-11-28「左右两侧线条去掉只保留横线」）：描边退场，只留托底胶囊——
-    /// 按钮靠淡墨填充辨识，聚焦靠提亮填充，设置系页面不再出现竖向线条。</summary>
+    /// vc126 老板令（2026-11-28「所有文字按钮的那个底色去掉 所有按钮都是框线透明底」）：vc119 托底填充退场，
+    /// 回归框线透明底——静默=透明底+细线框（45% 白），聚焦=透明底+强描边（100% 白），靠描边深浅与文字色分层。</summary>
     private void StyleOverlayButton(View b, bool accent = false)
     {
-        // accent=改动性按钮（如一键还原默认）：托底与提亮走朱砂；普通按钮走纸白
+        // accent=改动性按钮（如一键还原默认）：线框与提亮走朱砂；普通按钮走纸白
         byte cr = accent ? InkTranslucency.AccentR : InkTranslucency.PaperR;
         byte cg = accent ? InkTranslucency.AccentG : InkTranslucency.PaperG;
         byte cb = accent ? InkTranslucency.AccentB : InkTranslucency.PaperB;
-        GradientDrawable Skin(int fillAlpha, int strokeAlpha)
+        GradientDrawable Skin(int strokeAlpha)
         {
             var d = new GradientDrawable();
-            d.SetColor(Color.Argb(fillAlpha, cr, cg, cb));
+            d.SetColor(Color.Transparent); // vc126 老板令：底色退场，中间全透明
             d.SetCornerRadius(Dp(10)); // 圆角口径与档位弹层选项行胶囊一致
+            d.SetStroke(1, Color.Argb(strokeAlpha, cr, cg, cb));
             return d;
         }
-        var idleBg = Skin(36, 64); // 静默：淡墨托底+细线框（档位弹层未选中行同构）
-        var focusBg = Skin(InkTranslucency.FocusFillAlpha, InkTranslucency.FocusStrokeAlpha); // 聚焦：提亮
+        var idleBg = Skin(InkTranslucency.FocusStrokeAlpha); // 静默：透明底+细线框（与控制条按钮同口径）
+        var focusBg = Skin(255); // 聚焦：强描边
         b.Focusable = true;
         b.Clickable = true;
         b.Background = idleBg;
@@ -1472,18 +1476,13 @@ public partial class MainActivity
                 opt.SetTextColor(selected
                     ? InkTranslucency.TextPrimary(this)
                     : Color.ParseColor(InkTranslucency.TextSecondary));
-                // vc115 A2：每个选项行自带托底胶囊（原型 .opt 同款），选中行保持强化样式
-                // vc119 老板令：描边退场（左右线条去掉只保留横线），选中/未选中靠填充深浅区分
+                // vc115 A2：每个选项行自带胶囊（原型 .opt 同款）
+                // vc126 老板令「所有按钮都是框线透明底」：填充托底退场，选中/未选中靠描边深浅+文字色区分
                 var pill = new GradientDrawable();
                 pill.SetCornerRadius(Dp(10));
-                if (selected) // 当前档高亮：淡底强化
-                {
-                    pill.SetColor(Color.Argb(60, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
-                }
-                else // 未选中：墨色托底，保证半透明面板上文字可读
-                {
-                    pill.SetColor(Color.Argb(36, InkTranslucency.InkR, InkTranslucency.InkG, InkTranslucency.InkB));
-                }
+                pill.SetColor(Color.Transparent);
+                pill.SetStroke(1, Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
+                    InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
                 opt.Background = pill;
                 int val = step;
                 opt.Click += (_, _) =>

@@ -2811,9 +2811,19 @@ public partial class MainActivity : Activity
             }
             else
             {
-                int wantLeft = len - len / 2;
-                nL = Math.Min(capL, Math.Max(wantLeft, len - capR));
-                nL = Math.Max(0, Math.Min(nL, len));
+                // vc130 老板令（真机「正在换信号」被拆「正在换|信号」实锤）：按字数对半≠按宽度对半
+                //（3+2 左段 72px vs 右段 37px）——改按实测像素宽找最优断点，左右宽差最小者胜
+                //（本例 2+3 宽差≈14px，比 3+2 的 35px 收一半以上），孔仍居中。
+                int lo = Math.Max(0, len - capR), hi = Math.Min(capL, len);
+                nL = Math.Min(capL, len); // 容量倒挂兜底：左段装满
+                long bestDiff = long.MaxValue;
+                for (int n = lo; n <= hi; n++)
+                {
+                    long lw = (long)_toastLeft.Paint!.MeasureText(text[..n]);
+                    long rw = (long)_toastLeft.Paint!.MeasureText(text[n..]);
+                    long d = Math.Abs(lw - rw);
+                    if (d < bestDiff) { bestDiff = d; nL = n; }
+                }
             }
             leftText = text[..nL];
             rightText = text[nL..];

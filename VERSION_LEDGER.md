@@ -99,3 +99,8 @@
 - 统一验证：Release -m:1 编译 0 错 0 警（1:55）；badging 亲验 128/1.0.18；apksigner verify 过
 - 交付包：dist-phone/TaoLive-1.0.18-vc128/（apk sha256 4adc7cf6…7753）+ 同名 zip，文件卡片已发
 - git：commit a370db1 已推 phone-src（触发云测）
+- 版本锚：csproj 129/1.0.19 = manifest 129/1.0.19 = badging 129/1.0.19（三处对账一致，亲验）
+- 内容（三项落码）：①横屏亮度/音量条对称落位（老板拍板「上下都居中 左右贴画面缘往外留边距」：两条都垂直居中，各贴画面左右缘外 8dp；vc128 顶对齐避孔口径退场，切孔真机见再调）②节目单信息字号回 vc127 说明口径（接下来/水位回 Caption+次要色）③接下来条目间显式换行（join " · "→"\n"，不拆节目名）
+- 统一验证：Release -m:1 编译 0 错 0 警（13:4x）；badging 亲验 129/1.0.19；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.19-vc129/（apk sha256 aa16573d…c056e30）+ 同名 zip，文件卡片已发（老板令「先给我」，云测异步跑）
+- git：commit 1e2199a 已推 phone-src（触发云测）

@@ -1086,15 +1086,18 @@ public partial class MainActivity
             // vc127 锁图标三绘（老板令 2026-11-28「照 🔓🔒 那样画，只是把带颜色的换成线条」）：
             // emoji 几何直出——锁体=偏下圆角横矩形，锁梁=正圆半拱+双腿插入锁体上沿；
             // 解锁=整梁绕左腿根外旋 38°，左腿原地踏住锁体、右腿抬起悬空，开口一目了然。
+            // vc130 老板令（真机「锁定态像茶杯」实锤）：三态照 emoji 重排——去方向小屏指示条
+            // （贴锁体右沿读成杯把）、锁梁加宽近锁体同宽（半径 0.165→0.23，横跨≈0.85 锁体宽）、
+            // 锁体收小（0.60×0.44→0.54×0.42），比例对齐 🔒；锁定横竖屏同画 🔒。
             bool open = _kind == IconKind.Unlocked;
-            float bw = side * 0.60f, bh = side * 0.44f;
-            float r = side * 0.165f;
+            float bw = side * 0.54f, bh = side * 0.42f;
+            float r = side * 0.23f;
             float bx = (side - bw) / 2f;
             float top = (side - (bh + r)) / 2f; // 锁体+拱高整体垂直居中
             float by = top + r;                 // 锁体上沿
             float scx = side / 2f;
             float leg = side * 0.05f; // 双腿插入锁体的深度（emoji 同款：梁腿没入锁体）
-            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, side * 0.10f, side * 0.10f, _stroke);
+            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, side * 0.12f, side * 0.12f, _stroke);
             void DrawShackle()
             {
                 canvas.DrawArc(scx - r, by - r, scx + r, by + r, 180f, 180f, false, _stroke);
@@ -1111,15 +1114,6 @@ public partial class MainActivity
             else
             {
                 DrawShackle();
-            }
-            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）——细一档描边防糊成实心块
-            if (_kind == IconKind.LockLandscape || _kind == IconKind.LockPortrait)
-            {
-                _stroke.StrokeWidth = side * 0.05f;
-                if (_kind == IconKind.LockLandscape)
-                    canvas.DrawRoundRect(side * 0.78f, side * 0.48f, side * 0.96f, side * 0.62f, side * 0.03f, side * 0.03f, _stroke);
-                else
-                    canvas.DrawRoundRect(side * 0.80f, side * 0.42f, side * 0.95f, side * 0.68f, side * 0.03f, side * 0.03f, _stroke);
             }
         }
     }

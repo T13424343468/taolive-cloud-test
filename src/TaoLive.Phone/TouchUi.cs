@@ -317,7 +317,8 @@ public partial class MainActivity
         // vc132 老板令（2026-11-28 14:25 拍板A）：按钮上下等距——底部内距 16dp 收 0，
         // 上（文字→按钮盒=热区缓冲 10dp）下（按钮盒→屏缘=热区缓冲 10dp+0）对齐；横竖屏同口径。
         // vc133 老板令（15:02 拍板「左右9 底6」）：左右内距 16→9dp 按钮再靠边，底部内距 0→6dp 按钮整体上抬。
-        _controlBar.SetPadding(UiScale.Dp(9), UiScale.Dp(10), UiScale.Dp(9), UiScale.Dp(6));
+        // vc135 老板令（15:20 拍板「内距收到5」）：左右内距 9→5dp，按钮继续靠边；上下不动。
+        _controlBar.SetPadding(UiScale.Dp(5), UiScale.Dp(10), UiScale.Dp(5), UiScale.Dp(6));
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /

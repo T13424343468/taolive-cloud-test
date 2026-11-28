@@ -152,7 +152,13 @@ public partial class MainActivity : Activity
         //（缩放档须在 BuildRoot 前就位，全套令牌按档位重算）
         _prefs = GetSharedPreferences("taolive_prefs", FileCreationMode.Private)!;
         // 尺寸跟系统（老板 2026-11-27 拍板「跟着系统显示大小做三套，不单独给设置项」）：
-        // 文字档 = 中档基准 17sp（系统字体缩放由 sp 渲染层自乘，Factor 不再重复乘）。
+        // vc135 双跟随令（2026-11-28 老板拍板「全落」）：字体滑条 5 档归并三档——相对首启 fontScale
+        // 比值 ≤1.05→小(1.0)、≤1.2→中(+10%)、>1.2→大(+20%)（步距「中10% 高20」）；
+        // 首启 fontScale 拍板存档（ui_fontscale_ref，仿 ui_density_ref），首启所见=小档基准
+        // （老板系统字体/显示大小均停最小档，新版装上所见不变）。文字 sp 渲染层自乘的 fontScale
+        // 在 T()/Scale 里归一除掉，滑条只切档不重复放大；间距/图标/盒子跟同一套 TierRatio，
+        // 文字与间距永远同比例。字体变更走 Activity 重建（清单无 configChanges），OnCreate 重读重算。
+        // 显示大小维持现状：密度等比跟随（SystemScale=当前密度/首启密度）。
         UiScale.Factor = 17f / 36f;
         // vc117 全元素比例换算令（2026-11-28 老板拍板）：所有界面元素统一按屏幕比例换算——
         // 分辨率比例项=短边px/(390×首启密度)；系统显示大小跟随项=当前密度/首启密度。
@@ -169,6 +175,18 @@ public partial class MainActivity : Activity
         UiScale.SystemScale = dm.Density / densRef;
         UiScale.ScreenScale = Math.Min(dm.WidthPixels, dm.HeightPixels) / (390f * densRef);
         UiScale.PxScale = UiScale.ScreenScale * UiScale.SystemScale; // 令17：间距/线框盒/图标与文字同一套比例
+        // vc135 双跟随：首启 fontScale 拍板存档（ui_fontscale_ref），首启所见=小档基准；
+        // Factor=中档基准 17/36 × 首启 fontScale，滑条切档走 TierRatio（见 UiScale.UpdateFontScale）。
+        float fsRef = _prefs.GetFloat("ui_fontscale_ref", 0f);
+        float fsNow = Resources!.Configuration!.FontScale;
+        if (fsRef <= 0f)
+        {
+            fsRef = fsNow > 0f ? fsNow : 1f; // 首启拍板：当前所见=小档基准
+            _prefs.Edit()!.PutFloat("ui_fontscale_ref", fsRef)!.Apply();
+        }
+        UiScale.FontScaleRef = fsRef;
+        UiScale.Factor = 17f / 36f * fsRef;
+        UiScale.UpdateFontScale(fsNow);
         // 收口批④开关合流：预热与预检共车道只留预检开关，预热（开机全量预热+换台邻台预取+开机默认台焐热）
         // 一律随 _precheckEnabled 同起同停——两个开关管同一条车道必出一个死开关（方案书收口批④原文）。
         // vc105 老板令：以 93 为基线——读盘复活恢复（默认开），vc101 硬关口径作废。
@@ -2796,21 +2814,21 @@ public partial class MainActivity : Activity
         {
             // vc133 老板令（15:06 拍板方案A）：首颗胶囊在 OnCreate 连接流程亮起时 DecorView 未完成
             // 首次布局，挖孔几何读到 (0,0,0)——直接落兜底位=顶部居中，位置不对（真机实锤仅首次错）。
-            // 改为等一帧重读几何（最多 3 次），拿到孔位即转包孔定位亮相；仍拿不到才落兜底位。
-            // 首颗亮相即在终位，不闪不跳；无孔机型最多多等 3 帧（≈50ms）可忽略。
-            if (_pillGeoRetries < 3)
+            // 改为等帧重读几何，拿到孔位即转包孔定位亮相；仍拿不到才落兜底位。
+            // vc135 老板令（15:20「首启动胶囊还是有问题」）：vc133 的 3 帧重试在冷启时全部跑在
+            // 首次 traversal 之前——Post 队列在视图挂载后立即出队，几何仍是 (0,0,0)，3 次用尽
+            // 照样落兜底（真机复现）。改两处：①兜底门槛改「窗口布局完成」（DecorView.IsLaidOut）——
+            // 布局没完成前只等不落，无孔机型首帧布局完立即兜底不多等；②重试上限 3→30（16ms 步进
+            // ≈0.5s），几何一到即转包孔，首颗亮相即在终位。
+            bool decorReady = Window!.DecorView!.IsLaidOut;
+            if (!decorReady && _pillGeoRetries < 30)
             {
                 _pillGeoRetries++;
-                _toast.Post(() =>
+                _toast.PostDelayed(() =>
                 {
-                    ReadCutoutGeometry();
-                    if (_cutoutHoleCenterY > 0)
-                    {
-                        _pillGeoRetries = 0;
-                        PositionToastPill(onPositioned); // 几何就绪，转包孔定位（onPositioned 仍在终位后回调）
-                    }
-                    // 未就绪：不亮相不落位，等下一帧重试（onPositioned 未调，胶囊保持隐形）
-                });
+                    if (_cutoutHoleCenterY > 0) _pillGeoRetries = 0;
+                    PositionToastPill(onPositioned); // 重读几何再判：就绪转包孔，未就绪继续等，布局完仍无孔落兜底
+                }, 16);
                 return; // 兜底 lp 不落，防闪现兜底位
             }
             _pillGeoRetries = 0;

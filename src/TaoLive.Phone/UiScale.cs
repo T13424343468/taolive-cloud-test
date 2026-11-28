@@ -14,7 +14,31 @@ public static class UiScale
 {
     public const float BaseSize = 36f; // 基准字号（sp），系数 1.0 时的实字号
     public const float SpecBase = 20f; // #68 语义字号令：中档实字号基准（#61 拍板「中档=20sp」）
+    /// <summary>vc135 双跟随令（2026-11-28 老板拍板「全落」）：Factor=中档基准 17/36 × 首启 fontScale
+    /// （OnCreate 装载 FontScaleRef 后由装载块计算），首启所见=小档基准——系统字体滑条停最小档时
+    /// 界面所见与旧版完全一致；滑条往右切档只改 TierRatio，不重复放大。</summary>
     public static float Factor { get; set; } = 17f / 36f; // 默认「中」=基准 17sp（#77 档位重定 2026-11-15 老板定值：大21/中17/小13=换算实值÷基准36；存量档位值不匹配走回落「中」）
+
+    /// <summary>vc135 双跟随令：首启 fontScale 基准（prefs 键 ui_fontscale_ref，OnCreate 拍板存档）。
+    /// 首启所见=小档基准；此后系统字体滑条相对它的比值切档。</summary>
+    public static float FontScaleRef { get; set; } = 1f;
+
+    /// <summary>vc135：当前系统 fontScale（OnCreate/重建时重读）。文字 sp 渲染层自乘的 fontScale
+    /// 在 T()/Scale 里归一除掉，滑条只通过 TierRatio 切档，不重复放大。</summary>
+    public static float FontScaleNow { get; set; } = 1f;
+
+    /// <summary>vc135：字体滑条档位比例（相对首启基准）。滑条 5 档归并三档：
+    /// 比值 ≤1.05→小(1.0)、≤1.2→中(1.1)、>1.2→大(1.2)（老板拍板步距「中10% 高20」）。
+    /// 间距/图标/盒子与文字跟同一套档位比例，文字与间距永远同比例。</summary>
+    public static float TierRatio { get; private set; } = 1f;
+
+    /// <summary>vc135：装载当前 fontScale 并切档（OnCreate/重建时调用）。fontScaleNow ≤0 回落首启基准。</summary>
+    public static void UpdateFontScale(float fontScaleNow)
+    {
+        FontScaleNow = fontScaleNow > 0f ? fontScaleNow : FontScaleRef;
+        float r = FontScaleNow / (FontScaleRef > 0f ? FontScaleRef : 1f);
+        TierRatio = r <= 1.05f ? 1f : (r <= 1.2f ? 1.1f : 1.2f);
+    }
 
     /// <summary>vc117 全元素比例换算令（2026-11-28 老板拍板）：所有界面元素（文字/间距/线框盒/图标/圆角）
     /// 统一按屏幕比例换算——短边像素对 390 基准（分辨率比例项），不再分文字/间距两套口径。
@@ -36,10 +60,11 @@ public static class UiScale
     /// OnCreate 装载。</summary>
     public static float PxScale { get; set; } = 1f;
 
-    /// <summary>总缩放系数（#68 重定标+#69 屏宽自适应）：裸最终值 × Scale = 当前档实值；中档 1920 宽=1.0 原值直出。</summary>
-    public static float Scale => BaseSize / SpecBase * Factor * ScreenScale;
+    /// <summary>总缩放系数（#68 重定标+#69 屏宽自适应+vc135 双跟随）：裸最终值 × Scale = 当前档实值；
+    /// 中档 1920 宽=1.0 原值直出。TierRatio 进比例项、渲染层自乘的 fontScale 归一除掉。</summary>
+    public static float Scale => BaseSize / SpecBase * Factor * ScreenScale * TierRatio / FontScaleNow;
 
-    public static float T(float f) => f * BaseSize * Factor * ScreenScale;
+    public static float T(float f) => f * BaseSize * Factor * ScreenScale * TierRatio / FontScaleNow;
 
     /// <summary>#68 语义字号令：标题/项/说明三类，同角色同字号，列表/设置/弹窗观感一致。</summary>
     public static float Title => T(1.4f);   // 标题：23.8sp@中档17（抽屉页头/设置面板标题/退出弹窗标题）
@@ -54,18 +79,17 @@ public static class UiScale
 
     /// <summary>vc120 全元素去写死令（2026-11-28 老板拍板「全应用不允许有写死」）：
     /// 字号档比例项——中档=1.0，大档大于1、小档小于1。Px 口径并入：间距/盒子/图标与文字同一套
-    /// 缩放基准（屏宽比例 × 系统显示大小 × 字号档），全应用不再有不跟档的固定值。</summary>
-    public static float FontScaleRatio => Factor / (17f / 36f);
-
+    /// 缩放基准（屏宽比例 × 系统显示大小 × 字号档），全应用不再有不跟档的固定值。
+    /// vc135 双跟随令：字号档比例项改由 TierRatio 承担（滑条 5 档归 3 档），FontScaleRatio 退场。</summary>
     /// <summary>裸最终 px 尺寸（2026-11-27 手机整改令）：入参按 390dp 基准的 dp 值计，乘间距档转像素。
-    /// vc120 起并入字号档比例项（全元素去写死令），与文字同一套缩放。</summary>
-    public static int Px(float v) => (int)(v * PxScale * FontScaleRatio + 0.5f);
+    /// vc120 起并入字号档比例项（全元素去写死令），与文字同一套缩放；vc135 起跟 TierRatio。</summary>
+    public static int Px(float v) => (int)(v * PxScale * TierRatio + 0.5f);
 
     /// <summary>vc127 令（2026-11-28 老板点名落「提示胶囊左内边距偏窄约7dp」）：物理 dp 直读口径。
     /// 根因实锤：PxScale=短边px/(390×首启密度)×系统档 ≈1，Px(20) 出来是 20 裸像素 ≈7dp 物理宽
     /// （真机截图实测吻合）——「390 基准 1:1」的设计单位不等于物理 dp。HUD 胶囊这类要按物理 dp
     /// 观感计的尺寸走本口径：入参 dp × 当前密度（首启密度×系统显示大小）× 字号档，随档跟缩不写死。</summary>
-    public static int Dp(float v) => (int)(v * DensityRef * SystemScale * FontScaleRatio + 0.5f);
+    public static int Dp(float v) => (int)(v * DensityRef * SystemScale * TierRatio + 0.5f);
 
     /// <summary>vc120 肉眼对齐令（2026-11-28 老板拍板）：同字号单行 TextView 实测线高（px），
     /// 按钮盒/对齐基准用——字号档位、系统字体缩放自动跟，不写死数值。</summary>

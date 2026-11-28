@@ -85,3 +85,10 @@
 - 挂起观察：列表抽屉半透明视频透出（待老板后续口述）
 - 统一验证：Debug 编译 0 错 0 警；全测 406/406 全绿 0 失败；Release -m:1 出包（清 obj/Release 防增量）；badging 亲验 116/1.0.6
 - 交付包：build/vc116/TaoLive-1.0.6-vc116.apk（22,761,268 字节）+ TaoLive手机版-1.0.6-vc116完整交付包.zip
+
+## vc127 / 1.0.17（2026-11-28 老板令「全部落完出包」+「包括那个关于页」）
+- 版本锚：csproj 127/1.0.17 = manifest 127/1.0.17 = badging 127/1.0.17（三处对账一致，亲验）
+- 内容（八项全落码）：①控制条去 1080 分辨率 mini（横竖屏都去，_cbMini 整块退场）②控制条内距改物理 dp 直读 Dp(16,10,16,16)（原 Px(16)≈6dp 贴边）③行3「接下来」最多两行（治单行截断「孔子上···」）④锁图标 emoji 几何重绘（🔓🔒 同款线条，解锁态整梁外旋 38°）⑤设置页五页关闭行入滚动内容（设置/诊断/统计/关于/进阶调优）⑥横屏列表页左侧避让（leftSafe=cutout.Left+8dp）⑦胶囊孔心估计修正（Y=Max(SafeInsetTop−14dp,14dp)）+短文案绕孔对半分（len≥3 对半分钳容量）⑧关于页 NOTICE.txt 随包（Assets/NOTICE.txt，apk 内 assets/NOTICE.txt 实证）
+- 统一验证：Release -m:1 编译 0 错 0 警（1:27）；badging 亲验 127/1.0.17；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.17-vc127/（apk sha256 3b58d136…f04d1）+ 同名 zip，文件卡片已发
+- git：commit cbc6146 已推 phone-src（触发云测）

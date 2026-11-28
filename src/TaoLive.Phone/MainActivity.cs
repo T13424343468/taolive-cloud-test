@@ -2595,37 +2595,63 @@ public partial class MainActivity : Activity
         _toast.AddView(_toastBalR, new LinearLayout.LayoutParams(0, 1));
     }
 
-    /// <summary>挖孔几何读取（vc113 第④单）：DisplayCutout 包围盒取孔位与孔宽，供胶囊包孔与列表页避让。</summary>
-    private void ReadCutoutGeometry()
+    /// <summary>孔区几何统一读取（vc128 老板令「孔区提出来全处复用」）：找准孔中心点与直径，
+    /// 孔区范围随之确定——胶囊包孔、绕孔排布、横屏指示条避让全走同一份口径，不再各写各的。
+    /// 按当前屏幕方向取数：系统报孔位矩形用真值；不报的机型按「孔带内距+状态栏高度≈孔径」推。</summary>
+    private (int Cx, int Cy, int Diameter) ReadHoleRect()
     {
-        _cutoutHoleW = 0;
-        _cutoutHoleCenterX = 0;
-        _cutoutHoleCenterY = 0;
-        if (!OperatingSystem.IsAndroidVersionAtLeast(28)) return;
+        if (!OperatingSystem.IsAndroidVersionAtLeast(28)) return (0, 0, 0);
         try
         {
             var cutout = Window!.DecorView!.RootWindowInsets?.DisplayCutout;
             var rect = cutout?.BoundingRects?.FirstOrDefault();
             if (rect is { } r && r.Width() > 0)
+                return (r.CenterX(), r.CenterY(), r.Width());
+            if (cutout is { } c)
             {
-                _cutoutHoleW = r.Width();
-                _cutoutHoleCenterX = r.CenterX();
-                _cutoutHoleCenterY = r.CenterY();
-            }
-            else if (cutout is { } c && c.SafeInsetTop > 0)
-            {
-                // vc124 老板令（真机「胶囊从来没包住孔」实锤）：部分机型不报孔位矩形（瀑布屏必不报，
-                // 部分挖孔机也不报，官方文档明确瀑布切口无边界矩形）——按居中挖孔推孔心：
-                // X=屏宽/2；Y=孔带底缘−估计孔半径。
-                // vc126 老板令：孔心改按「安全顶距≈孔带底缘」推。
-                // vc127 老板令（真机「底部线条还是被覆盖」实锤）：半径原走 Px(14)=设计像素≈22px 物理宽，
-                // 孔心被估高 8px——胶囊底线正好贴在孔的下缘上，永远差一口气。切口内距的下缘=孔的下缘，
-                // 半径改物理 dp 直读 Dp(14)=14px：孔心下移到真位，胶囊上下各让 8dp，底线不再被盖。
-                _cutoutHoleCenterX = Resources!.DisplayMetrics!.WidthPixels / 2;
-                _cutoutHoleCenterY = Math.Max(c.SafeInsetTop - UiScale.Dp(14), UiScale.Dp(14));
+                bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+                if (landscape)
+                {
+                    // 横屏：孔落左缘垂直居中——X=左缘孔带一半，Y=屏高/2，直径≈左缘孔带宽
+                    if (c.SafeInsetLeft > 0)
+                        return (c.SafeInsetLeft / 2, Resources.DisplayMetrics!.HeightPixels / 2, c.SafeInsetLeft);
+                }
+                else if (c.SafeInsetTop > 0)
+                {
+                    // 竖屏（vc124~vc128 口径）：X=屏宽/2；直径按状态栏高度推（挖孔机状态栏高度≈孔径，
+                    // 含孔上下留白），孔心=孔带底缘−半径；状态栏读不到退 28dp。直径不超孔带高度。
+                    int holeD = StatusBarHeightPx();
+                    if (holeD <= 0) holeD = UiScale.Dp(28);
+                    holeD = Math.Min(holeD, c.SafeInsetTop);
+                    return (Resources.DisplayMetrics!.WidthPixels / 2,
+                            Math.Max(c.SafeInsetTop - holeD / 2, UiScale.Dp(14)), holeD);
+                }
             }
         }
         catch { }
+        return (0, 0, 0);
+    }
+
+    /// <summary>挖孔几何读取（vc113 第④单）：统一走 ReadHoleRect，供胶囊包孔与列表页避让。</summary>
+    private void ReadCutoutGeometry()
+    {
+        var (cx, cy, d) = ReadHoleRect();
+        _cutoutHoleCenterX = cx;
+        _cutoutHoleCenterY = cy;
+        _cutoutHoleW = d;
+    }
+
+    /// <summary>状态栏高度（物理 px，vc128 孔径推算用）：读系统 status_bar_height 尺寸；
+    /// 读不到返回 0，由调用方走兜底口径。</summary>
+    private int StatusBarHeightPx()
+    {
+        try
+        {
+            int id = Resources!.GetIdentifier("status_bar_height", "dimen", "android");
+            if (id > 0) return Resources.GetDimensionPixelSize(id);
+        }
+        catch { }
+        return 0;
     }
 
     /// <summary>胶囊包孔定位（v28 定稿：胶囊包住摄像头孔）：孔中心对齐胶囊中心，孔宽=中段空档；
@@ -2676,13 +2702,25 @@ public partial class MainActivity : Activity
             // （≥44dp，或孔宽+8dp），孔心即使偏几个 dp 孔仍被完整包住；文字限宽不出孔位。
             // vc127：容差改物理 dp 直读（Px 口径出裸像素，44 实为≈16dp，包不住高孔带）。
             _toast.SetMinimumHeight(Math.Max(UiScale.Dp(44), _cutoutHoleW + UiScale.Dp(8)));
-            _toastLeft.SetMaxWidth(Math.Max(UiScale.Px(60), (int)(_cutoutHoleCenterX - UiScale.Px(36)))); // vc126：竖屏长文案钳宽（横屏同款），文案再长也不顶出屏沿
+            // vc126：竖屏长文案钳宽（横屏同款），文案再长也不顶出屏沿
+            // vc128 老板令（「避开右侧状态栏」）：胶囊右边界=孔心+半宽，钳在右上角状态图标区之外——
+            // 左段限宽收口（右边界≤屏宽−90dp），平衡占位保孔仍居中；容量不足由两行+缩字号兜底。
+            int statusSafeW = (int)(Resources.DisplayMetrics!.WidthPixels - UiScale.Dp(90)
+                - _cutoutHoleCenterX - UiScale.Dp(16) - _cutoutHoleW / 2f);
+            _toastLeft.SetMaxWidth(Math.Max(UiScale.Px(60),
+                Math.Min((int)(_cutoutHoleCenterX - UiScale.Px(36)), statusSafeW)));
             lp.Gravity = GravityFlags.Top; // 左上起摆，TranslationX 精确对孔心
             lp.LeftMargin = 0;
             lp.TopMargin = 0;
             _toast.Post(() =>
             {
-                int ph = _toast.Height;
+                // vc128 老板令（「上方不能被覆盖」）：高度解析取值——先强制量一轮再取数。首建时序
+                // _toast.Height 可能读到旧帧 0/旧值，顶弧被推出屏顶的根因；实测、旧值与最小高取大，
+                // 不赌布局帧。ty 钳制保顶弧完整（压回孔带后 ty≥0 恒成立）。
+                _toast.Measure(
+                    Android.Views.View.MeasureSpec.MakeMeasureSpec(Resources.DisplayMetrics!.WidthPixels, Android.Views.MeasureSpecMode.AtMost),
+                    Android.Views.View.MeasureSpec.MakeMeasureSpec(0, Android.Views.MeasureSpecMode.Unspecified));
+                int ph = Math.Max(Math.Max(_toast.Height, _toast.MeasuredHeight), _toast.MinimumHeight);
                 if (ph <= 0) { onPositioned?.Invoke(); return; }
                 // vc121 包孔扶正（老板 05:3x 真机截图实锤）：右段无字时孔不在胶囊正中、压在文字下面——
                 // 几何根因：孔（中段空档）跟在左段文字后，胶囊对孔心居中后孔落在文字下方（偏移=textW/2）。
@@ -2745,6 +2783,7 @@ public partial class MainActivity : Activity
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         if (landscape || _cutoutHoleCenterY <= 0)
         {
+            _toastLeft.TextSize = UiScale.Item; // vc128：缩字号只作用于竖屏包孔长文案分支，他分支恢复标准档
             _toastLeft.Text = text;
             _toastRight.Visibility = ViewStates.Gone;
             return;
@@ -2757,9 +2796,11 @@ public partial class MainActivity : Activity
         int capL = Math.Max(1, (int)(availL / cw));
         int capR = Math.Max(0, (int)(availR / cw));
         string leftText, rightText;
-        if (text.Length <= capL + capR)
+        if (text.Length <= 8)
         {
             // vc127 老板令（「右侧还是空白 内容都在左侧」）：短文案绕孔对半分，左右各半，不再全塞左段
+            // vc128 口径收窄：对半分只管 8 字内短文案；字号恢复标准档（长文案分支缩过字号）
+            _toastLeft.TextSize = UiScale.Item;
             int len = text.Length;
             int nL;
             if (len <= 2)
@@ -2777,22 +2818,12 @@ public partial class MainActivity : Activity
         }
         else
         {
-            // 两行：从左到右流——第1行左、第1行右、第2行左、第2行右；仍装不下尾部省略
-            int[] slots = { capL, capR, capL, capR };
-            var parts = new string?[4];
-            int pos = 0;
-            for (int i = 0; i < 4 && pos < text.Length; i++)
-            {
-                int n = Math.Min(slots[i], text.Length - pos);
-                parts[i] = text.Substring(pos, n);
-                pos += n;
-            }
-            leftText = string.Join("\n", new[] { parts[0], parts[2] }.Where(s => !string.IsNullOrEmpty(s)));
-            rightText = string.Join("\n", new[] { parts[1], parts[3] }.Where(s => !string.IsNullOrEmpty(s)));
-            if (pos < text.Length)
-            {
-                if (rightText.Length > 0) rightText += "…"; else leftText += "…";
-            }
+            // vc128 老板令（「字多可以考虑缩小字号」+四条验收定稿）：长文案整段进左段自然换行
+            //（最多两行，MaxLines(2)+尾部省略兜底），不再左右对半分劈词（「正在打开/CCTV1综合」
+            // 这类自然断行）；字号缩一档治挤，右段留空由平衡占位保孔居中、孔两侧等宽。
+            leftText = text;
+            rightText = "";
+            _toastLeft.TextSize = UiScale.Caption;
         }
         _toastLeft.Text = leftText;
         if (string.IsNullOrEmpty(rightText)) { _toastRight.Visibility = ViewStates.Gone; _toastRight.Text = ""; }

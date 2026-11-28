@@ -192,8 +192,8 @@ public partial class MainActivity
         panel.AddView(pageScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         // vc117 令11：底部「关闭」行收页（页头「←」已删，统一收口；返回键口径不变）
-        // vc127 老板令（2026-11-28 真机截图「关闭底部留白这么多」）：关闭行改入滚动内容随内容走——
-        // 原钉死面板底，内容一短隔出大片空白；现贴在内容正下方只留正常行距，横竖屏同路径统一。
+        // vc128 老板令（2026-11-28 拍板「关闭钮钉底」）：关闭行固定钉面板底部（下边距/圆角让位之上），
+        // 内容在上方滚动，横竖屏同构——vc127 随内容走口径退场，五子页统一钉底。
         _settingsCloseRow = new TextView(this) { Text = "关闭", Gravity = GravityFlags.Center, TextSize = UiScale.Item };
         _settingsCloseRow.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
         _settingsCloseRow.Click += (_, _) => CloseSettingsPanel();
@@ -204,7 +204,7 @@ public partial class MainActivity
         _settingsFlow = new FlowLayout(this, Dp(4), Dp(2));
         _settingsScroll.AddView(_settingsFlow, new FrameLayout.LayoutParams(-1, -2));
         page.AddView(_settingsScroll, new LinearLayout.LayoutParams(-1, -2));
-        page.AddView(_settingsCloseRow, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
+        panel.AddView(_settingsCloseRow, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
 
         // vc113 全页面对照原型（03/04 节）：诊断卡片撤出设置页——运行统计/诊断日志改独立入口行（›），
         // 各自独立子页（05/04 节），设置页只留开关组+入口组两组卡片
@@ -869,8 +869,8 @@ public partial class MainActivity
     /// 见 SwitchDiagTab/LoadDiagBody/BuildDiagChecklist）。</summary>
 
     /// <summary>子页面板骨架：标题 + 权重铺满的滚动正文 + 统一内边距。按钮行由各页自挂（键位各不同）。
-    /// vc127 老板令（「关闭底部留白这么多，所有页面统一调」）：正文装进竖排 wrap 返回，各页按钮行
-    /// 挂 wrap 尾部随内容走，不再钉死面板底。</summary>
+    /// vc128 老板令（「关闭钮钉底」）：各页关闭行挂 box 尾部钉面板底（下边距/圆角让位之上），
+    /// 正文在上方滚动——vc127 随内容走口径退场，五子页统一钉底。</summary>
     private (LinearLayout Box, int Pad, LinearLayout BodyWrap) BuildOverlayPanel(string title, string body, out ScrollView scroll)
     {
         int pad = Dp(24);
@@ -955,7 +955,7 @@ public partial class MainActivity
             StyleOverlayButton(close);
             int btnH = Dp(60); // #70 口径归一后实值直出：52dp 装不下 22sp 文字+28dp 内边距，抬到 60dp 保字完整
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f));
-            bodyWrap.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad }); // vc127：随正文走，不钉面板底
+            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = pad }); // vc128 老板令：关闭钮钉面板底，正文上方滚动（vc127 随正文走口径退场）
             var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
@@ -1042,8 +1042,8 @@ public partial class MainActivity
             _diagBody.Focusable = false; // 正文不抢焦点，焦点只在页签与按钮间转
             _diagBody.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(_diagBody);
-            // vc127 老板令（「关闭底部留白这么多，所有页面统一调」）：正文+操作行+关闭行全入滚动内容
-            // 随内容走，不再钉死面板底——内容短时贴内容排，内容长时滚动到尾，横竖屏同路径统一。
+            // vc128 老板令（「关闭钮钉底」）：正文+操作行入滚动内容随内容走，关闭行单独钉面板底
+            //（下边距/圆角让位之上），内容在上方滚动，横竖屏同构——vc127 全入滚动口径退场。
             var diagWrap = new LinearLayout(this) { Orientation = Orientation.Vertical };
             diagWrap.AddView(_diagBody);
             _diagBodyScroll.AddView(diagWrap);
@@ -1057,7 +1057,7 @@ public partial class MainActivity
             diagClose.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
             diagClose.Click += (_, _) => CloseDiagPanel();
             StyleOverlayButton(diagClose);
-            diagWrap.AddView(diagClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
+            box.AddView(diagClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
 
             _diagOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1152,7 +1152,8 @@ public partial class MainActivity
             var body = new TextView(this) { Text = "统计中…", TextSize = UiScale.Caption };
             body.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
             InkTranslucency.ApplyReadabilityShadow(body);
-            // vc127 老板令：关闭行入滚动内容随正文走，不再钉死面板底（全页面统一口径）
+            // vc128 老板令（「关闭钮钉底」）：正文入滚动内容，关闭行钉面板底（下边距/圆角让位之上），
+            // 内容在上方滚动，横竖屏同构——vc127 随正文走口径退场。
             var scroll = new ScrollView(this) { VerticalScrollBarEnabled = false };
             var statsWrap = new LinearLayout(this) { Orientation = Orientation.Vertical };
             statsWrap.AddView(body);
@@ -1164,7 +1165,7 @@ public partial class MainActivity
             statsClose.SetPadding(Dp(20), Dp(14), Dp(20), Dp(14));
             statsClose.Click += (_, _) => CloseStatsPanel();
             StyleOverlayButton(statsClose);
-            statsWrap.AddView(statsClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
+            box.AddView(statsClose, new LinearLayout.LayoutParams(-1, Dp(60)) { TopMargin = Dp(UiScale.RowGapDp) });
 
             _statsOverlay = overlay;
             _root.AddView(overlay, new FrameLayout.LayoutParams(-1, -1));
@@ -1424,7 +1425,7 @@ public partial class MainActivity
             btns.AddView(reset, new LinearLayout.LayoutParams(0, btnH, 1f));
             // vc119 老板令：两钮之间补间距（原肩并肩零缝），走全局按钮间距口径
             btns.AddView(close, new LinearLayout.LayoutParams(0, btnH, 1f) { LeftMargin = Dp(UiScale.BtnGapDp) });
-            body.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = padAdv }); // vc127：随正文走，不钉面板底（全页面统一口径）
+            box.AddView(btns, new LinearLayout.LayoutParams(-1, -2) { TopMargin = padAdv }); // vc128 老板令：关闭钮钉面板底，正文上方滚动（vc127 随正文走口径退场）
 
             var overlay = new FrameLayout(this) { Clickable = true, LongClickable = true };
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档

@@ -190,15 +190,30 @@ public partial class MainActivity
         if (landscape)
         {
             // 横屏：条落各自侧黑区水平居中——按画面实际区域算，黑区窄于条兜底 8dp 贴边
-            lp.Gravity = GravityFlags.CenterVertical | (left ? GravityFlags.Left : GravityFlags.Right);
             int screenW = Resources!.DisplayMetrics!.WidthPixels;
+            int screenH = Resources.DisplayMetrics.HeightPixels;
             int videoLeft = _videoView is { } vv && vv.Width > 0 ? vv.Left : 0;
             int videoRight = _videoView is { } vv2 && vv2.Width > 0 ? vv2.Right : screenW;
             int blackW = left ? videoLeft : screenW - videoRight;
             int margin = blackW > 0 ? (blackW - barW) / 2 : UiScale.Px(8);
-            if (left) { lp.LeftMargin = Math.Max(margin, UiScale.Px(8)); lp.RightMargin = 0; }
-            else { lp.RightMargin = Math.Max(margin, UiScale.Px(8)); lp.LeftMargin = 0; }
-            lp.TopMargin = 0;
+            if (left)
+            {
+                lp.LeftMargin = Math.Max(margin, UiScale.Px(8)); lp.RightMargin = 0;
+                // vc128 老板令（真机截图「横屏亮度元素依然被孔区覆盖」实锤）：横屏孔落左缘垂直居中，
+                // 亮度条原垂直居中正好扎进孔带——改顶对齐，条顶压到孔带下缘之下；孔位走统一
+                // ReadHoleRect（真值优先、推算兜底），条底出屏再钳回。
+                var (hcx, hcy, hd) = ReadHoleRect();
+                int holeBottom = hcy > 0 ? hcy + hd / 2 : screenH / 2;
+                lp.Gravity = GravityFlags.Top | GravityFlags.Left;
+                int barHEst = barH > 0 ? barH : UiScale.Px(HudIconDp + 12 + HudTrackDp) + UiScale.Px(40);
+                lp.TopMargin = Math.Min(holeBottom + UiScale.Px(8), Math.Max(screenH - barHEst - UiScale.Px(8), 0));
+            }
+            else
+            {
+                lp.Gravity = GravityFlags.CenterVertical | GravityFlags.Right;
+                lp.RightMargin = Math.Max(margin, UiScale.Px(8)); lp.LeftMargin = 0;
+                lp.TopMargin = 0;
+            }
         }
         else
         {
@@ -231,7 +246,13 @@ public partial class MainActivity
         icon.SetKind(kind);
         float f = Math.Clamp(fraction, 0f, 1f);
         int fillH = Math.Max((int)(UiScale.Px(HudTrackDp) * f), UiScale.Px(3)); // 0 也留可见头
-        if (fill.LayoutParameters is FrameLayout.LayoutParams lp) lp.Height = fillH;
+        if (fill.LayoutParameters is FrameLayout.LayoutParams lp)
+        {
+            // vc128 老板令（真机「音量声音有变化 自绘元素没变化」实锤）：原地改 lp.Height 不触发
+            // 布局，填充高度不动——改完必须 RequestLayout 才上屏。
+            lp.Height = fillH;
+            fill.RequestLayout();
+        }
         else fill.LayoutParameters = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MatchParent, fillH) { Gravity = GravityFlags.Bottom };
         panel.Visibility = ViewStates.Visible;
@@ -266,7 +287,17 @@ public partial class MainActivity
     private void SetBrightness(float value)
     {
         _brightness = Math.Clamp(value, 0.05f, 1f);
-        try { if (Window?.Attributes is { } attr) attr.ScreenBrightness = _brightness; } catch { }
+        // vc128 老板令（真机「亮度调节现在没生效」实锤）：只改 Attributes 字段不回写，窗口不重排
+        // 亮度就不落——改完必须 Window.Attributes = attr 触发 WindowManager 重排才生效。
+        try
+        {
+            if (Window?.Attributes is { } attr)
+            {
+                attr.ScreenBrightness = _brightness;
+                Window.Attributes = attr;
+            }
+        }
+        catch { }
         ShowHudBar(HudIconView.IconKind.Sun, _brightness); // 亮度 0.05–1 直接作比例
     }
 
@@ -296,35 +327,32 @@ public partial class MainActivity
             return tv;
         }
 
-        // 行1：台名（占余宽、超长省略）——vc127 老板令（2026-11-28 真机截图）：分辨率 mini「1080」
-        // 没什么用，横竖屏都去掉（原行1 右侧小字整块退场）
+        // 行1：频道名（占余宽、超长省略）+ 右侧读数区——vc128 老板令（2026-11-28 真机截图定稿）：
+        // 「第一行左侧放频道名 右侧画面时刻 实时水位 显示完整」——读数段全部挂行1右侧，完整不截断
         var infoRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         infoRow.SetGravity(GravityFlags.CenterVertical);
         _cbTitle = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
         infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        _controlBar.AddView(infoRow);
-
-        // 行2（v31 原型 epg-bar；vc115 拆段保读数）：节目名（占余宽省略）+「· 画面时刻：HH:mm:ss」（完整不截）
-        var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-        _cbNowName = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
-        nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         _cbNowTime = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
         _cbNowTime.SetPadding(UiScale.Dp(8), 0, 0, 0);
-        nowRow.AddView(_cbNowTime);
-        _controlBar.AddView(nowRow);
+        infoRow.AddView(_cbNowTime);
+        _cbAuxWater = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        _cbAuxWater.SetPadding(UiScale.Dp(8), 0, 0, 0);
+        infoRow.AddView(_cbAuxWater);
+        _controlBar.AddView(infoRow);
 
-        // 行3：「实时水位：X秒」（完整）+ 接下来（占余宽）——读数段永不被节目名挤掉
-        // vc127 老板令（2026-11-28 真机截图「空白区域那么多，内容还没显示完整」）：接下来改最多两行，
-        // 单行截断「孔子上···」退场——节目名单行时行3 拉满整行宽，长节目单换行显完整不硬截。
-        var auxRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-        _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
-        _cbAuxWater.SetPadding(0, 0, UiScale.Dp(8), 0);
-        auxRow.AddView(_cbAuxWater);
-        _cbAuxNext = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
-        _cbAuxNext.SetSingleLine(false); // 覆盖 NewBarText 的单行口径：接下来允许换行显完整
-        _cbAuxNext.SetMaxLines(2);
-        auxRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        _controlBar.AddView(auxRow);
+        // 行2（vc128 老板令）：节目单整行——当前播放 +「· 接下来：…」完整显示，允许自然换行不设上限
+        // （老板拍板「节目单显示完整」，多少行都显示；原行2 节目名省略截断口径退场）
+        var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
+        _cbNowName = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        _cbNowName.SetSingleLine(false); // 覆盖 NewBarText 单行口径：当前节目完整可换行
+        _cbNowName.Ellipsize = null!;
+        nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
+        _cbAuxNext = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        _cbAuxNext.SetSingleLine(false); // 覆盖 NewBarText 单行口径：接下来完整可换行
+        _cbAuxNext.Ellipsize = null!;
+        nowRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+        _controlBar.AddView(nowRow);
 
         // 按钮行：两端分组（v21）——左组切台、右组功能；中间留白撑开
         // vc110 老板令：音量加减按钮全删（横竖屏都删，音量走手势/系统键）

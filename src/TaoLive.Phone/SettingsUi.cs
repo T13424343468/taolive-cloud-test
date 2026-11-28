@@ -226,7 +226,7 @@ public partial class MainActivity
             pill.SetCornerRadius(Dp(14));
             // vc126 老板令「所有按钮都是框线透明底」：选中/未选中都走透明底，靠描边深浅+文字色分层
             pill.SetColor(Color.Transparent);
-            pill.SetStroke(1, Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
+            pill.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
                 InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
             t.Background = pill;
             t.SetTextColor(selected
@@ -910,7 +910,7 @@ public partial class MainActivity
             var d = new GradientDrawable();
             d.SetColor(Color.Transparent); // vc126 老板令：底色退场，中间全透明
             d.SetCornerRadius(Dp(10)); // 圆角口径与档位弹层选项行胶囊一致
-            d.SetStroke(1, Color.Argb(strokeAlpha, cr, cg, cb));
+            d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(strokeAlpha, cr, cg, cb)); // vc134 统一换算令：细线也跟档
             return d;
         }
         var idleBg = Skin(InkTranslucency.FocusStrokeAlpha); // 静默：透明底+细线框（与控制条按钮同口径）
@@ -1495,7 +1495,7 @@ public partial class MainActivity
                 var pill = new GradientDrawable();
                 pill.SetCornerRadius(Dp(10));
                 pill.SetColor(Color.Transparent);
-                pill.SetStroke(1, Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
+                pill.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(selected ? 255 : InkTranslucency.FocusStrokeAlpha,
                     InkTranslucency.PaperR, InkTranslucency.PaperG, InkTranslucency.PaperB));
                 opt.Background = pill;
                 int val = step;

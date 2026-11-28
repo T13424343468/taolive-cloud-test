@@ -105,17 +105,19 @@ public static class InkTranslucency
     {
         var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
         d.SetColor(Color.Transparent);
-        d.SetStroke(1, Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
+        d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB)); // vc134 统一换算令：细线也跟档（基准≈1px 观感不变）
         d.SetCornerRadius(999f); // 胶囊
         return d;
     }
 
     /// <summary>提示胶囊皮（vc132 老板令「圆角弧度不用那么大」）：指定圆角半径（dp）的胶囊描边——
-    /// 横屏竖放胶囊收小弧度用；传大值即全胶囊形。</summary>
+    /// 横屏竖放胶囊收小弧度用；传大值即全胶囊形。
+    /// vc134 统一换算令（2026-11-28 老板拍板「统一」）：圆角改走 UiScale.Dp 统一口径——
+    /// 原 cornerDp×Density 少乘字号档，切字号档圆角不跟；并入后与间距/文字同一套比例。</summary>
     public static GradientDrawable PillBackground(Context ctx, float cornerDp)
     {
         var d = PillBackground(ctx);
-        d.SetCornerRadius(cornerDp * ctx.Resources!.DisplayMetrics!.Density);
+        d.SetCornerRadius(UiScale.Dp(cornerDp));
         return d;
     }
 
@@ -125,8 +127,8 @@ public static class InkTranslucency
     {
         var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
         d.SetColor(Color.Transparent);
-        d.SetCornerRadius(cornerDp * ctx.Resources!.DisplayMetrics!.Density);
-        d.SetStroke(1, Color.Argb(strokeAlpha, PaperR, PaperG, PaperB));
+        d.SetCornerRadius(UiScale.Dp(cornerDp)); // vc134 统一换算令：与胶囊皮同口径，补齐字号档
+        d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(strokeAlpha, PaperR, PaperG, PaperB));
         return d;
     }
 
@@ -136,8 +138,8 @@ public static class InkTranslucency
     {
         var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
         d.SetColor(InfoColor(ctx));
-        d.SetStroke(1, Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
-        d.SetCornerRadius(8f);
+        d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
+        d.SetCornerRadius(UiScale.Dp(3)); // vc134 统一换算令：原 8 裸像素≈3dp，改走统一口径随档缩放，观感不变
         return d;
     }
 
@@ -165,8 +167,8 @@ public static class InkTranslucency
     {
         var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
         d.SetColor(Color.Argb(FocusFillAlpha, PaperR, PaperG, PaperB));
-        d.SetStroke(1, Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
-        d.SetCornerRadius(8f);
+        d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(FocusStrokeAlpha, PaperR, PaperG, PaperB));
+        d.SetCornerRadius(UiScale.Dp(3)); // vc134 统一换算令：原 8 裸像素≈3dp，改走统一口径随档缩放，观感不变
         return d;
     }
 
@@ -175,8 +177,8 @@ public static class InkTranslucency
     {
         var d = new GradientDrawable(GradientDrawable.Orientation.LeftRight, new int[] { 0, 0 });
         d.SetColor(Color.Argb(FocusFillAlpha, AccentR, AccentG, AccentB));
-        d.SetStroke(1, Color.Argb(FocusStrokeAlpha, AccentR, AccentG, AccentB));
-        d.SetCornerRadius(8f);
+        d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(FocusStrokeAlpha, AccentR, AccentG, AccentB));
+        d.SetCornerRadius(UiScale.Dp(3)); // vc134 统一换算令：原 8 裸像素≈3dp，改走统一口径随档缩放，观感不变
         return d;
     }
 }

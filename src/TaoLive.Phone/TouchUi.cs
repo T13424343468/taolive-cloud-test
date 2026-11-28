@@ -798,7 +798,7 @@ public partial class MainActivity
             d.SetShape(Android.Graphics.Drawables.ShapeType.Rectangle);
             d.SetCornerRadius(UiScale.Px(10)); // 圆角方形线框
             d.SetColor(Color.Transparent); // 中间全透明
-            d.SetStroke(1, Color.Argb(strokeAlpha, 255, 255, 255));
+            d.SetStroke(Math.Max(1, UiScale.Px(1)), Color.Argb(strokeAlpha, 255, 255, 255)); // vc134 统一换算令：细线也跟档
             return d;
         }
         var ss = new Android.Graphics.Drawables.StateListDrawable();

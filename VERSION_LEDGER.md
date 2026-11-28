@@ -128,3 +128,10 @@
 - 统一验证：Release -m:1 编译 0 错 0 警（15:1x）；badging 亲验 133/1.0.23；apksigner verify 过
 - 交付包：dist-phone/TaoLive-1.0.23-vc133/（apk sha256 0c86642f…d7464d5）+ 同名 zip（8615d9cb…543631），文件卡片已发
 - git：commit 681fc00 已推 phone-src（触发云测）
+
+## vc134（1.0.24）——2026-11-28 15:1x 落码（老板查全元素换算后拍板「统一」）
+- 版本锚：csproj 134/1.0.24 = manifest 134/1.0.24 = badging 134/1.0.24（三处对账一致，亲验）
+- 内容（全元素统一换算收尾）：①效果层圆角去写死（HintBackground/FocusDrawable/AccentFocusDrawable 原 8 裸像素≈3dp → UiScale.Dp(3)，随档缩放观感不变）②细线描边跟档（InkTranslucency 五处 + SettingsUi 三处 + TouchUi 一处 SetStroke(1) → Math.Max(1, UiScale.Px(1))）③线框皮/胶囊皮圆角补齐字号档（OutlineBox/PillBackground(cornerDp) 原 cornerDp×Density → UiScale.Dp(cornerDp)，与间距/文字同一套比例）。主体此前已全走 UiScale 统一换算（vc117/vc120 口径），本轮为扫尾收口。
+- 统一验证：Release -m:1 编译 0 错 0 警（15:1x）；badging 亲验 134/1.0.24；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.24-vc134/（apk sha256 33843823…092627c）+ 同名 zip（aa2e0119…c63b4ba），文件卡片已发
+- git：commit 待记（推送后补）

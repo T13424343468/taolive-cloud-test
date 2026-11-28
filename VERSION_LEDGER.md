@@ -155,4 +155,4 @@
 - 内容六件：①锁定固定方向（老板 15:59「锁定即为锁定翻转 翻转都不生效」）：TouchUi.ApplyOrientationLock 锁定时改 ScreenOrientation.Landscape/Portrait 固定方向（SensorLandscape 允许横屏两侧 180° 互翻，老板实测即此坑），锁向跟存档 orientation_lock_landscape，解锁=FullUser ②设置页及四张子页底部内距固定 20dp（老板 15:59「直到离底部边缘20间距」+「横竖屏都一样」：SettingsUi 五处 175/878/1005/1140/1306 改 Dp(20)，vc136 圆角让位口径退场）③诊断日志/运行统计小字与上方元素间距对齐进阶调优 10dp 口径（老板多轮纠正后拍板「参考进阶调优」：诊断日志 head BottomMargin=RowGapDp、正文 TopMargin=RowGapDp；运行统计 head BottomMargin=RowGapDp、scroll TopMargin 12→RowGapDp；tabRow TopMargin 4dp 与行距方案撤）④诊断日志三页签改 Tab 样式（老板令「改成Tab那种样式 不要用按钮」+「统一总列表页那种蓝色」）：去框线去底色，选中态=白粗体+底部 3dp 深蓝 #3D6E9E 指示条（对齐总列表当前台描边色），未选中=次级灰无指示条；焦点高亮沿用全局 FocusDrawable（TabIndicatorDrawable 新增）⑤进阶调优整页压紧（老板令「每一行元素压缩一点 不要出现滚动条 但是滚动条要保留」）：调优行上下距 12/4→8/2、说明底距 10→6、横线上距 2→1、提示行上下距 6/10→4/6、按钮区上距 24→12，ScrollView 原样保留 ⑥同批含 vc136 全部内容（71fb446）。
 - 统一验证：干净重建 Release -m:1 编译 0 错 0 警（16:1x）；badging 亲验 137/1.0.27；apksigner verify 过；包内 356 文件与 vc134 对齐（双向差异 0）
 - 交付包：dist-phone/TaoLive-1.0.27-vc137/（apk sha256 065003f5…ba298a5f）+ 同名 zip，文件卡片已发
-- git：commit 待补记（本次提交后回填）
+- git：commit d998e2a 已推 phone-src（触发云测）

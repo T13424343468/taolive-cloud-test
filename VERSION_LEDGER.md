@@ -173,6 +173,16 @@
 - 交付包：dist-phone/TaoLive-1.0.31-vc141/（apk sha256 c06b4979…e7907）+ 同名 zip，文件卡片已发
 - git：commit 1a55fa9 已推 phone-src（触发云测）
 
+## vc142 / 1.0.32（2026-11-28 18:30-19:00 老板令「全落 出包」——CCTV 全断三刀+健康点真拉流+列表页上半区对齐）
+- 版本锚：csproj 142/1.0.32 = manifest 142/1.0.32 = badging 142/1.0.32（三处对账一致，亲验）
+- CCTV 全断三刀（老板 18:38 纠偏口径「同源后台只许 1 条、让位播放头、不碰换票链、水位窗接旋钮」）：①同源单路——PumpTick 试探加路（1+ProbeLevel）整段拆除，灌水器只发基本盘 1 路；FillThrottle 退避与脾气账保留（OnRejected/OnFailed/OnGood/IsBackedOff/PruneBackoff），ProbeLevel 加路逻辑不再被灌水器使用 ②灌水器统一出口改裸内层——MediaCache._fetchFactory upstream 由 RacingDataSourceFactory(null)（带 TicketSwap）改 CreateRawHttpFactory()（裸 HTTP，超时 12s/15s+UA=TicketResolver.ClientUserAgent 单点对齐），灌水器 4xx 只走自己退避账不碰票据缓存不烧频控账（CCTV 全断根因②根除）；缓存键=URL 与播放器缓存互通，写穿落盘口径不变 ③水位窗接旋钮——MediaCache.WaterAheadMs const 60_000 改属性读 AdvancedTuning.PrefetchWindowSec（30/45/60 秒三档，钳制 10~300）；SliceTtlMs 随窗走（下限 120 秒），窗内水绝不清
+- 健康点真拉流（老板令「健康点假绿修法并入修」+「列表页每行健康点同修」）：新增 Session/StreamProbe（拉清单+拉一片分片，主清单取首个变体再探一层封顶一层；直连流首块验通+HTML 广告壳判死；8 秒预算+UA 对齐）；Phone 探活核心改真拉流——Web 取票成功后真拉一次（票通≠流通），直连同口径；预检 HttpClient 退役。自诊断页与列表行健康点同账同口径
+- 列表页上半区对齐（老板令「边距以上半区为准 列表页去对齐」）：实测根因=列表内距 12dp 比上半区 20dp 边线探出 8dp（截图量得行卡片描边 ≈18px vs 上半区 ≈29px）；_list 内距 12→Dp(ListEdgePad)=20dp，行卡片描边与页头/页签/水位行/筛选框同落 20dp 线，行内 8dp 呼吸边保留
+- 本批同落（此前已令）：诊断确认框自绘（ShowConfirmOverlay/CloseConfirmOverlay+清崩溃日志接入+返回键关框）；系统返回手势逐层兜底（OnBackPressed 浮层栈：确认框→进阶档位→进阶→诊断→统计→授权→设置→排序→列表→base，CA1422 显式压警）
+- 统一验证：Release -m:1 编译 0 错 0 警（首编 OOM 137 一次重试过；CS8602/CA1422/CS1061 三处即修）；dotnet test 全测 417/417 全绿（新增 StreamProbeTests 9 用例）；badging 亲验 142/1.0.32；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.32-vc142/（apk sha256 0956c311…ac3d1）+ 同名 zip，文件卡片已发
+- git：commit 0825bcf 已推 phone-src（触发云测）
+
 ## vc140 / 1.0.30（2026-11-28 晚 老板拍板「大手术一次到位」——vc94 试探并发引擎收编进灌水器，vc139 不出包作废）
 - 版本锚：csproj 140/1.0.30 = manifest 140/1.0.30 = badging 140/1.0.30（三处对账一致，亲验）
 - 手术内容（老板 2026-11-28 全程拍板）：①全局分析令「各策略互相配合不拆台」→ 揪出 vc94 内存预取器 30 秒水位 vs vc139 磁盘灌水器 60 秒水位双拉拆台；推荐 C（预取器收编进统一数据面）+ 终局唯一解法=一个水位大脑，老板批「大手术要做」「直接手术」「一次到位」，vc139 不出包 ②Foundation 新增 FillThrottle 试探引擎（纯 C# 可测）：档位 0..2、采样 5 秒、观察期 20 秒、被拒归零+SourceTemperStore、指数退避 2s~5min、水满不发新路、Reset 清档位退避（脾气账持久化不清）、PruneBackoff 同台滚动重整 ③MediaCache.CacheFiller 升级为唯一水位大脑：PumpTick 按档位 budget=1+ProbeLevel 发并发路（每路经统一出口 _fetchFactory 写穿落盘）、在途账 _inFlight 防重发、成功 OnGood/429·403 OnRejected/其他 OnFailed、换台 throttle.Reset() 同台滚动只 PruneBackoff、水位=aheadMs 已落盘领先量 ④拆旧件：ParallelPrefetcher+FetchRequest 删除；ParallelPrefetchDataSource 瘦身（清单 Open 解析+多档带宽回调+ServeBytes）；RacingDataSourceFactory 单参构造；ExoPlayerPlayer 清装配/回滚/Dispose 段（_temperStore 保留传入 Wrap）⑤测试改写：Vc94ParallelWaterTests 预取器段改指 FillThrottle（escalation/rejection/good/backoff/prune/reset 九用例语义保留，generation/byte-cap/effective-water 随死件删）；Vc96PrefetchGateTests 删除（开关拆除）。

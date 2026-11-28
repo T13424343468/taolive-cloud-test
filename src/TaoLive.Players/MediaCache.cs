@@ -302,6 +302,7 @@ public static class MediaCache
         private readonly CacheFiller _filler;
         private MemoryStream? _capture;
         private string? _captureUrl;
+        private DataSpec? _lastSpec; // vc145：取址兜底（内层 getUri 为 null 时回退请求址，防清单加载器空指针）
 
         public ObservingDataSource(IDataSource inner, CacheFiller filler)
         {
@@ -311,6 +312,7 @@ public static class MediaCache
 
         public long Open(DataSpec? dataSpec)
         {
+            _lastSpec = dataSpec;
             var url = dataSpec?.Uri?.ToString();
             _capture?.Dispose();
             _capture = null;
@@ -351,7 +353,7 @@ public static class MediaCache
             _captureUrl = null;
         }
 
-        public Android.Net.Uri? Uri => _inner.Uri;
+        public Android.Net.Uri? Uri => _inner.Uri ?? _lastSpec?.Uri;
         public IDictionary<string, IList<string>>? ResponseHeaders => _inner.ResponseHeaders;
         public void AddTransferListener(ITransferListener? transferListener) => _inner.AddTransferListener(transferListener);
     }
@@ -741,6 +743,7 @@ public static class MediaCache
         private readonly List<ITransferListener> _listeners = new();
         private IDataSource? _fallback;
         private IDataSource _active;
+        private DataSpec? _lastSpec; // vc145：取址兜底（内层 getUri 为 null 时回退请求址，防清单加载器空指针）
 
         public CacheBypassDataSource(IDataSource cacheInner, IDataSourceFactory upstreamFactory)
         {
@@ -751,6 +754,7 @@ public static class MediaCache
 
         public long Open(DataSpec? dataSpec)
         {
+            _lastSpec = dataSpec;
             try
             {
                 return _active.Open(dataSpec);
@@ -783,7 +787,7 @@ public static class MediaCache
             try { _active.Close(); } catch { /* 关闭失败无害 */ }
         }
 
-        public Android.Net.Uri? Uri => _active.Uri;
+        public Android.Net.Uri? Uri => _active.Uri ?? _lastSpec?.Uri;
 
         public IDictionary<string, IList<string>>? ResponseHeaders => _active.ResponseHeaders;
 

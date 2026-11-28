@@ -210,3 +210,12 @@
 - 统一验证：干净重建 Release -m:1 编译 0 错 0 警；dotnet test 全测 408/408 全绿（0 失败 0 跳过）；badging 亲验 140/1.0.30；apksigner verify 过；包内 356 文件与 vc137 对齐（双向差异 0）
 - 交付包：dist-phone/TaoLive-1.0.30-vc140/（apk sha256 4e787214…090e）+ 同名 zip，文件卡片已发
 - git：commit c03bc62 已推 phone-src（触发云测）
+
+
+## vc145 / 1.0.35（2026-11-28 19:59 老板令「关闭顶级和返回上一级为什么要画两次 画两次留给系统退出 我们用滑一次」——双滑根因摘除 + 换票/空指针五刀收口）
+- 版本锚：csproj 145/1.0.35 = manifest 145/1.0.35 = badging 145/1.0.35（三处对账一致，亲验）
+- 双滑根因（官方文档核验定案）：manifest enableOnBackInvokedCallback=true + targetSdk 36，Android 15/16 系统预测式返回动画默认强开——首滑被系统动画吃掉不派发，关层要画两次
+- 手势返回修（老板令「滑一次=关层」）：①manifest enableOnBackInvokedCallback 改 false（官方认可的拦截返回的退出方式：系统忽略 OnBackInvokedCallback、停预测式动画，手势回落 OnBackPressed/KEYCODE_BACK 原路）②MainActivity RegisterPredictiveBack() 调用摘除 ③预测式返回整块删除（_backCallback/RegisterPredictiveBack/HandleSystemBack/BackInvokerCallback，rg 验残留 0）④OnBackPressed 并入顶级收口：HandleBackLayered 接住子级；顶级横屏退竖屏（_orientationLocked 锁优先）、竖屏 ExitOrCollapseList 退后台；删 base.OnBackPressed()（顶级不再走系统 finish）⑤HandleBackLayered/OnKeyDown 各 Back 分支不动（OnKeyDown 全状态消费 Back 返回 true，不与 OnBackPressed 双发）
+- 换票/空指针五刀收口（vc144 真机反馈续）：RacingHttpDataSource 摘闸+记账收紧仅 429+_lastSpec 兜底；ParallelPrefetchDataSource/MediaCache 两观察源加 _lastSpec 防 Uri 空指针；StreamProbe 探针 403 不再锁主机（删 OnRejected）；PlaybackSession 换票删 !IsCooling 条件（冷却中不许换票=频道锁死）
+- 统一验证：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（vc143 基线 423）；badging 亲验 145/1.0.35；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.35-vc145/（apk sha256 0dfb9ef3…3128）+ 同名 zip，文件卡片已发

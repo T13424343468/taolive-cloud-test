@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.taolive.phone"
-    android:versionCode="144"
-    android:versionName="1.0.34">
+    android:versionCode="145"
+    android:versionName="1.0.35">
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -15,9 +15,13 @@
        主入口 Activity 不在清单声明（vc53 口径）：MainLauncher 特性已在壳层注册，
        清单再声明一次=两个启动器入口=桌面出两个图标（真机 11-15 老板镜实锤） -->
   <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+  <!-- vc145 老板令（2026-11-28「关闭顶级和返回上一级为什么要画两次」）：预测式返回系统动画在
+       Android 15/16 上首滑先吃动画不派发，关层要画两次——摘掉预测式返回（false=系统忽略
+       OnBackInvokedCallback、不跑返回动画，手势回落 OnBackPressed/KEYCODE_BACK 原路），
+       滑一次=关层/回上级，画两次只留给系统退出。 -->
   <application android:label="TaoLive" android:icon="@mipmap/ic_launcher"
                android:theme="@style/TaoLiveTheme"
-               android:enableOnBackInvokedCallback="true"
+               android:enableOnBackInvokedCallback="false"
                android:usesCleartextTraffic="true">
     <!-- 后台保活前台服务（老板令 2026-11-27 #20）：切后台起、回前台撤 -->
     <service android:name="com.taolive.phone.KeepAliveService"

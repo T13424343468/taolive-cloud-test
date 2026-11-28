@@ -1113,9 +1113,10 @@ public sealed class PlaybackSession
         // vc69 坏票不自焚（真机 2026-11-16 00:08 实锤：缓存过期票 URL 4xx → 4 条线数秒烧光 → 全线路不可达）：
         // HTTP 状态错（坏票/签名失效）先原地作废票据换新票重试一次，不烧线不切台。
         // 每线路一次（TryFailover 切线时重记），防坏票死循环；未接作废器（测试/壳层未接）不启用重试。
+        // vc145 摘闸（真机 vc144 实锤）：换票是恢复路，冷却中不许换票=频道锁死——取票口主机与流主机
+        // 分账，流主机冷却不挡换票；取票口自身频控由取票器冷却快速失败管着，此处不再重复设卡。
         if (code.Contains("HTTP", StringComparison.OrdinalIgnoreCase)
             && !_freshTicketRetried
-            && !TaoLive.Foundation.SourceRateGate.IsCooling(CurrentEndpoint?.Url ?? "") // vc144 共享闸：冷却中不换票白打取票口
             && TicketCacheInvalidator is { } invalidate
             && _channel is { } retryChannel
             && CurrentEndpoint is { } badEndpoint)

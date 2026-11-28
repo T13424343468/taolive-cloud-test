@@ -87,7 +87,9 @@ public static class StreamProbe
     }
 
     /// <summary>拉头部字节（读满 HeadBytes 或流结束即停）；任何失败返回 null（判死）。
-    /// vc144 频控共享闸：冷却窗内零网络快速失败；4xx/429 记共享账，成功清账（三路共账口径）。</summary>
+    /// vc145 口径收紧（vc144 真机实锤）：探针不再往共享闸记账——探针的 403 多为票过期/防盗链
+    /// （与播放器指纹不同源），记账会把整主机锁进冷却窗、播放路陪葬（ysp CDN 全频道不出画教训）；
+    /// 冷却窗内仍零网络快速失败（不添请求），成功仍清账（探通=主机活着，帮频控解除）。</summary>
     private static async Task<byte[]?> FetchHeadAsync(string url, string userAgent, CancellationToken ct)
     {
         if (SourceRateGate.IsCooling(url)) return null; // vc144：主机冷却中，探活本地快速失败不添请求
@@ -103,9 +105,7 @@ public static class StreamProbe
             var status = (int)res.StatusCode;
             if (status >= 400)
             {
-                // vc144 共享闸只认频控信号（403/429）：404 等坏地址不进账，不误冷却整主机
-                if (status == 403 || status == 429) SourceRateGate.OnRejected(url);
-                return null;
+                return null; // vc145：探针失败只判死本源，不再记共享账锁主机
             }
             var buf = new byte[HeadBytes];
             var stream = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);

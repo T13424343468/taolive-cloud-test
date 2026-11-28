@@ -121,7 +121,7 @@ public sealed class RacingDataSource : Java.Lang.Object, AndroidX.Media3.DataSou
         _pendingByte = null;
     }
 
-    public Android.Net.Uri? Uri => _inner?.Uri;
+    public Android.Net.Uri? Uri => _inner?.Uri ?? _spec?.Uri;
 
     public IDictionary<string, IList<string>>? ResponseHeaders => _inner?.ResponseHeaders;
 
@@ -193,6 +193,7 @@ public sealed class TicketSwapDataSource : Java.Lang.Object, AndroidX.Media3.Dat
     private readonly Func<AndroidX.Media3.DataSource.IDataSource> _innerFactory;
     private readonly List<AndroidX.Media3.DataSource.ITransferListener> _listeners = new();
     private AndroidX.Media3.DataSource.IDataSource? _inner;
+    private AndroidX.Media3.DataSource.DataSpec? _lastSpec; // vc145：取址兜底（内层 getUri 为 null 时回退请求址，防清单加载器空指针）
 
     public TicketSwapDataSource(Func<AndroidX.Media3.DataSource.IDataSource> innerFactory)
     {
@@ -201,11 +202,9 @@ public sealed class TicketSwapDataSource : Java.Lang.Object, AndroidX.Media3.Dat
 
     public long Open(AndroidX.Media3.DataSource.DataSpec? dataSpec)
     {
-        // vc144 频控共享闸：主机冷却中零网络快速失败（探活/取票/内核三路共账，谁被拒大家歇）
-        if (dataSpec?.Uri?.ToString() is { } entryUrl && TaoLive.Foundation.SourceRateGate.IsCooling(entryUrl))
-        {
-            throw new Java.IO.IOException("source rate-gate cooling: " + entryUrl);
-        }
+        // vc145 摘闸（真机 vc144 实锤）：内核前台不再吃共享闸快速失败——闸只管探活/灌水器后台锤，
+        // 播放路永远许试（重试有自愈退避封顶），锁主机=锁画面（ysp CDN 被探针 403 锁死全频道不出画的教训）
+        _lastSpec = dataSpec;
         var inner = _innerFactory();
         _inner = inner;
         foreach (var l in _listeners) inner.AddTransferListener(l);
@@ -219,8 +218,9 @@ public sealed class TicketSwapDataSource : Java.Lang.Object, AndroidX.Media3.Dat
             when (ex.ResponseCode is >= 400 and < 500)
         {
             var failingUrl = dataSpec?.Uri?.ToString() ?? inner.Uri?.ToString();
-            // vc144 共享闸只认频控信号（403/429）：404 等坏地址不进账，不误冷却整主机
-            if (!string.IsNullOrEmpty(failingUrl) && (ex.ResponseCode == 403 || ex.ResponseCode == 429))
+            // vc145 记账收紧：内核侧只认 429=真频控；403 在带票 URL 上多为票过期/防盗链（换票即愈），
+            // 记账会把整主机锁进冷却窗（vc144 真机实锤），改交既有换票/换源链处理
+            if (!string.IsNullOrEmpty(failingUrl) && ex.ResponseCode == 429)
                 TaoLive.Foundation.SourceRateGate.OnRejected(failingUrl);
             if (string.IsNullOrEmpty(failingUrl))
             {
@@ -264,7 +264,7 @@ public sealed class TicketSwapDataSource : Java.Lang.Object, AndroidX.Media3.Dat
         _inner = null;
     }
 
-    public Android.Net.Uri? Uri => _inner?.Uri;
+    public Android.Net.Uri? Uri => _inner?.Uri ?? _lastSpec?.Uri;
 
     public IDictionary<string, IList<string>>? ResponseHeaders => _inner?.ResponseHeaders;
 

@@ -560,7 +560,9 @@ public partial class MainActivity : Activity
         BuildRoot();
         SetContentView(_root);
         ApplyImmersive(); // 手机版整改令 2026-11-27：沉浸式全屏（收状态栏/导航栏）
-        RegisterPredictiveBack(); // 2026-11-27 真机反馈第7条：接系统预测式返回（去「再次滑动返回」二次确认）
+        // vc145 老板令（2026-11-28「关闭顶级和返回上一级为什么要画两次」）：预测式返回注册摘除——
+        // Android 15/16 上系统预测式返回动画首滑先吃动画不派发，关层要画两次；清单已关
+        // enableOnBackInvokedCallback，手势回落 OnBackPressed/KEYCODE_BACK 原路，滑一次=关层/回上级。
         // vc124 老板令（2026-11-28「进软件第一屏要么默认不开列表页」）：首屏直接进播放画面，
         // 开机链路照常自动进默认台；列表页只在用户主动呼出时出现
         ShowPlayer();
@@ -1866,9 +1868,9 @@ public partial class MainActivity : Activity
 
     // —— 系统返回手势兜底（vc142 老板令「任何页面 系统的返回手势都应该可以回到上一级或者关闭」：
     //    子级回上一级、顶级关闭。按浮层栈从上到下逐级收口，与 OnKeyDown 遥控器口径同构） ——
-    // vc144 老板令（2026-11-28「页面内手势返回不会关闭，子页面返回上一级」实锤补落）：
-    // API 33+ 手势返回走 HandleSystemBack，原实现只管横竖屏收口、漏了子页浮层栈——
-    // 逐层收口抽成 HandleBackLayered 供返回键与手势返回共用，子级回上一级、顶级再按横竖屏收口。
+    // vc145 老板令（2026-11-28「关闭顶级和返回上一级为什么要画两次」）：预测式返回已整体摘除
+    // （清单 enableOnBackInvokedCallback=false），手势返回回落 OnBackPressed/KEYCODE_BACK 原路——
+    // 滑一次=关层/回上级，画两次只留给系统退出。逐层收口统一走 HandleBackLayered。
 
     /// <summary>返回逐层收口（浮层栈从上到下）：有子级接住返回并回上一级=true；顶级=false 落横竖屏口径。</summary>
     private bool HandleBackLayered()
@@ -1892,11 +1894,22 @@ public partial class MainActivity : Activity
 
     // CA1422：OnBackPressed 在 API 33+ 标记过时（预测性返回手势），本项目 minSdk<33 且未接
     // OnBackPressedDispatcher，override 仍是全机型统一兜底口径——显式压警（零警告出包硬门禁）。
+    // vc145：清单已关 enableOnBackInvokedCallback，系统忽略 OnBackInvokedCallback、不跑预测式
+    // 返回动画，手势回落本 override 原路——滑一次=关层/回上级，画两次只留给系统退出。
 #pragma warning disable CA1422
     public override void OnBackPressed()
     {
         if (HandleBackLayered()) return;
-        base.OnBackPressed(); // 顶级：默认退后台
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+        if (landscape)
+        {
+            if (_orientationLocked) return; // vc136 修（老板 15:45 报「锁定没起作用」）：锁定时返回键不退竖屏——锁优先于返回转向，翻向即破锁
+            RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏退全屏回竖屏（vc116⑭ 去提示弹条）
+        }
+        else
+        {
+            ExitOrCollapseList(); // 竖屏顶级：停播攒流退后台
+        }
     }
 #pragma warning restore CA1422
 
@@ -2551,41 +2564,12 @@ public partial class MainActivity : Activity
         catch { return fallback; }
     }
 
-    // —— 预测式返回（2026-11-27 真机反馈第7条：去「再次滑动返回」二次确认，滑一次即走） ———
-
-    private Java.Lang.Object? _backCallback; // 持引用防 GC 回收（Java 侧注册的是代理对象）
-
-    /// <summary>API 33+ 注册系统返回回调：子级回上一级（浮层栈逐层收口），顶级横屏=退全屏回竖屏、
-    /// 竖屏=退后台（与返回键同路，vc144 补子页手势返回）；旧系统走 OnKeyDown 原路，行为一致。</summary>
-    private void RegisterPredictiveBack()
-    {
-        if (!OperatingSystem.IsAndroidVersionAtLeast(33)) return;
-        var callback = new BackInvokerCallback(HandleSystemBack);
-        _backCallback = callback;
-        OnBackInvokedDispatcher!.RegisterOnBackInvokedCallback(
-            Android.Window.IOnBackInvokedDispatcher.PriorityDefault, callback);
-    }
-
-    private void HandleSystemBack()
-    {
-        // vc144 老板令：手势返回与返回键同口径——子级（确认框/档位弹层/子页/设置面板/抽屉）先逐层收口回上一级
-        if (HandleBackLayered()) return;
-        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
-        if (landscape)
-        {
-            if (_orientationLocked) return; // vc136 修（老板 15:45 报「锁定没起作用」）：锁定时返回键不退竖屏——锁优先于返回转向，翻向即破锁
-            RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏退全屏回竖屏（vc116⑭ 去提示弹条）
-        }
-        else
-        {
-            ExitOrCollapseList(); // 竖屏顶级：停播攒流退后台
-        }
-    }
-
-    private sealed class BackInvokerCallback(Action onBack) : Java.Lang.Object, Android.Window.IOnBackInvokedCallback
-    {
-        public void OnBackInvoked() => onBack();
-    }
+    // —— 预测式返回（2026-11-27 真机反馈第7条引入，vc145 老板令 2026-11-28「关闭顶级和返回上一级
+    //    为什么要画两次」整体摘除）———
+    // 病根：Android 15/16 + targetSdk 36 上系统预测式返回动画默认强开，首滑先吃动画不派发，
+    // 关层要画两次。修法：清单 enableOnBackInvokedCallback=false（官方认可的拦截返回的退出方式），
+    // 系统忽略 OnBackInvokedCallback、停预测式动画，手势回落 OnBackPressed/KEYCODE_BACK 原路——
+    // 滑一次=关层/回上级，画两次只留给系统退出。收口逻辑并入 OnBackPressed（见上方）。
 
     /// <summary>健康点刷新节流（方案书收口批②：更新节流 5 秒）。只读账刷新展示，不写账。
     /// 真机反馈批#4 打点（2026-11-15）：状态沿逐条落运行日志（不节流），圆点转绿口径按日志对账。</summary>

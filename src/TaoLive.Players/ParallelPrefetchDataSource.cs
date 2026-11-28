@@ -20,6 +20,7 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
     private readonly Action<long>? _minVariantObserver;
     private readonly System.Collections.Generic.List<AndroidX.Media3.DataSource.ITransferListener> _listeners = new();
     private AndroidX.Media3.DataSource.IDataSource? _inner;
+    private AndroidX.Media3.DataSource.DataSpec? _lastSpec; // vc145：取址兜底用
     private MemoryStream? _served; // 清单全文的字节流服务
 
     public ParallelPrefetchDataSource(
@@ -41,6 +42,7 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
 
     public long Open(AndroidX.Media3.DataSource.DataSpec? dataSpec)
     {
+        _lastSpec = dataSpec; // vc145：取址兜底（内层 getUri 为 null 时回退请求址，防清单加载器空指针）
         var url = dataSpec?.Uri?.ToString();
         // 零偏移才走本地服务（清单全文）；带偏移的重开一律透传内层，字节对齐不赌
         if (url is not null && dataSpec!.Position == 0 && IsPlaylist(url))
@@ -114,7 +116,7 @@ public sealed class ParallelPrefetchDataSource : Java.Lang.Object, AndroidX.Medi
         _served = null;
     }
 
-    public Android.Net.Uri? Uri => _inner?.Uri;
+    public Android.Net.Uri? Uri => _inner?.Uri ?? _lastSpec?.Uri;
 
     public System.Collections.Generic.IDictionary<string, System.Collections.Generic.IList<string>>? ResponseHeaders =>
         _inner?.ResponseHeaders;

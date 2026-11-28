@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# TaoLive 手机版逐屏走查出图 v10（制度：视觉模型比对与评分制度 2026-11-26）
+# TaoLive 手机版逐屏走查出图 v11（制度：视觉模型比对与评分制度 2026-11-26）
+# v11 改法（总根因）：tap_text 的 tr '>' '>\n' 在 POSIX tr 里是恒等映射（SET2 长于 SET1 时多余字符忽略），从未断行——grep 匹配到整个 XML，bounds 取前四位数=根节点 [0,0][1080,2400]，中心恒为屏幕正中 (540,1200)。v6 起 tap_text 一直点屏幕中心：v8/v10 的「进阶调优开诊断页」「页签切不动」全是这一个 bug（v8 动画时序竞态归因作废）。v11 改 tr '>' '\n' 正确断行，其余沿用 v10。
 # v10 改法（对照 v9 实拍复盘，run 46082366938 证据包）：
 #   ① 根因：uiautomator dump 在面板动画期超时失败时，/sdcard/ui.xml 残留上一次内容——v9 设置页
 #      dump 实为抽屉陈旧文件，tap_text「进阶调优」据此 MISS，open_sub 盲按返回键三次把应用退后台，
@@ -74,7 +75,7 @@ open_drawer() { # $1=☰x  $2=☰y
 tap_text() {
   local text="$1" try=1 fx="${2:-}" fy="${3:-}" line nums
   while [ $try -le 2 ]; do
-    line=$(fresh_snap | tr '>' '>\n' | grep -F "text=\"$text\"" | head -1)
+    line=$(fresh_snap | tr '>' '\n' | grep -F "text=\"$text\"" | head -1)
     if [ -n "$line" ]; then
       nums=$(echo "$line" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | grep -o '[0-9]*')
       if [ -n "$nums" ]; then

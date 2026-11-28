@@ -2510,6 +2510,7 @@ public partial class MainActivity : Activity
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         if (landscape)
         {
+            if (_orientationLocked) return; // vc136 修（老板 15:45 报「锁定没起作用」）：锁定时返回键不退竖屏——锁优先于返回转向，翻向即破锁
             RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏退全屏回竖屏（vc116⑭ 去提示弹条）
         }
         else

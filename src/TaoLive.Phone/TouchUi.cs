@@ -318,7 +318,8 @@ public partial class MainActivity
         // 上（文字→按钮盒=热区缓冲 10dp）下（按钮盒→屏缘=热区缓冲 10dp+0）对齐；横竖屏同口径。
         // vc133 老板令（15:02 拍板「左右9 底6」）：左右内距 16→9dp 按钮再靠边，底部内距 0→6dp 按钮整体上抬。
         // vc135 老板令（15:20 拍板「内距收到5」）：左右内距 9→5dp，按钮继续靠边；上下不动。
-        _controlBar.SetPadding(UiScale.Dp(5), UiScale.Dp(10), UiScale.Dp(5), UiScale.Dp(6));
+        // vc136 老板令（15:44「内距 3」）：左右内距 5→3dp，上下（10/6）不动。
+        _controlBar.SetPadding(UiScale.Dp(3), UiScale.Dp(10), UiScale.Dp(3), UiScale.Dp(6));
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
@@ -399,6 +400,7 @@ public partial class MainActivity
         flipBtn.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp)); // vc120：背景内缩对齐可见盒
         flipBtn.Click += (_, _) =>
         {
+            if (_orientationLocked) return; // vc136 修（老板 15:46 令「锁定解锁生效性全场景检查」）：锁定时翻转按钮不翻向——锁=钉死，只有解锁才能变
             bool land = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
             RequestedOrientation = land ? ScreenOrientation.SensorPortrait : ScreenOrientation.SensorLandscape;
             // vc116⑤：去提示弹条——转屏结果画面自见，不再弹字
@@ -492,6 +494,9 @@ public partial class MainActivity
         _orientationLocked = !_orientationLocked;
         var editor = _prefs.Edit();
         editor?.PutBoolean("orientation_lock", _orientationLocked);
+        if (_orientationLocked)
+            editor?.PutBoolean("orientation_lock_landscape",
+                Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape); // vc136 修：锁向拍板存档——锁的是横屏还是竖屏记下来，重建不翻向
         editor?.Apply();
         ApplyOrientationLock();
         RefreshLockButton();
@@ -501,7 +506,11 @@ public partial class MainActivity
     {
         if (_orientationLocked)
         {
-            bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+            // vc136 修（老板 15:45 报「横屏锁定没起作用，还是会根据陀螺仪换回竖屏」）：
+            // 锁向改用存档（orientation_lock_landscape），不再按当前配置现读——页面重建时系统
+            // 瞬时报竖屏会把横屏锁翻成竖屏锁，根因即此；存量安装无存档回落当前配置（旧口径）。
+            bool landscape = _prefs.GetBoolean("orientation_lock_landscape",
+                Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape);
             RequestedOrientation = landscape ? ScreenOrientation.SensorLandscape : ScreenOrientation.SensorPortrait;
         }
         else
@@ -517,7 +526,9 @@ public partial class MainActivity
             if (!_orientationLocked) b.Kind = LockIconView.IconKind.Unlocked;
             else
             {
-                bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
+                // vc136 修：锁向图标跟存档走（与 ApplyOrientationLock 同源）——重建后图标不再按瞬时配置翻错
+                bool landscape = _prefs.GetBoolean("orientation_lock_landscape",
+                    Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape);
                 b.Kind = landscape ? LockIconView.IconKind.LockLandscape : LockIconView.IconKind.LockPortrait;
             }
         }
@@ -643,7 +654,8 @@ public partial class MainActivity
                 if (fromLeft) { host.HideControlBar(); host.ShowList(); }
                 else if (host.Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape)
                 {
-                    host.RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏：退全屏回竖屏（vc116⑤ 去提示弹条）
+                    if (!host._orientationLocked) // vc136 修：锁定时边缘滑动手势不退竖屏——与返回键同口径，锁=钉死
+                        host.RequestedOrientation = ScreenOrientation.SensorPortrait; // 横屏：退全屏回竖屏（vc116⑤ 去提示弹条）
                 }
                 else host.ExitOrCollapseList(); // vc112：退出确认弹窗已整删，竖屏滑回=与返回键同口径（收抽屉/退后台续播）
             });

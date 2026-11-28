@@ -140,5 +140,5 @@
 - 版本锚：csproj 135/1.0.25 = manifest 135/1.0.25 = badging 135/1.0.25（三处对账一致，亲验）
 - 内容三件：①操作栏左右内距 9→5dp（TouchUi.BuildControlBar SetPadding，上下 10/6 不动，老板 15:20 拍板「内距收到5」）②首颗胶囊首启动定位修（根因=vc133 的 3 次 Post 重试在冷启首次 traversal 前跑完，几何仍 (0,0,0) 照落兜底；修法=兜底门槛改 DecorView.IsLaidOut（布局未完成只等不落）+重试上限 3→30 步进 16ms，几何拿到即清零重入 PositionToastPill）③双跟随方案全落（老板 15:24-15:29 拍板）：显示大小维持密度等比跟随；字体滑条 5 档归并三档——相对首启 fontScale 比值 ≤1.05→小(1.0)、≤1.2→中(+10%)、>1.2→大(+20%)（步距「中10% 高20」）；间距/图标/盒子跟同一套 TierRatio（Px/Dp 换 FontScaleRatio→TierRatio）；文字 sp 渲染层自乘的 fontScale 在 T()/Scale 归一除掉；首启 fontScale 拍板存档 ui_fontscale_ref（仿 ui_density_ref），首启所见=小档基准（老板系统字体/显示大小均停最小档，新版所见不变）；字体变更走 Activity 重建 OnCreate 重读重算，不断流
 - 统一验证：Release -m:1 编译 0 错 0 警（15:31）；badging 亲验 135/1.0.25；apksigner verify 过
-- 交付包：dist-phone/TaoLive-1.0.25-vc135/（apk sha256 5878291e…23dc1a4af）+ 同名 zip，文件卡片已发
+- 交付包：dist-phone/TaoLive-1.0.25-vc135/（apk sha256 a2e23db7…511e5ca7d，干净重建口径与 vc134 对齐 354 文件）+ 同名 zip，文件卡片 v2 已发（首版增量构建少 58 个 Kotlin 元数据文件，老板发现包变小，已干净重建重发）
 - git：commit 1ef2f58 已推 phone-src（触发云测）

@@ -163,3 +163,10 @@
 - 统一验证：干净重建 Release -m:1 编译 0 错 0 警（首编 CS8602 空引用一处即修 v!.Pressed 后过）；badging 亲验 138/1.0.28；apksigner verify 过；包内 356 文件与 vc137 对齐（双向差异 0）
 - 交付包：dist-phone/TaoLive-1.0.28-vc138/（apk sha256 19e84bff…71b6fa）+ 同名 zip，文件卡片已发
 - git：commit ccc5223 已推 phone-src（触发云测）
+
+## vc140 / 1.0.30（2026-11-28 晚 老板拍板「大手术一次到位」——vc94 试探并发引擎收编进灌水器，vc139 不出包作废）
+- 版本锚：csproj 140/1.0.30 = manifest 140/1.0.30 = badging 140/1.0.30（三处对账一致，亲验）
+- 手术内容（老板 2026-11-28 全程拍板）：①全局分析令「各策略互相配合不拆台」→ 揪出 vc94 内存预取器 30 秒水位 vs vc139 磁盘灌水器 60 秒水位双拉拆台；推荐 C（预取器收编进统一数据面）+ 终局唯一解法=一个水位大脑，老板批「大手术要做」「直接手术」「一次到位」，vc139 不出包 ②Foundation 新增 FillThrottle 试探引擎（纯 C# 可测）：档位 0..2、采样 5 秒、观察期 20 秒、被拒归零+SourceTemperStore、指数退避 2s~5min、水满不发新路、Reset 清档位退避（脾气账持久化不清）、PruneBackoff 同台滚动重整 ③MediaCache.CacheFiller 升级为唯一水位大脑：PumpTick 按档位 budget=1+ProbeLevel 发并发路（每路经统一出口 _fetchFactory 写穿落盘）、在途账 _inFlight 防重发、成功 OnGood/429·403 OnRejected/其他 OnFailed、换台 throttle.Reset() 同台滚动只 PruneBackoff、水位=aheadMs 已落盘领先量 ④拆旧件：ParallelPrefetcher+FetchRequest 删除；ParallelPrefetchDataSource 瘦身（清单 Open 解析+多档带宽回调+ServeBytes）；RacingDataSourceFactory 单参构造；ExoPlayerPlayer 清装配/回滚/Dispose 段（_temperStore 保留传入 Wrap）⑤测试改写：Vc94ParallelWaterTests 预取器段改指 FillThrottle（escalation/rejection/good/backoff/prune/reset 九用例语义保留，generation/byte-cap/effective-water 随死件删）；Vc96PrefetchGateTests 删除（开关拆除）。
+- 统一验证：干净重建 Release -m:1 编译 0 错 0 警；dotnet test 全测 408/408 全绿（0 失败 0 跳过）；badging 亲验 140/1.0.30；apksigner verify 过；包内 356 文件与 vc137 对齐（双向差异 0）
+- 交付包：dist-phone/TaoLive-1.0.30-vc140/（apk sha256 4e787214…090e）+ 同名 zip，文件卡片已发
+- git：commit 待补（推 phone-src 后回填提交号）

@@ -1048,7 +1048,7 @@ public partial class MainActivity : Activity
         // 老板令 2026-11-17：列表整体上移让出台标——顶 padding 40→12，页头升到台标上方，
         // 台标横条不再与水位小字叠字；横向一个像素不动，宽度仍由 ApplyListWidth 钳制
         // vc116⑦ 统一靠边对齐：页头 padding 顶 20/左右 16/底 16（顶部加高+与水位行/筛选框同边线）
-        header.SetPadding(UiScale.Px(ListEdgePad), UiScale.Px(20), UiScale.Px(ListEdgePad), UiScale.Px(16));
+        header.SetPadding(UiScale.Dp(ListEdgePad), UiScale.Px(20), UiScale.Dp(ListEdgePad), UiScale.Px(16)); // vc139：列表页左右切物理 dp 口径——Px 出裸像素（vc127 同源坑，20 仅≈12dp 观感），「一律20」没效果根因
         var titleRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var title = new TextView(this) { Text = "频道列表", TextSize = UiScale.Title };
         title.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -1083,7 +1083,7 @@ public partial class MainActivity : Activity
         // 原实需≈116% 屏宽三档全裁「地方台」——收边距到≈93%屏宽，再布局后实测兜底（FitTabsOnePage）
         _tabViews.Clear();
         var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        tabRow.SetPadding(UiScale.Px(ListEdgePad), UiScale.Px(24), UiScale.Px(ListEdgePad), UiScale.Px(12)); // #15 尺寸令；vc119 左右统一 24dp 边线
+        tabRow.SetPadding(UiScale.Dp(ListEdgePad), UiScale.Px(24), UiScale.Dp(ListEdgePad), UiScale.Px(12)); // #15 尺寸令；vc119 左右统一边线；vc139 左右切物理 dp 口径
         int tabIndex = 0;
         foreach (ListTabs.Tab t in Enum.GetValues(typeof(ListTabs.Tab)))
         {
@@ -1110,7 +1110,7 @@ public partial class MainActivity : Activity
         _waterLevelText.Ellipsize = TextUtils.TruncateAt.End;
         UpdateWaterLevel();
         _listPage.AddView(_waterLevelText, new LinearLayout.LayoutParams(-1, -2)
-        { LeftMargin = UiScale.Px(ListEdgePad), RightMargin = UiScale.Px(ListEdgePad) }); // vc116⑦ 统一靠边
+        { LeftMargin = UiScale.Dp(ListEdgePad), RightMargin = UiScale.Dp(ListEdgePad) }); // vc116⑦ 统一靠边；vc139 左右切物理 dp 口径
 
         // 筛选输入框（老板 2026-11-27 20:2x 拍板「元素肯定都要」；v11 设计稿口径）：数字=频道号前缀、文字=台名包含，
         // 系统输入法；空串恢复全量。过滤只动行装配，不碰频道表与编号语义
@@ -1142,7 +1142,7 @@ public partial class MainActivity : Activity
                 adapter.SetFilter(e.Text?.ToString() ?? "");
         };
         _listPage.AddView(filterBox, new LinearLayout.LayoutParams(-1, -2)
-        { LeftMargin = UiScale.Px(ListEdgePad), RightMargin = UiScale.Px(ListEdgePad), TopMargin = UiScale.Px(12), BottomMargin = UiScale.Px(12) }); // vc120 老板令：上下间距 4/8→12/12 放宽（左右仍 24dp 统一边线）
+        { LeftMargin = UiScale.Dp(ListEdgePad), RightMargin = UiScale.Dp(ListEdgePad), TopMargin = UiScale.Px(12), BottomMargin = UiScale.Px(12) }); // vc120 老板令：上下间距 4/8→12/12 放宽；vc139 左右切物理 dp 口径
 
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
@@ -1152,7 +1152,7 @@ public partial class MainActivity : Activity
             _list.VerticalScrollbarThumbDrawable = new Android.Graphics.Drawables.ColorDrawable(Color.Transparent);
         // vc119 老板令：列表左右内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐统一边线（vc138 起 20dp）
         // vc121 同类排查：底部内距=圆角让位——滚到底最后一行能滚出系统圆角弧区，不贴底被削
-        _list.SetPadding(UiScale.Px(12), 0, UiScale.Px(12), BottomCornerClearPx()); // vc138 老板令（「左右一律20」+「框线移了内部元素没移会覆盖」排查）：列表左右内距 16→12——行内容（12+行内8）对齐 20dp 边线与页头/筛选框对齐；当前台描边框画在 12dp 内距边线，与行内容保持 8dp 实距（vc124 口径不变），整体随边线内移 4dp
+        _list.SetPadding(UiScale.Dp(12), 0, UiScale.Dp(12), BottomCornerClearPx()); // vc138 老板令（「左右一律20」+「框线移了内部元素没移会覆盖」排查）：列表左右内距 16→12——行内容（12+行内8）对齐 20dp 边线与页头/筛选框对齐；当前台描边框画在 12dp 内距边线，与行内容保持 8dp 实距（vc124 口径不变）；vc139 左右切物理 dp 口径
         _list.SetClipToPadding(false);
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _list.Selector = InkTranslucency.FocusDrawable();
@@ -3293,7 +3293,7 @@ public partial class MainActivity : Activity
             var ctx = _ctx;
             var h = new RowHolder { Line = new LinearLayout(ctx) { Orientation = Orientation.Horizontal } };
             // vc116⑦：行内左右 8dp（叠加 ListView 8dp 内距=内容对齐 16dp 边线）、垂直 20→12 降行高
-            h.Line.SetPadding(UiScale.Px(8), UiScale.Px(12), UiScale.Px(8), UiScale.Px(12));
+            h.Line.SetPadding(UiScale.Dp(8), UiScale.Px(12), UiScale.Dp(8), UiScale.Px(12)); // vc139：行内左右切物理 dp 口径，与列表内距同口径对齐 20dp 边线
 
             h.Header = new TextView(ctx);
             h.Header.Ellipsize = TextUtils.TruncateAt.End; // vc65：面板钳到半屏等极端场景走省略号，不折行

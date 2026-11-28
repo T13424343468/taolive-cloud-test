@@ -7,6 +7,7 @@ using Android.Views.Animations;
 using Android.Widget;
 using TaoLive.Foundation;
 using TaoLive.Model;
+using TaoLive.Players;
 using TaoLive.Session;
 
 namespace TaoLive.Phone;
@@ -72,7 +73,9 @@ public partial class MainActivity
 
     /// <summary>灌速探针预热（vc89 老板拍板「一次平稳」）：弱线起播期后台焐热下一条备线的票——
     /// 走既有 TicketResolver 取票链路落缓存，干库秒切时零取票等待。不切线不动画面；
-    /// 仅前台会话发车，后台线程跑（探针信号在会话泵线程），失败照常走既有自救不碍事。</summary>
+    /// 仅前台会话发车，后台线程跑（探针信号在会话泵线程），失败照常走既有自救不碍事。
+    /// vc139 先攒后切（老板 2026-11-28 令）：票焐热后立刻让备源在缓存攒水，攒满 7 秒回调切线
+    /// （会话层三重闸把住：只在起播攒流期、备源仍是下一条才切）——切换瞬间秒出画不黑屏。</summary>
     private void OnSessionWeakFill(object? sender, SourceEndpoint endpoint)
     {
         if (sender is not PlaybackSession s || !ReferenceEquals(s, _manager.Current)) return;
@@ -81,8 +84,15 @@ public partial class MainActivity
         {
             try
             {
-                await _resolver.ResolveAsync(endpoint, ch.Id, ch.Name).ConfigureAwait(false);
-                CrashNet.Record($"[预热] {ch.Name} 备线票焐热完成（灌速探针）");
+                var url = await _resolver.ResolveAsync(endpoint, ch.Id, ch.Name).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(url))
+                {
+                    CrashNet.Record($"[预热] {ch.Name} 备线票焐热未成照常走既有自救");
+                    return;
+                }
+                CrashNet.Record($"[预热] {ch.Name} 备线票焐热完成（灌速探针），备源开始攒水");
+                MediaCache.FillBackup(url, targetAheadSec: 7, onReady: () =>
+                    s.NotifyBackupWaterReady(endpoint)); // 会话层三重闸把住切换口径
             }
             catch (Exception ex)
             {
@@ -172,7 +182,7 @@ public partial class MainActivity
         // vc111 老板令「全页面统一电视端水墨透光」：面板改自适应透底（亮屏76/暗房108），画面透出、
         // 文字清晰由可读性投影兜底（电视端 vc53 同口径）；不再用近实色底闷住画面。
         panel.SetBackgroundColor(InkTranslucency.PanelColor(this));
-        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Dp(20)); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线；vc121 同类排查：底部随系统圆角让位，关闭行不落弧区；vc137 老板令（15:59「直到离底部边缘20间距」）：底部内距固定 20dp，圆角让位退场（按钮左右 24dp 边距探不进弧区）
+        panel.SetPadding(Dp(UiScale.EdgePadDp), SafeTopInset(Dp(10)), Dp(UiScale.EdgePadDp), Dp(30)); // vc116⑬：顶部避让挖孔/状态栏；vc119 左右统一 24dp 边线；vc121 同类排查：底部随系统圆角让位，关闭行不落弧区；vc137 老板令（15:59「直到离底部边缘20间距」）：底部内距固定 20dp，圆角让位退场（按钮左右 24dp 边距探不进弧区）；vc139 老板令：底部按钮间距 20→30
         panel.Visibility = ViewStates.Gone;
 
         // 页头：标题（v26 原型口径）。vc117 令11（2026-11-28 老板拍板）：左上角「←」全删，
@@ -889,7 +899,7 @@ public partial class MainActivity
     {
         int pad = Dp(20); // vc138 老板令（「所有页面统一 左右一律20」）：子页骨架左右 24→20，内部元素各自对齐不动
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        box.SetPadding(pad, SafeTopInset(pad), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场——子页按钮行与设置页关闭行同屏同位；vc137 老板令：底部内距固定 20dp
+        box.SetPadding(pad, SafeTopInset(pad), pad, Dp(30)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场——子页按钮行与设置页关闭行同屏同位；vc137 老板令：底部内距固定 20dp；vc139 老板令：底部按钮间距 20→30
         box.SetBackgroundColor(InkTranslucency.PanelColor(this));
         var titleView = new TextView(this) { Text = title, TextSize = UiScale.Title };
         titleView.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -1016,7 +1026,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc137 老板令：底部内距固定 20dp
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(30)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc137 老板令：底部内距固定 20dp；vc139 老板令：底部按钮间距 20→30
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // topbar：标题 + 三常驻钮（📄📁🗑）。vc117 令11：左上角「←」全删，统一底部「关闭」行收页
@@ -1153,7 +1163,7 @@ public partial class MainActivity
             overlay.SetBackgroundColor(InkTranslucency.PanelColor(this));
             int pad = Dp(UiScale.EdgePadDp);
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
-            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc137 老板令：底部内距固定 20dp
+            box.SetPadding(pad, SafeTopInset(Dp(10)), pad, Dp(30)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径；vc137 老板令：底部内距固定 20dp；vc139 老板令：底部按钮间距 20→30
             overlay.AddView(box, new FrameLayout.LayoutParams(-1, -1));
 
             // vc117 令11：页头「←」删，标题起头；底部统一「关闭」行收页
@@ -1319,7 +1329,7 @@ public partial class MainActivity
         {
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int padAdv = Dp(24);
-            box.SetPadding(Dp(20), SafeTopInset(padAdv), Dp(20), Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场；vc137 老板令：底部内距固定 20dp；vc138 老板令（「所有页面统一 左右一律20」）：左右 24→20（padAdv 保留供按钮内距），内部元素各自对齐不动
+            box.SetPadding(Dp(20), SafeTopInset(padAdv), Dp(20), Dp(30)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场；vc137 老板令：底部内距固定 20dp；vc138 老板令（「所有页面统一 左右一律20」）：左右 24→20（padAdv 保留供按钮内距），内部元素各自对齐不动；vc139 老板令：底部按钮间距 20→30
             box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档（跟普通面板浅档）
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));

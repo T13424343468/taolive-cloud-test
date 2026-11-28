@@ -119,46 +119,23 @@ public static class StartupGear
     public static bool ShouldLift(long bufferedMs, long heldMs) =>
         bufferedMs >= RampUpWaterMs || heldMs >= MaxHoldMs;
 }
-
-/// <summary>预取请求（FetchRequested 事件载荷）：Android 壳层据此起后台下载。</summary>
-public readonly struct FetchRequest
-{
-    public FetchRequest(string url, int generation)
-    {
-        Url = url;
-        Generation = generation;
-    }
-
-    public string Url { get; }
-    public int Generation { get; }
-}
-
 /// <summary>
-/// 并发预取器（vc96 试探版，老板 2026-11-26 拍板「试探性并发/延迟性」，纯逻辑可测）：
-/// - <b>默认单路起步</b>：切台起播只开内核在播那 1 路，试探档位 0=不预开任何并发；
+/// 灌水试探引擎（vc140 水位大脑合并，老板 2026-11-28 拍板「大手术一次到位」）：
+/// vc94 试探纪律原样移植（纯逻辑可测），账本唯一——磁盘水位由灌水器喂，本类只管档位与退避：
+/// - <b>默认单路起步</b>：档位 0=灌水器只开自己那 1 路，不预开任何并发；
 /// - <b>不够才加、逐路试探</b>：水位采样（<see cref="ProbeSampleIntervalMs"/> 间隔）发现水位不涨
-///   （下载追不上播放）且距上次升级满 <see cref="EscalateCooldownMs"/> 观察期，才升一档多发一路；
-///   封顶 <see cref="MaxExtraConnections"/>=2（总 3 含在播那路）；
+///   （灌水追不上播放）且距上次升级满 <see cref="EscalateCooldownMs"/> 观察期，才升一档多发一路；
+///   封顶 <see cref="MaxExtraConnections"/>=2（总 3 含灌水基本盘那路）；
 /// - <b>被拒即缩</b>：429/403/被踢 → 档位归零退回单路，源脾气入 <see cref="SourceTemperStore"/>
-///   （持久化，重启不清零——下次调度直接按账定打法；好源记好账，下次允许直接试探）；
-/// - <b>水满收兵</b>：水位 ≥watermark 停发新请求，在途不撤（水满自然收敛）；
-/// - 清单换代（generation++）作废在途与旧缓存，不串台；
-/// - 缓存字节硬顶 <see cref="CacheByteCap"/>，顶满不再收新片（内存红线）。
-/// 线程安全：loader 线程（Open/Read）与后台下载任务并发进出，单锁管账；事件在锁外发（防回调死锁）。
+///   （持久化，重启不清零；好源记好账，下次允许直接试探）；
+/// - <b>水满收兵</b>：水位 ≥watermark 停发新路（档位保留，回落自然收敛）；
+/// - <b>失败退避</b>：非拒绝失败按 per-URL 指数退避（2 秒起步封顶 5 分钟），坏片不热循环烧线。
+/// 线程安全：单锁管账；回调在锁外发（防回调死锁）。
 /// </summary>
-public sealed class ParallelPrefetcher
+public sealed class FillThrottle
 {
-    /// <summary>
-    /// 试探并发总开关（vc96，默认开）：试探语义本身防封（默认单路、逐路升级、被拒即缩）；
-    /// 置 false 退回纯单路（工厂 null 分支，链路不含预取壳），装配点在内核 BuildPlayer。
-    /// </summary>
-    public static bool Enabled { get; set; } = false; // vc101 老板令「并发整个都不要了」：并发预取默认拆除，装配点退回纯单路
-
-    /// <summary>额外连接封顶（不含内核在播那路）：总 3 个，试探版上限。</summary>
+    /// <summary>额外连接封顶（不含灌水基本盘那路）：总 3 个，试探版上限。</summary>
     public const int MaxExtraConnections = 2;
-
-    /// <summary>缓存字节硬顶：24MB（老板拍板口径），顶满不再收新片。</summary>
-    public const long CacheByteCap = 24 * 1024 * 1024;
 
     /// <summary>水位采样间隔：两次采样至少隔 5 秒，趋势才作数（防瞬时抖动误升档）。</summary>
     public const long ProbeSampleIntervalMs = 5_000;
@@ -166,39 +143,28 @@ public sealed class ParallelPrefetcher
     /// <summary>逐路升级观察期：一档平安跑满 20 秒才准升下一档（延迟性，防连环加路触雷）。</summary>
     public const long EscalateCooldownMs = 20_000;
 
+    /// <summary>非拒绝失败退避起步（毫秒）：首次失败歇 2 秒再试。</summary>
+    public const long FailBackoffBaseMs = 2_000;
+
+    /// <summary>非拒绝失败退避封顶（毫秒）：连续失败指数退避最深 5 分钟（防坏片热循环烧线）。</summary>
+    public const long FailBackoffMaxMs = 5 * 60_000;
+
     private readonly long _watermarkMs;
-    private readonly Func<long>? _waterProbeMs;
     private readonly SourceTemperStore? _temper; // 持久化源脾气（null=不记账，测试用）
     private readonly Func<long> _monotonicMs;
     private readonly object _gate = new();
 
-    private List<HlsSegmentInfo> _segments = new();
-    private int _generation;
-    private int _consumedIndex = -1;
-    private readonly Dictionary<string, byte[]> _cache = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _inFlight = new(StringComparer.Ordinal);
-    private long _cacheBytes;
-
-    // vc96 P1：非拒绝型失败退避账（per-URL 失败计数 + 指数退避）——否则失败片下轮 Pump 立即重发，热循环烧线
     private readonly Dictionary<string, (int Count, long UntilMs)> _failBackoff = new(StringComparer.Ordinal);
 
-    // vc96 P3：已消费分片日志（防清单滚动后重放已播——consumed URL 滚出清单时按日志定位续点）
-    private readonly List<string> _consumedLog = new();
-
     // 试探账：档位 + 水位趋势采样 + 升级观察期
-    private int _probeLevel; // 0=单路（不预开并发）..MaxExtraConnections
+    private int _probeLevel; // 0=单路..MaxExtraConnections
     private long _lastWaterMs = -1;
     private long _lastSampleAtMs = long.MinValue;
     private long _lastEscalateAtMs = long.MinValue;
 
-    /// <summary>预取请求出口：参数=URL+代次。壳层起后台下载，成败回报 ReportFetched/ReportFailed。</summary>
-    public event EventHandler<FetchRequest>? FetchRequested;
-
-    public ParallelPrefetcher(long watermarkMs, Func<long>? waterProbeMs = null,
-        SourceTemperStore? temper = null, Func<long>? monotonicMs = null)
+    public FillThrottle(long watermarkMs, SourceTemperStore? temper = null, Func<long>? monotonicMs = null)
     {
         _watermarkMs = watermarkMs;
-        _waterProbeMs = waterProbeMs;
         _temper = temper;
         _monotonicMs = monotonicMs ?? (() => Environment.TickCount64);
     }
@@ -206,296 +172,101 @@ public sealed class ParallelPrefetcher
     /// <summary>当前试探档位（0=单路；断言与测试用）。</summary>
     public int ProbeLevel { get { lock (_gate) return _probeLevel; } }
 
-    /// <summary>当前代次（清单换代 ++；回报对不上代次即弃）。</summary>
-    public int Generation { get { lock (_gate) return _generation; } }
+    /// <summary>host 保守判定（灌水器选路用；无账=不保守）。</summary>
+    public bool IsHostConservative(string host) => _temper?.IsConservative(host) ?? false;
 
-    /// <summary>在途预取连接数（封顶断言用）。</summary>
-    public int ActiveFetches { get { lock (_gate) return _inFlight.Count; } }
-
-    /// <summary>缓存字节总量。</summary>
-    public long CacheBytes { get { lock (_gate) return _cacheBytes; } }
-
-    /// <summary>水位账（毫秒）：内核读数 + 缓存领先分片时长和。</summary>
-    public long EffectiveWaterMs
+    /// <summary>该分片是否在失败退避期内（退避未到期不重发）。</summary>
+    public bool IsBackedOff(string url)
     {
-        get
-        {
-            // vc96 第 5 轮：外部回调不进锁（本文件 P3 纪律，ReadProbe 同法）——探针先锁外读，再进锁取缓存领先账
-            long probe = ReadProbe();
-            lock (_gate)
-            {
-                return probe + CacheAheadMsLocked();
-            }
-        }
-    }
-
-    /// <summary>非拒绝失败退避起步（毫秒）：首次失败歇 2 秒再试。</summary>
-    public const long FailBackoffBaseMs = 2_000;
-
-    /// <summary>非拒绝失败退避封顶（毫秒）：连续失败指数退避最深 5 分钟（防坏片热循环烧线）。</summary>
-    public const long FailBackoffMaxMs = 5 * 60_000;
-
-    /// <summary>
-    /// 清单换代：解析成功即换代（generation++），旧缓存与在途账按新清单重整——
-    /// 不在新清单里的缓存条目作废，consumed 按已消费 URL 在新清单中的位置续算（找不到按消费日志定位，防重放已播）。
-    /// 解析失败原样不动（清单残包不掀桌）。
-    /// </summary>
-    public bool UpdatePlaylist(string? playlistText, string? baseUri)
-    {
-        List<HlsSegmentInfo> parsed;
         lock (_gate)
         {
-            if (!HlsPlaylistInspector.TryParse(playlistText, baseUri, out var segments)) return false;
-            parsed = segments;
-            var consumedUrl = _consumedIndex >= 0 && _consumedIndex < _segments.Count
-                ? _segments[_consumedIndex].Url
-                : null;
-            _segments = parsed;
-            _generation++;
-            // consumed 续算：优先按当前 consumed URL 定位；滚出清单（找不到）时按消费日志取新清单中
-            // 已消费过的最深位置（vc96 P3：防清单滚动后从头重放已播分片）
-            var idx = consumedUrl is null
-                ? -1
-                : _segments.FindIndex(s => string.Equals(s.Url, consumedUrl, StringComparison.Ordinal));
-            if (idx < 0)
-            {
-                for (var i = _segments.Count - 1; i >= 0; i--)
-                {
-                    if (!_consumedLog.Contains(_segments[i].Url)) continue;
-                    idx = i;
-                    break;
-                }
-            }
-            _consumedIndex = idx;
-            // 旧缓存按新清单重整：不在新清单的条目作废（换代作废，不串台）；退避账同步修剪
-            var valid = _segments.Select(s => s.Url).ToHashSet(StringComparer.Ordinal);
-            foreach (var stale in _cache.Keys.Where(u => !valid.Contains(u)).ToList())
-            {
-                _cacheBytes -= _cache[stale].LongLength;
-                _cache.Remove(stale);
-            }
-            if (_cacheBytes < 0) _cacheBytes = 0;
-            foreach (var stale in _failBackoff.Keys.Where(u => !valid.Contains(u)).ToList())
-            {
-                _failBackoff.Remove(stale);
-            }
+            return _failBackoff.TryGetValue(url, out var b) && _monotonicMs() < b.UntilMs;
         }
-        Pump();
-        return true;
     }
 
-    /// <summary>消费记账：播放吃到某分片（缓存命中或走内层），consumed 前推（幂等，不回退）。</summary>
-    public void NotifyConsumed(string url)
+    /// <summary>水位采样（灌水器每拍喂磁盘领先量）：趋势判定 + 逐路升级（水满不升）。</summary>
+    public void OnSample(long waterMs)
     {
-        List<FetchRequest> requests;
-        var probe = ReadProbe();
         lock (_gate)
         {
-            var idx = _segments.FindIndex(s => string.Equals(s.Url, url, StringComparison.Ordinal));
-            if (idx > _consumedIndex) _consumedIndex = idx;
-            LogConsumedLocked(url);
-            requests = CollectRequestsLocked(probe);
+            var now = _monotonicMs();
+            var firstSample = _lastSampleAtMs == long.MinValue;
+            var sampled = firstSample || now - _lastSampleAtMs >= ProbeSampleIntervalMs;
+            var falling = sampled && !firstSample && waterMs <= _lastWaterMs; // 不涨（含持平）=单路供不上
+            if (sampled)
+            {
+                _lastWaterMs = waterMs;
+                _lastSampleAtMs = now;
+            }
+            if (falling && waterMs < _watermarkMs
+                && _probeLevel < MaxExtraConnections
+                && (_lastEscalateAtMs == long.MinValue || now - _lastEscalateAtMs >= EscalateCooldownMs))
+            {
+                _probeLevel++; // 水位不涨=单路供不上：试探加一路
+                _lastEscalateAtMs = now;
+            }
         }
-        Raise(requests);
     }
 
-    /// <summary>
-    /// 取缓存分片：命中即服务（字节移交调用方）并前推 consumed；未命中走内核正常拉流。
-    /// </summary>
-    public bool TryTake(string url, out byte[]? data)
+    /// <summary>被拒回报（429/403/被踢）：档位归零退回单路，观察期重新起算，源脾气入持久化账。</summary>
+    public void OnRejected(string url)
     {
-        List<FetchRequest> requests;
-        var probe = ReadProbe();
         lock (_gate)
         {
-            if (_cache.TryGetValue(url, out var bytes))
-            {
-                _cache.Remove(url);
-                _cacheBytes -= bytes.LongLength;
-                if (_cacheBytes < 0) _cacheBytes = 0;
-                var idx = _segments.FindIndex(s => string.Equals(s.Url, url, StringComparison.Ordinal));
-                if (idx > _consumedIndex) _consumedIndex = idx;
-                LogConsumedLocked(url);
-                data = bytes;
-                requests = CollectRequestsLocked(probe);
-            }
-            else
-            {
-                data = null;
-                requests = new List<FetchRequest>();
-            }
+            _probeLevel = 0;
+            _lastEscalateAtMs = _monotonicMs();
         }
-        Raise(requests);
-        return data is not null;
+        _temper?.MarkRejected(SourceTemperStore.HostOf(url));
     }
 
-    /// <summary>预取下载成功回报：对上代次且仍在新清单才入缓存（换代作废在途）；顶满字节硬顶即弃。
-    /// vc96：试探平安记好账（好源下次调度允许直接试探）；成功即清该 URL 退避账。</summary>
-    public void ReportFetched(string url, byte[] data, int generation)
+    /// <summary>成功回报：好源记好账（下次允许直接试探），清该 URL 退避账。</summary>
+    public void OnGood(string url)
     {
-        List<FetchRequest> requests;
-        var probe = ReadProbe();
         lock (_gate)
         {
-            _inFlight.Remove(url);
-            _failBackoff.Remove(url); // 成功清退避：好片不再背失败账
-            if (generation != _generation
-                || !_segments.Any(s => string.Equals(s.Url, url, StringComparison.Ordinal))
-                || _cacheBytes + data.LongLength > CacheByteCap)
-            {
-                requests = CollectRequestsLocked(probe); // 换代作废/清单外/顶满：不入账
-            }
-            else
-            {
-                if (_cache.TryGetValue(url, out var old)) _cacheBytes -= old.LongLength; // 覆盖写先扣旧账（vc96 P3：不虚增）
-                _cache[url] = data;
-                _cacheBytes += data.LongLength;
-                _temper?.MarkGood(SourceTemperStore.HostOf(url)); // 试探平安：好账+1
-                requests = CollectRequestsLocked(probe);
-            }
+            _failBackoff.Remove(url);
         }
-        Raise(requests);
+        _temper?.MarkGood(SourceTemperStore.HostOf(url));
     }
 
-    /// <summary>预取下载失败回报：rejected（429/403/被踢）即缩——档位归零退回单路，
-    /// 源脾气入持久化账（保守期内该 host 不再试探）；非拒绝失败按 per-URL 指数退避（vc96 P1：
-    /// 否则失败片下轮 Pump 立即重发，坏片热循环烧线）。</summary>
-    public void ReportFailed(string url, bool rejected, int generation)
+    /// <summary>非拒绝失败回报：per-URL 指数退避（2 秒起步封顶 5 分钟）。</summary>
+    public void OnFailed(string url)
     {
-        List<FetchRequest> requests;
-        var probe = ReadProbe();
         lock (_gate)
         {
-            _inFlight.Remove(url);
-            if (rejected)
-            {
-                _probeLevel = 0; // 被拒即缩：全部退回单路
-                _lastEscalateAtMs = _monotonicMs(); // 观察期重新起算，防立刻再升
-                _temper?.MarkRejected(SourceTemperStore.HostOf(url));
-            }
-            else
-            {
-                var now = _monotonicMs();
-                var count = _failBackoff.TryGetValue(url, out var b) ? b.Count + 1 : 1;
-                var backoff = Math.Min(FailBackoffBaseMs << Math.Min(count - 1, 20), FailBackoffMaxMs);
-                _failBackoff[url] = (count, now + backoff);
-            }
-            requests = CollectRequestsLocked(probe);
+            var now = _monotonicMs();
+            var count = _failBackoff.TryGetValue(url, out var b) ? b.Count + 1 : 1;
+            var backoff = Math.Min(FailBackoffBaseMs << Math.Min(count - 1, 20), FailBackoffMaxMs);
+            _failBackoff[url] = (count, now + backoff);
         }
-        Raise(requests);
     }
 
-    /// <summary>
-    /// 泵：按试探档位与水位账补发预取请求——默认单路（档位 0 不发并发），
-    /// 水位不涨才逐路升级（观察期满），水满（≥watermark）不发新，host 保守期跳过，
-    /// 缓存字节顶满停发。事件在锁外发。
-    /// </summary>
-    public void Pump()
+    /// <summary>退避账重整（同台滚动清单口径）：滚出清单的退避条目作废（防长播字典无界）；
+    /// 清单内条目原样保留（退避未到期不重发的纪律不因滚动刷新而破）。</summary>
+    public void PruneBackoff(IEnumerable<string> validUrls)
     {
-        List<FetchRequest> requests;
-        var probe = ReadProbe();
         lock (_gate)
         {
-            requests = CollectRequestsLocked(probe);
+            var valid = new HashSet<string>(validUrls, StringComparer.Ordinal);
+            var stale = new List<string>();
+            foreach (var url in _failBackoff.Keys)
+            {
+                if (!valid.Contains(url)) stale.Add(url);
+            }
+            foreach (var url in stale) _failBackoff.Remove(url);
         }
-        Raise(requests);
     }
 
-    /// <summary>整账清零（Play/Stop/换内核口径）：缓存、在途、consumed、试探档位全清；
-    /// 源脾气为持久化账，不随 Reset 清（跨启动调度依据）。</summary>
+    /// <summary>整账清零（换台口径）：档位、采样、退避全清；源脾气为持久化账不清（跨启动调度依据）。</summary>
     public void Reset()
     {
         lock (_gate)
         {
-            _segments = new List<HlsSegmentInfo>();
-            _consumedIndex = -1;
-            _cache.Clear();
-            _cacheBytes = 0;
-            _inFlight.Clear();
-            _failBackoff.Clear();
-            _consumedLog.Clear();
             _probeLevel = 0;
             _lastWaterMs = -1;
             _lastSampleAtMs = long.MinValue;
             _lastEscalateAtMs = long.MinValue;
-        }
-    }
-
-    /// <summary>host 保守判定（测试与壳层可见；无账=不保守）。</summary>
-    public bool IsHostConservative(string host) => _temper?.IsConservative(host) ?? false;
-
-    /// <summary>水位探针锁外读数（vc96 P3：外部回调不进锁，防回调死锁/长尾拖住账锁）。</summary>
-    private long ReadProbe()
-    {
-        try { return _waterProbeMs?.Invoke() ?? 0; }
-        catch { return 0; } // 探针异常按无读数，不挡预取
-    }
-
-    /// <summary>已消费分片入日志（锁内）：滚动上限 128 条，防长播内存无界。</summary>
-    private void LogConsumedLocked(string url)
-    {
-        _consumedLog.Add(url);
-        if (_consumedLog.Count > 128) _consumedLog.RemoveRange(0, _consumedLog.Count - 128);
-    }
-
-    /// <summary>锁内收集下一批预取请求：先跑试探账（水位趋势→逐路升级），再按档位补发。
-    /// probe 由调用方锁外读入（vc96 P3：外部探针回调不进锁）。</summary>
-    private List<FetchRequest> CollectRequestsLocked(long probe)
-    {
-        var requests = new List<FetchRequest>();
-        if (_segments.Count == 0) return requests;
-
-        // ---- 试探账：水位采样与逐路升级（延迟触发） ----
-        var now = _monotonicMs();
-        var water = probe + CacheAheadMsLocked();
-        var firstSample = _lastSampleAtMs == long.MinValue;
-        var sampled = firstSample || now - _lastSampleAtMs >= ProbeSampleIntervalMs;
-        var falling = sampled && !firstSample && water <= _lastWaterMs; // 不涨（含持平）=单路供不上
-        if (sampled)
-        {
-            _lastWaterMs = water;
-            _lastSampleAtMs = now;
-        }
-        if (falling && water < _watermarkMs
-            && _probeLevel < MaxExtraConnections
-            && (_lastEscalateAtMs == long.MinValue || now - _lastEscalateAtMs >= EscalateCooldownMs))
-        {
-            _probeLevel++; // 水位不涨=单路供不上：试探加一路
-            _lastEscalateAtMs = now;
-        }
-
-        if (water >= _watermarkMs) return requests;            // 水满才撤：不再发新
-        if (_cacheBytes >= CacheByteCap) return requests;       // 字节硬顶：停发
-
-        var generation = _generation;
-        foreach (var seg in _segments.Skip(Math.Max(0, _consumedIndex + 1)))
-        {
-            if (_inFlight.Count >= _probeLevel) break;          // 试探档位封顶：0=单路不预开
-            if (_cache.ContainsKey(seg.Url) || _inFlight.Contains(seg.Url)) continue;
-            if (_failBackoff.TryGetValue(seg.Url, out var fb) && now < fb.UntilMs) continue; // 退避未到期：不再发
-            if (_consumedLog.Contains(seg.Url)) continue;       // 已播过的分片不重放
-            if (_temper is { } t && t.IsConservative(SourceTemperStore.HostOf(seg.Url))) continue; // 保守期：不试探
-            _inFlight.Add(seg.Url);
-            requests.Add(new FetchRequest(seg.Url, generation));
-        }
-        return requests;
-    }
-
-    /// <summary>缓存领先量（毫秒）：consumed 之后已缓存分片时长和（水位账的本地部分）。</summary>
-    private long CacheAheadMsLocked()
-    {
-        double sec = _segments
-            .Skip(Math.Max(0, _consumedIndex + 1))
-            .Where(s => _cache.ContainsKey(s.Url))
-            .Sum(s => s.DurationSec);
-        return (long)(sec * 1000);
-    }
-
-    private void Raise(List<FetchRequest> requests)
-    {
-        foreach (var r in requests)
-        {
-            FetchRequested?.Invoke(this, r);
+            _failBackoff.Clear();
         }
     }
 }

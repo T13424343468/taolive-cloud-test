@@ -1222,7 +1222,7 @@ public sealed class PlaybackSession
     /// 后台期间任何路径都不得把播放内核重新拉起来出声。</summary>
     public static volatile bool BackgroundHold;
 
-    private void TryFailover(string reason)
+    private void TryFailover(string reason, bool prepared = false)
     {
         // vc117 后台出声根治：后台冻结期换源自救只停内核+排自愈账，不 Play（防后台出声）；
         // 回前台 OnResume 撤旗后，自愈慢轮/用户重试照常续。
@@ -1248,10 +1248,11 @@ public sealed class PlaybackSession
         // 转空态排自愈慢轮（退避节奏定点慢试），把「连环快切」变成「慢试不烧线」。
         // 第 7 旋钮接通（老板 2026-11-17 拍板）：封顶次数读「防快切闸」旋钮，全局钳制下限 1 次/分钟调不灭；
         // 吃闸的只有故障硬切，对齐软切豁免（四原则 3），冻结后转自愈慢轮不空转。
+        // vc139 先攒后切：预备切换（备源水已攒满，切换瞬间秒出画）不烧线，豁免限速闸但仍记账。
         var nowMs = _clock.NowMs;
         _autoFailoverTimes.RemoveAll(t => nowMs - t >= FailoverThrottleWindow.TotalMilliseconds);
         var throttleCap = AdvancedTuning.FailoverCapPerMin;
-        if (_autoFailoverTimes.Count >= throttleCap)
+        if (!prepared && _autoFailoverTimes.Count >= throttleCap)
         {
             SessionTrace.Emit($"[限速] {DescribeChannel()} {FailoverThrottleWindow.TotalSeconds:0} 秒内自动换源已满 {throttleCap} 次，冻结不切（{reason}），转自愈慢轮");
             _player.Stop();
@@ -1275,6 +1276,25 @@ public sealed class PlaybackSession
         _player.Play(new PlaybackParams(_channel, _queue[next], _preferLowLatency));
         ReattachSurface();
         Failover?.Invoke(this, new FailoverEventArgs(from, _queue[next], FailoverCount, reason));
+    }
+
+    /// <summary>备源水备好（vc139 老板令「先攒后切」）：备源已在缓存攒满门槛水，执行切换——
+    /// 切换瞬间内核吃缓存秒满门槛秒出画，不黑屏。三重闸把住口径：
+    /// ①只在起播攒流期切（已出画不打断在播，水留着干库快切时用）；
+    /// ②备源仍是下一条（已换线/换台即作废，防旧回调误切）；
+    /// ③走预备切换路径（豁免限速闸但仍记账——水已备好不烧线）。</summary>
+    public void NotifyBackupWaterReady(SourceEndpoint endpoint)
+    {
+        if (_state != PlaybackState.Buffering) return;
+        if (!_player.StartupGateAccumulating) return; // 已出画：不打断在播
+        var next = _endpointIndex + 1;
+        if (_channel is null || next >= _queue.Count
+            || !string.Equals(_queue[next].Url, endpoint.Url, StringComparison.Ordinal))
+        {
+            return; // 已换线/换台：旧攒水回调作废
+        }
+        SessionTrace.Emit($"[先攒后切] {DescribeChannel()} 备线水攒满，切换出画（原线路 {CurrentLineIndex + 1}/{LineCount}）");
+        TryFailover("backup water ready", prepared: true);
     }
 
     private void ReattachSurface()

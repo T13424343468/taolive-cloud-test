@@ -143,35 +143,26 @@ public sealed class RacingDataSourceFactory : Java.Lang.Object, AndroidX.Media3.
     /// 内核单分片重开受本封顶 2 次约束；会话退避自救兜底——无紧密空转，不改行为。</summary>
     public const int TicketReissueMaxPerOpen = 2;
 
-    /// <summary>并发预取器（vc94 激进版，老板 2026-11-26 拍板）：内核装配时注入；null=不启用（链路原样）。
-    /// vc96 P2：静态属性仅作未接线时的进程级兜底；实例级接线优先（后建内核不再覆盖前者）。</summary>
-    public static ParallelPrefetcher? Prefetcher { get; set; }
-
     /// <summary>最低变体带宽回调（vc94 低档起播）：清单发现多档即回调最低 BANDWIDTH（bps）；null=不接线。
     /// vc96 P2：静态属性仅作未接线时的进程级兜底；实例级接线优先。</summary>
     public static Action<long>? MinVariantBitrateObserver { get; set; }
 
-    private readonly ParallelPrefetcher? _prefetcher;          // vc96 P2：实例级预取器（随内核走）
     private readonly Action<long>? _minVariantObserver;        // vc96 P2：实例级低档观察（随内核走）
 
-    /// <summary>实例级接线（vc96 P2）：预取器与低档观察随内核实例装配，后建实例不再覆盖前者的静态接线。</summary>
-    public RacingDataSourceFactory(ParallelPrefetcher? prefetcher, Action<long>? minVariantObserver)
+    /// <summary>实例级接线（vc96 P2）：低档观察随内核实例装配，后建实例不再覆盖前者的静态接线。
+    /// vc140 水位大脑合并：预取器参数拆除（vc94 内存预取随旧预取器退役，磁盘缓存是唯一数据面）。</summary>
+    public RacingDataSourceFactory(Action<long>? minVariantObserver)
     {
-        _prefetcher = prefetcher;
         _minVariantObserver = minVariantObserver;
     }
 
     public AndroidX.Media3.DataSource.IDataSource CreateDataSource()
     {
-        var prefetcher = _prefetcher ?? Prefetcher;
         var observer = _minVariantObserver ?? MinVariantBitrateObserver;
-        if (prefetcher is null)
-        {
-            return new TicketSwapDataSource(() => new RacingDataSource(CreateInner));
-        }
-        // vc94 链路：TicketSwap(Racing(ParallelPrefetch(inner)))——竞速与换票语义原样保留，预取壳垫在最内层
+        // vc140 链路：TicketSwap(Racing(ParallelPrefetch(inner)))——竞速与换票语义原样保留，
+        // 清单观测壳只留多档带宽回调（低档起播），分片一律透传内层（经缓存层命中）
         return new TicketSwapDataSource(() => new RacingDataSource(
-            () => new ParallelPrefetchDataSource(CreateInner, prefetcher, observer)));
+            () => new ParallelPrefetchDataSource(CreateInner, observer)));
     }
 
     internal static AndroidX.Media3.DataSource.IDataSource CreateInner()

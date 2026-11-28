@@ -319,7 +319,8 @@ public partial class MainActivity
         // vc133 老板令（15:02 拍板「左右9 底6」）：左右内距 16→9dp 按钮再靠边，底部内距 0→6dp 按钮整体上抬。
         // vc135 老板令（15:20 拍板「内距收到5」）：左右内距 9→5dp，按钮继续靠边；上下不动。
         // vc136 老板令（15:44「内距 3」）：左右内距 5→3dp，上下（10/6）不动。
-        _controlBar.SetPadding(UiScale.Dp(3), UiScale.Dp(10), UiScale.Dp(3), UiScale.Dp(6));
+        // vc138 老板令（2026-11-28「所有页面统一 左右一律20」）：左右内距 3→20dp 全页统一；按钮圆角让位与文字对齐各自保留。
+        _controlBar.SetPadding(UiScale.Dp(20), UiScale.Dp(10), UiScale.Dp(20), UiScale.Dp(6));
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /

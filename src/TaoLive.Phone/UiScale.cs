@@ -103,8 +103,8 @@ public static class UiScale
     }
 
     // —— vc119 全局间距口径（2026-11-28 老板拍板：块间距/行间距各一个数，全页面统一）——
-    /// <summary>左右边距：所有页面统一按设置页口径 24dp。</summary>
-    public const float EdgePadDp = 24f;
+    /// <summary>左右边距：所有页面统一 20dp（vc138 老板令 2026-11-28「所有页面统一 左右一律20」，24dp 退场）。</summary>
+    public const float EdgePadDp = 20f;
     /// <summary>块间距：卡片/区块之间统一 20dp（大于行间距，块与块之间松）。</summary>
     public const float BlockGapDp = 20f;
     /// <summary>行间距：块内部行与行统一 10dp（块内更紧凑）。</summary>

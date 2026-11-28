@@ -887,7 +887,7 @@ public partial class MainActivity
     /// 正文在上方滚动——vc127 随内容走口径退场，五子页统一钉底。</summary>
     private (LinearLayout Box, int Pad, LinearLayout BodyWrap) BuildOverlayPanel(string title, string body, out ScrollView scroll)
     {
-        int pad = Dp(24);
+        int pad = Dp(20); // vc138 老板令（「所有页面统一 左右一律20」）：子页骨架左右 24→20，内部元素各自对齐不动
         var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
         box.SetPadding(pad, SafeTopInset(pad), pad, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位（高圆角机型 24dp 仍压线）；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场——子页按钮行与设置页关闭行同屏同位；vc137 老板令：底部内距固定 20dp
         box.SetBackgroundColor(InkTranslucency.PanelColor(this));
@@ -1319,7 +1319,7 @@ public partial class MainActivity
         {
             var box = new LinearLayout(this) { Orientation = Orientation.Vertical };
             int padAdv = Dp(24);
-            box.SetPadding(padAdv, SafeTopInset(padAdv), padAdv, Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场；vc137 老板令：底部内距固定 20dp
+            box.SetPadding(Dp(20), SafeTopInset(padAdv), Dp(20), Dp(20)); // vc116⑬：顶部避让挖孔/状态栏+8dp 呼吸边；vc121 同类排查：底部随系统圆角让位；vc131 老板令（「全部按照主面板位置」）：底部内距统一主面板 12dp 口径，24dp 退场；vc137 老板令：底部内距固定 20dp；vc138 老板令（「所有页面统一 左右一律20」）：左右 24→20（padAdv 保留供按钮内距），内部元素各自对齐不动
             box.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：全应用一档（跟普通面板浅档）
             var title = new TextView(this) { Text = "进阶调优", TextSize = UiScale.Title };
             title.SetTextColor(InkTranslucency.TextPrimary(this));

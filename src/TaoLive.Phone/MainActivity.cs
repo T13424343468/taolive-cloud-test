@@ -1150,9 +1150,9 @@ public partial class MainActivity : Activity
         // 滚动条整体退场（拇指透明），行尾圆点不再被压；滚动位置反馈由行内容自身可见性兜底
         if (OperatingSystem.IsAndroidVersionAtLeast(29))
             _list.VerticalScrollbarThumbDrawable = new Android.Graphics.Drawables.ColorDrawable(Color.Transparent);
-        // vc119 老板令：列表左右 16dp 内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐 24dp 统一边线
+        // vc119 老板令：列表左右内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐统一边线（vc138 起 20dp）
         // vc121 同类排查：底部内距=圆角让位——滚到底最后一行能滚出系统圆角弧区，不贴底被削
-        _list.SetPadding(UiScale.Px(16), 0, UiScale.Px(16), BottomCornerClearPx());
+        _list.SetPadding(UiScale.Px(12), 0, UiScale.Px(12), BottomCornerClearPx()); // vc138 老板令（「左右一律20」+「框线移了内部元素没移会覆盖」排查）：列表左右内距 16→12——行内容（12+行内8）对齐 20dp 边线与页头/筛选框对齐；当前台描边框画在 12dp 内距边线，与行内容保持 8dp 实距（vc124 口径不变），整体随边线内移 4dp
         _list.SetClipToPadding(false);
         // 全局透明化（v1.0.8 第15项）：焦点效果=低透明度细边框+极淡底色，不复用实色高亮
         _list.Selector = InkTranslucency.FocusDrawable();
@@ -2267,8 +2267,36 @@ public partial class MainActivity : Activity
     private sealed class TabSwipeTouchListener : Java.Lang.Object, View.IOnTouchListener
     {
         private readonly GestureDetector _detector;
+        private float _downX, _downY;
+        private bool _consumed; // vc138 老板令（「左右滑切换分类后选中样式会错乱」「左右滑有时会识别为点击切台」）：
+                                // 横向主导位移过 24dp 即判定横滑，吞掉本手势后续事件（含 UP）——
+                                // 行按压态不再卡灰底（42台样式实锤），UP 也不再误触行点击切台；纵向滚动全程让位不动
         public TabSwipeTouchListener(GestureDetector detector) { _detector = detector; }
-        public bool OnTouch(View? v, MotionEvent? e) { if (e is not null) _detector.OnTouchEvent(e); return false; } // 恒 false：事件照常交给列表
+        public bool OnTouch(View? v, MotionEvent? e)
+        {
+            if (e is null) return false;
+            switch (e.Action)
+            {
+                case MotionEventActions.Down:
+                    _downX = e.GetX();
+                    _downY = e.GetY();
+                    _consumed = false;
+                    break;
+                case MotionEventActions.Move when !_consumed:
+                    float dx = e.GetX() - _downX, dy = e.GetY() - _downY;
+                    if (Math.Abs(dx) > UiScale.Px(24) && Math.Abs(dx) > Math.Abs(dy) * 1.2f)
+                    {
+                        _consumed = true;
+                        if (v is AbsListView lv) // 清行按压态：UP 被吞后行不卡灰底
+                            for (int i = 0; i < lv.ChildCount; i++)
+                                lv.GetChildAt(i)?.Pressed = false;
+                        v!.Pressed = false;
+                    }
+                    break;
+            }
+            _detector.OnTouchEvent(e); // 手势识别照常喂入，切签逻辑不受影响
+            return _consumed;
+        }
     }
 
     private sealed class TabSwipeGesture : GestureDetector.SimpleOnGestureListener
@@ -2599,8 +2627,8 @@ public partial class MainActivity : Activity
         _toastGap = new View(this); // 中段空档=挖孔宽（孔上无字），无挖孔时宽 0
         _toast.AddView(_toastGap, new LinearLayout.LayoutParams(0, 1));
 
-        _toastRight = new TextView(this) { TextSize = UiScale.Caption, Visibility = ViewStates.Gone };
-        _toastRight.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        _toastRight = new TextView(this) { TextSize = UiScale.Item, Visibility = ViewStates.Gone }; // vc138 老板令：绕孔拆段后左右同句文案，样式必须完全一致（字号/颜色跟左段）
+        _toastRight.SetTextColor(InkTranslucency.TextPrimary(this));
         InkTranslucency.ApplyReadabilityShadow(_toastRight);
         _toastRight.SetMaxLines(2); // vc126 老板令：绕孔排布后右段也吃两行（长文案加高变两行）
         _toastRight.Ellipsize = TextUtils.TruncateAt.End;

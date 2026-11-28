@@ -110,6 +110,15 @@ public static class InkTranslucency
         return d;
     }
 
+    /// <summary>提示胶囊皮（vc132 老板令「圆角弧度不用那么大」）：指定圆角半径（dp）的胶囊描边——
+    /// 横屏竖放胶囊收小弧度用；传大值即全胶囊形。</summary>
+    public static GradientDrawable PillBackground(Context ctx, float cornerDp)
+    {
+        var d = PillBackground(ctx);
+        d.SetCornerRadius(cornerDp * ctx.Resources!.DisplayMetrics!.Density);
+        return d;
+    }
+
     /// <summary>vc116 界面元素统一线框皮：全透明填充 + 圆角方形描边（纸白，透明度入参）——
     /// 控制条按钮/页头 ⟳✕ 钮/筛选框统一用皮；按压态传高透明度即强描边版。</summary>
     public static GradientDrawable OutlineBox(Context ctx, float cornerDp, int strokeAlpha)

@@ -239,6 +239,12 @@ public partial class MainActivity
         var icon = isSun ? _hudBrightIcon : _hudVolIcon;
         var fill = isSun ? _hudBrightFill : _hudVolFill;
         if (panel is null || icon is null || fill is null) return;
+        // vc132 老板令（14:37 总口径）：亮度/音量条与提示胶囊互斥——指示条亮相即收胶囊，不同屏
+        if (_toast is { } t && t.Visibility == ViewStates.Visible)
+        {
+            t.Visibility = ViewStates.Gone;
+            _main.RemoveCallbacks(_toastHide);
+        }
         icon.SetKind(kind);
         float f = Math.Clamp(fraction, 0f, 1f);
         int fillH = Math.Max((int)(UiScale.Px(HudTrackDp) * f), UiScale.Px(3)); // 0 也留可见头
@@ -308,7 +314,9 @@ public partial class MainActivity
         // 弧线贴合屏幕角落，不再整条硬抬一大截留空白带。
         // vc127 老板令（2026-11-28 真机截图「文字太贴边了 能不能有点间距」）：内距改物理 dp 直读——
         // 原 Px(16) 出来是裸像素 ≈6dp 物理宽，文字几乎贴屏幕边；16dp 物理宽才有呼吸感。
-        _controlBar.SetPadding(UiScale.Dp(16), UiScale.Dp(10), UiScale.Dp(16), UiScale.Dp(16));
+        // vc132 老板令（2026-11-28 14:25 拍板A）：按钮上下等距——底部内距 16dp 收 0，
+        // 上（文字→按钮盒=热区缓冲 10dp）下（按钮盒→屏缘=热区缓冲 10dp+0）对齐；横竖屏同口径。
+        _controlBar.SetPadding(UiScale.Dp(16), UiScale.Dp(10), UiScale.Dp(16), 0);
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
@@ -333,7 +341,8 @@ public partial class MainActivity
         _cbNowTime = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
         _cbNowTime.SetPadding(UiScale.Dp(8), 0, 0, 0);
         infoRow.AddView(_cbNowTime);
-        _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+        // vc132 老板令（14:39 样式对调）：实时水位改主色加粗（=画面时刻样式）
+        _cbAuxWater = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
         _cbAuxWater.SetPadding(UiScale.Dp(8), 0, 0, 0);
         infoRow.AddView(_cbAuxWater);
         _controlBar.AddView(infoRow);
@@ -342,7 +351,8 @@ public partial class MainActivity
         // 统一小字号（Caption）、左对齐自然换行不设上限；原「节目名 Item 大字 + 接下来 Caption 小字」
         // 两段混排、视觉居中吊挂的口径退场（真机「第8集」「14:57 生命树第9集」居中吊着实锤）。
         var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
-        _cbNowName = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this));
+        // vc132 老板令（14:39 样式对调）：节目单改次要色不加粗（=水位旧样式）
+        _cbNowName = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
         _cbNowName.SetSingleLine(false); // 覆盖 NewBarText 单行口径：节目单整块完整可换行
         _cbNowName.Ellipsize = null!;
         _cbNowName.Gravity = GravityFlags.Top | GravityFlags.Left; // 左对齐换行
@@ -409,7 +419,8 @@ public partial class MainActivity
         // 尚未就绪，读到兜底值=不缩；转屏重建才读到真值。改两端组挂字段，亮条时重算（见 ApplyControlBarCornerClear）
         _cbBtnLeft = left;
         _cbBtnRight = right;
-        int cornerClear = BottomCornerClearPx(); // vc124：统一走封顶口径（横屏留白收口），与设置/列表页同源
+        // vc132 老板令（14:25「按钮整体再往左右各靠一点」）：圆角让位收窄 8dp（钳 0），按钮更贴两缘
+        int cornerClear = Math.Max(0, BottomCornerClearPx() - UiScale.Px(8)); // vc124：统一走封顶口径（横屏留白收口），与设置/列表页同源
         btnRow.AddView(left, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = cornerClear });
         var space = new View(this);
         btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
@@ -510,11 +521,11 @@ public partial class MainActivity
         }
     }
 
-    /// <summary>控制条显收：单击画面切换，3 秒自动收；抽屉/面板开着不出；空态横幅可见时不出（vc115 A1 互斥）。</summary>
+    /// <summary>控制条显收：单击画面切换，3 秒自动收；抽屉/面板开着不出。
+    /// vc132 老板令（14:27）：空态横幅互斥退场——任何时候点屏幕都唤起操作栏，横幅在下一层被盖住。</summary>
     private void ToggleControlBar()
     {
         if (_listOpen || (_settingsPanelOpen)) return; // 面板优先：面板开着控制条不出
-        if (_emptyPill is not null && _emptyPill.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
         if (_controlBarShown) HideControlBar();
         else ShowControlBar();
     }
@@ -522,7 +533,6 @@ public partial class MainActivity
     private void ShowControlBar()
     {
         if (_controlBar is null) return;
-        if (_emptyPill is not null && _emptyPill.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
         ApplyControlBarCornerClear(); // vc124 老板令：亮条即重算圆角让位（首建时 insets 未就绪的兜底根治）
         RefreshControlBarInfo();
         _controlBar.Visibility = ViewStates.Visible;
@@ -536,14 +546,14 @@ public partial class MainActivity
     private void ApplyControlBarCornerClear()
     {
         if (_controlBar is null) return;
-        int clear = BottomCornerClearPx(); // vc124：统一走封顶口径（横屏留白收口）
+        int clear = Math.Max(0, BottomCornerClearPx() - UiScale.Px(8)); // vc124：统一走封顶口径（横屏留白收口）；vc132：收窄 8dp 靠拢两缘
         if (_cbBtnLeft is { } l && l.LayoutParameters is LinearLayout.LayoutParams ll) ll.LeftMargin = clear;
         if (_cbBtnRight is { } r && r.LayoutParameters is LinearLayout.LayoutParams rl) rl.RightMargin = clear;
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
         _main.Post(() =>
         {
             if (_controlBar is null) return;
-            int clear2 = BottomCornerClearPx(); // vc124：统一走封顶口径（横屏留白收口）
+            int clear2 = Math.Max(0, BottomCornerClearPx() - UiScale.Px(8)); // vc124：统一走封顶口径；vc132：收窄 8dp 靠拢两缘
             if (_cbBtnLeft is { } l2 && l2.LayoutParameters is LinearLayout.LayoutParams ll2) ll2.LeftMargin = clear2;
             if (_cbBtnRight is { } r2 && r2.LayoutParameters is LinearLayout.LayoutParams rl2) rl2.RightMargin = clear2;
             _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());

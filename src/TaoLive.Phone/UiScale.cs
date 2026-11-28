@@ -61,6 +61,12 @@ public static class UiScale
     /// vc120 起并入字号档比例项（全元素去写死令），与文字同一套缩放。</summary>
     public static int Px(float v) => (int)(v * PxScale * FontScaleRatio + 0.5f);
 
+    /// <summary>vc127 令（2026-11-28 老板点名落「提示胶囊左内边距偏窄约7dp」）：物理 dp 直读口径。
+    /// 根因实锤：PxScale=短边px/(390×首启密度)×系统档 ≈1，Px(20) 出来是 20 裸像素 ≈7dp 物理宽
+    /// （真机截图实测吻合）——「390 基准 1:1」的设计单位不等于物理 dp。HUD 胶囊这类要按物理 dp
+    /// 观感计的尺寸走本口径：入参 dp × 当前密度（首启密度×系统显示大小）× 字号档，随档跟缩不写死。</summary>
+    public static int Dp(float v) => (int)(v * DensityRef * SystemScale * FontScaleRatio + 0.5f);
+
     /// <summary>vc120 肉眼对齐令（2026-11-28 老板拍板）：同字号单行 TextView 实测线高（px），
     /// 按钮盒/对齐基准用——字号档位、系统字体缩放自动跟，不写死数值。</summary>
     public static int TextLineHeight(Android.Content.Context ctx, float size)

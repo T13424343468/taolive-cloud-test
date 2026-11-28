@@ -2384,7 +2384,13 @@ public partial class MainActivity : Activity
                 _listPage.AddOnAttachStateChangeListener(new ListTopInsetReinset(this));
             }
         }
-        _listPage.SetPadding(0, top, 0, 0);
+        // vc127 老板令（2026-11-28 真机「横屏列表页左侧边距还是不够，标题被覆盖到了」）：横屏抽屉贴左，
+        // 挖孔在左缘——整页左内距补挖孔左安全区+8dp 呼吸边，「频道列表」标题/页签/列表全让开；
+        // 竖屏孔在顶部，左距不动。转屏/重开即重算，与顶距同一口径。
+        int leftSafe = 0;
+        if (landscape && OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } insLeft)
+            leftSafe = Math.Max(0, insLeft.GetInsets(WindowInsets.Type.DisplayCutout()).Left + UiScale.Px(8));
+        _listPage.SetPadding(leftSafe, top, 0, 0);
     }
 
     /// <summary>vc124：列表页附型后重算顶部避让（首帧 inset 未就绪的回正钩子，一次性）。</summary>
@@ -2558,7 +2564,7 @@ public partial class MainActivity : Activity
         _toast = new LinearLayout(this) { Orientation = Orientation.Horizontal }; // Gravity 只读，SetGravity 落后置
         _toast.SetGravity(GravityFlags.CenterVertical);
         _toast.Background = InkTranslucency.PillBackground(this); // vc116：全透明+胶囊描边（界面元素统一皮）
-        _toast.SetPadding(UiScale.Px(20), UiScale.Px(8), UiScale.Px(20), UiScale.Px(8));
+        _toast.SetPadding(UiScale.Dp(16), UiScale.Dp(8), UiScale.Dp(16), UiScale.Dp(8)); // vc127 老板令：左内边距偏窄根因=Px 口径出裸像素（实测≈7dp），改物理 dp 直读 16dp
         _toast.Visibility = ViewStates.Invisible;
 
         _toastLeft = new TextView(this) { TextSize = UiScale.Item };
@@ -2581,6 +2587,8 @@ public partial class MainActivity : Activity
         // vc121 包孔扶正（老板 05:3x 真机截图实锤：右段无字时孔不在胶囊正中、压在文字下面）：
         // 左右各挂一个平衡占位（默认 0 宽）——竖屏包孔分支按左右两段文字宽度差补占位，
         // 孔两侧总宽相等 → 孔永远落在胶囊正中、孔上无字；横屏/无孔分支占位归零不影响。
+        // vc127 老板令（「孔还是不在胶囊正中间」）：左占位原挂在右段之后=补错边——右段比左段宽时
+        // 差值补在右端，孔反而左偏半个差值。改插到最左（下标 0），左右各归各位，孔心必居中。
         _toastBalL = new View(this);
         _toast.AddView(_toastBalL, 0, new LinearLayout.LayoutParams(0, 1));
         _toastBalR = new View(this);
@@ -2608,12 +2616,13 @@ public partial class MainActivity : Activity
             {
                 // vc124 老板令（真机「胶囊从来没包住孔」实锤）：部分机型不报孔位矩形（瀑布屏必不报，
                 // 部分挖孔机也不报，官方文档明确瀑布切口无边界矩形）——按居中挖孔推孔心：
-                // X=屏宽/2；Y=孔带底缘−估计孔半径（挖孔机孔径中值约 28dp，即半径 14dp）。
-                // vc126 老板令（真机「底部的线条被孔覆盖」实锤）：原 Y=SafeInsetTop/2 把孔心估浅了
-                // （孔带底缘≠孔带高度一半），孔下缘压住胶囊底线——改按物理口径：安全顶距≈孔带底缘，
-                // 孔心在其上方一个半径处。孔宽未知记 0，胶囊中段不留空档、整条盖住孔，孔仍在胶囊正中。
+                // X=屏宽/2；Y=孔带底缘−估计孔半径。
+                // vc126 老板令：孔心改按「安全顶距≈孔带底缘」推。
+                // vc127 老板令（真机「底部线条还是被覆盖」实锤）：半径原走 Px(14)=设计像素≈22px 物理宽，
+                // 孔心被估高 8px——胶囊底线正好贴在孔的下缘上，永远差一口气。切口内距的下缘=孔的下缘，
+                // 半径改物理 dp 直读 Dp(14)=14px：孔心下移到真位，胶囊上下各让 8dp，底线不再被盖。
                 _cutoutHoleCenterX = Resources!.DisplayMetrics!.WidthPixels / 2;
-                _cutoutHoleCenterY = Math.Max(c.SafeInsetTop - UiScale.Px(14), UiScale.Px(14));
+                _cutoutHoleCenterY = Math.Max(c.SafeInsetTop - UiScale.Dp(14), UiScale.Dp(14));
             }
         }
         catch { }
@@ -2665,53 +2674,47 @@ public partial class MainActivity : Activity
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(_cutoutHoleW, 1);
             // vc126 老板令「胶囊必须完整包住孔」：兜底孔心有估计误差——胶囊高度给足容差
             // （≥44dp，或孔宽+8dp），孔心即使偏几个 dp 孔仍被完整包住；文字限宽不出孔位。
-            _toast.SetMinimumHeight(Math.Max(UiScale.Px(44), _cutoutHoleW + UiScale.Px(8)));
+            // vc127：容差改物理 dp 直读（Px 口径出裸像素，44 实为≈16dp，包不住高孔带）。
+            _toast.SetMinimumHeight(Math.Max(UiScale.Dp(44), _cutoutHoleW + UiScale.Dp(8)));
             _toastLeft.SetMaxWidth(Math.Max(UiScale.Px(60), (int)(_cutoutHoleCenterX - UiScale.Px(36)))); // vc126：竖屏长文案钳宽（横屏同款），文案再长也不顶出屏沿
             lp.Gravity = GravityFlags.Top; // 左上起摆，TranslationX 精确对孔心
             lp.LeftMargin = 0;
             lp.TopMargin = 0;
             _toast.Post(() =>
             {
-                int pw = _toast.Width, ph = _toast.Height;
-                if (pw > 0)
+                int ph = _toast.Height;
+                if (ph <= 0) { onPositioned?.Invoke(); return; }
+                // vc121 包孔扶正（老板 05:3x 真机截图实锤）：右段无字时孔不在胶囊正中、压在文字下面——
+                // 几何根因：孔（中段空档）跟在左段文字后，胶囊对孔心居中后孔落在文字下方（偏移=textW/2）。
+                // 改法：按左右两段文字宽度差补平衡占位（左宽>右宽右侧补差值，反之左侧补），
+                // 孔两侧总宽相等 → 孔永远居中、孔上无字。
+                int leftW = _toastLeft.Visibility == ViewStates.Gone ? 0 : _toastLeft.Width;
+                int rightW = _toastRight.Visibility == ViewStates.Gone ? 0 : _toastRight.Width;
+                int diff = leftW - rightW;
+                ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = diff > 0 ? diff : 0;
+                ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = diff < 0 ? -diff : 0;
+                _toastBalL.RequestLayout();
+                _toastBalR.RequestLayout();
+                // vc127 老板令（「孔还是不在胶囊正中间」+真机截图实锤）：平衡占位改动后 _toast.Width
+                // 仍是旧一帧的值，TranslationX 拿旧宽对中=胶囊被占位撑宽后整体右偏半个差值
+                // （截图量得孔偏左≈66px，与新旧宽差 117px 的一半吻合）。改按已知量解析算终宽：
+                // 左右内距 + 左右占位 + 左右文字 + 孔宽，不再赌布局时机，一步对中。
+                // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：包孔居中 + 安全钳制
+                // vc126 老板令（「如果是两行的 孔也需要在胶囊的正中间 孔在正中间是必须的」）：
+                // 两行加高后若超过 2×孔心距，把胶囊压回孔带高度（内容垂直居中、超出裁剪），
+                // 孔仍居正中——宁裁字不偏心；胶囊高≤2×孔心距时本分支不触发，孔心永远对齐胶囊中心
+                if (ph > _cutoutHoleCenterY * 2)
                 {
-                    // vc121 包孔扶正（老板 05:3x 真机截图实锤）：右段无字时孔不在胶囊正中、压在文字下面——
-                    // 几何根因：孔（中段空档）跟在左段文字后，胶囊对孔心居中后孔落在文字下方（偏移=textW/2）。
-                    // 改法：按左右两段文字宽度差补平衡占位（左宽>右宽右侧补差值，反之左侧补），
-                    // 孔两侧总宽相等 → 孔永远居中、孔上无字。占位改动后再 Post 一拍重测重对孔心。
-                    int leftW = _toastLeft.Visibility == ViewStates.Gone ? 0 : _toastLeft.Width;
-                    int rightW = _toastRight.Visibility == ViewStates.Gone ? 0 : _toastRight.Width;
-                    int diff = leftW - rightW;
-                    ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = diff > 0 ? diff : 0;
-                    ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = diff < 0 ? -diff : 0;
-                    _toastBalR.RequestLayout();
-                    _toast.Post(() =>
-                    {
-                        int pw2 = _toast.Width, ph2 = _toast.Height;
-                        if (pw2 > 0)
-                        {
-                            // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：包孔居中 + 安全钳制
-                            // vc126 老板令（「如果是两行的 孔也需要在胶囊的正中间 孔在正中间是必须的」）：
-                            // 两行加高后若超过 2×孔心距，把胶囊压回孔带高度（内容垂直居中、超出裁剪），
-                            // 孔仍居正中——宁裁字不偏心；胶囊高≤2×孔心距时本分支不触发，孔心永远对齐胶囊中心
-                            if (ph2 > _cutoutHoleCenterY * 2)
-                            {
-                                lp.Height = _cutoutHoleCenterY * 2;
-                                _toast.LayoutParameters = lp;
-                                ph2 = _cutoutHoleCenterY * 2;
-                            }
-                            _toast.TranslationX = _cutoutHoleCenterX - pw2 / 2f;
-                            float ty = _cutoutHoleCenterY - ph2 / 2f;
-                            if (ty < 0) ty = 0; // 兜底钳制（压回孔带后不再触发）
-                            _toast.TranslationY = ty;
-                        }
-                        onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
-                    });
+                    lp.Height = _cutoutHoleCenterY * 2;
+                    _toast.LayoutParameters = lp;
+                    ph = _cutoutHoleCenterY * 2;
                 }
-                else
-                {
-                    onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
-                }
+                int pw = _toast.PaddingLeft + _toast.PaddingRight + Math.Max(leftW, rightW) * 2 + _cutoutHoleW;
+                _toast.TranslationX = _cutoutHoleCenterX - pw / 2f;
+                float ty = _cutoutHoleCenterY - ph / 2f;
+                if (ty < 0) ty = 0; // 兜底钳制（压回孔带后不再触发）
+                _toast.TranslationY = ty;
+                onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
             });
         }
         else
@@ -2756,7 +2759,19 @@ public partial class MainActivity : Activity
         string leftText, rightText;
         if (text.Length <= capL + capR)
         {
-            int nL = Math.Min(text.Length, capL);
+            // vc127 老板令（「右侧还是空白 内容都在左侧」）：短文案绕孔对半分，左右各半，不再全塞左段
+            int len = text.Length;
+            int nL;
+            if (len <= 2)
+            {
+                nL = len; // 一两个字全放左段，右侧留空
+            }
+            else
+            {
+                int wantLeft = len - len / 2;
+                nL = Math.Min(capL, Math.Max(wantLeft, len - capR));
+                nL = Math.Max(0, Math.Min(nL, len));
+            }
             leftText = text[..nL];
             rightText = text[nL..];
         }

@@ -28,11 +28,10 @@ public partial class MainActivity
     private LinearLayout? _controlBar;
     private LockIconView? _lockBtn;
     private TextView? _cbTitle;    // 控制条行1：台名
-    private TextView? _cbMini;     // 控制条行1：分辨率 mini（老板令 2026-11-28「帧率可以不显示」：只显分辨率）
     private TextView? _cbNowName;  // 控制条行2：节目名（占余宽省略，vc115 拆段保读数）
     private TextView? _cbNowTime;  // 控制条行2：「· 画面时刻：HH:mm:ss」（完整不截，vc115）
     private TextView? _cbAuxWater; // 控制条行3：「实时水位：X秒」（完整不截，vc115）
-    private TextView? _cbAuxNext;  // 控制条行3：「· 接下来：…」（占余宽省略，vc115）
+    private TextView? _cbAuxNext;  // 控制条行3：「· 接下来：…」（占余宽，vc127 起最多两行：真机实锤单行截断「孔子上···」而上行大片空白，老板令内容要显完整）
     private LinearLayout? _cbBtnLeft;  // vc124：按钮行左组（圆角让位亮条时重算）
     private LinearLayout? _cbBtnRight; // vc124：按钮行右组（同上）
     private bool _controlBarShown;
@@ -280,7 +279,9 @@ public partial class MainActivity
         // vc119 老板令（2026-11-28「避开圆角不是整体上移，要丝滑过渡」）：控制条贴回屏幕底，
         // 底边距回归与左右一致的正常口径；圆角过渡改由背景自身长出底部圆角（半径=系统圆角），
         // 弧线贴合屏幕角落，不再整条硬抬一大截留空白带。
-        _controlBar.SetPadding(UiScale.Px(16), UiScale.Px(8), UiScale.Px(16), UiScale.Px(16));
+        // vc127 老板令（2026-11-28 真机截图「文字太贴边了 能不能有点间距」）：内距改物理 dp 直读——
+        // 原 Px(16) 出来是裸像素 ≈6dp 物理宽，文字几乎贴屏幕边；16dp 物理宽才有呼吸感。
+        _controlBar.SetPadding(UiScale.Dp(16), UiScale.Dp(10), UiScale.Dp(16), UiScale.Dp(16));
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
@@ -295,15 +296,12 @@ public partial class MainActivity
             return tv;
         }
 
-        // 行1：台名（占余宽、超长省略）+ 分辨率 mini（右对齐小字，无数据隐藏；老板令 2026-11-28 帧率不显示）
+        // 行1：台名（占余宽、超长省略）——vc127 老板令（2026-11-28 真机截图）：分辨率 mini「1080」
+        // 没什么用，横竖屏都去掉（原行1 右侧小字整块退场）
         var infoRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         infoRow.SetGravity(GravityFlags.CenterVertical);
         _cbTitle = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
         infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        _cbMini = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
-        _cbMini.Gravity = GravityFlags.End;
-        _cbMini.SetPadding(UiScale.Px(10), 0, 0, 0); // vc115 分段令：mini 与节目名之间留间距
-        infoRow.AddView(_cbMini);
         _controlBar.AddView(infoRow);
 
         // 行2（v31 原型 epg-bar；vc115 拆段保读数）：节目名（占余宽省略）+「· 画面时刻：HH:mm:ss」（完整不截）
@@ -311,16 +309,20 @@ public partial class MainActivity
         _cbNowName = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
         nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         _cbNowTime = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
-        _cbNowTime.SetPadding(UiScale.Px(8), 0, 0, 0);
+        _cbNowTime.SetPadding(UiScale.Dp(8), 0, 0, 0);
         nowRow.AddView(_cbNowTime);
         _controlBar.AddView(nowRow);
 
-        // 行3：「实时水位：X秒」（完整）+ 接下来（占余宽省略）——读数段永不被节目名挤掉
+        // 行3：「实时水位：X秒」（完整）+ 接下来（占余宽）——读数段永不被节目名挤掉
+        // vc127 老板令（2026-11-28 真机截图「空白区域那么多，内容还没显示完整」）：接下来改最多两行，
+        // 单行截断「孔子上···」退场——节目名单行时行3 拉满整行宽，长节目单换行显完整不硬截。
         var auxRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
-        _cbAuxWater.SetPadding(0, 0, UiScale.Px(8), 0);
+        _cbAuxWater.SetPadding(0, 0, UiScale.Dp(8), 0);
         auxRow.AddView(_cbAuxWater);
         _cbAuxNext = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
+        _cbAuxNext.SetSingleLine(false); // 覆盖 NewBarText 的单行口径：接下来允许换行显完整
+        _cbAuxNext.SetMaxLines(2);
         auxRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         _controlBar.AddView(auxRow);
 
@@ -407,7 +409,6 @@ public partial class MainActivity
         _controlBar = null;
         _lockBtn = null;
         _cbTitle = null;
-        _cbMini = null;
         _cbNowName = null;
         _cbNowTime = null;
         _cbAuxWater = null;
@@ -438,25 +439,6 @@ public partial class MainActivity
         _cbAuxWater.Text = $"实时水位：{buffered / 1000}秒";
         _cbAuxNext.Text = hasNext ? $"· 接下来：{_epgNextText}" : "";
         _cbAuxNext.Visibility = hasNext ? ViewStates.Visible : ViewStates.Gone;
-        RefreshControlBarMini();
-    }
-
-    /// <summary>分辨率 mini（老板令 2026-11-28「帧率可以不显示」：只显分辨率）：内核 OnVideoSizeChanged 实读，
-    /// 无读数（未就绪/音频流）降级隐藏不占位。</summary>
-    private void RefreshControlBarMini()
-    {
-        if (_cbMini is null) return;
-        var kernel = _manager.Current?.Kernel;
-        int? h = kernel?.VideoHeight;
-        if (h is { } hh && hh > 0)
-        {
-            _cbMini.Text = $"{hh}";
-            _cbMini.Visibility = ViewStates.Visible;
-        }
-        else
-        {
-            _cbMini.Visibility = ViewStates.Gone;
-        }
     }
 
     /// <summary>换台（触屏滑动手势口径）：±1 环绕，走既有 PlayAt 链路（预检死台拦截、防抖全继承）。</summary>
@@ -1073,37 +1055,44 @@ public partial class MainActivity
         {
             var context = Context!;
             _stroke.Color = InkTranslucency.TextPrimary(context);
-            _stroke.StrokeWidth = side * 0.09f;
-            float w = side, h = side;
-            // vc124 锁图标重绘（老板多轮「绘制有问题」收口）：标准挂锁几何——
-            // 锁梁=正圆半拱，拱弧端点精确落在锁梁基线高度，不再靠 1.7r/0.3r 拉伸椭圆凑位；
-            // 锁定态拱弧两端点直接落在锁体上沿（标准挂锁，无另画双腿）；
-            // 解锁态整梁抬升 g：左腿落到锁体上沿、右腿留半截悬空，开口一目了然，无错位短茬
-            float bw = w * 0.58f, bh = h * 0.40f;
-            float r = bw * 0.32f;
-            float bx = (w - bw) / 2f;
-            float g = h * 0.14f; // 解锁抬升量
+            _stroke.StrokeWidth = side * 0.075f;
+            // vc127 锁图标三绘（老板令 2026-11-28「照 🔓🔒 那样画，只是把带颜色的换成线条」）：
+            // emoji 几何直出——锁体=偏下圆角横矩形，锁梁=正圆半拱+双腿插入锁体上沿；
+            // 解锁=整梁绕左腿根外旋 38°，左腿原地踏住锁体、右腿抬起悬空，开口一目了然。
             bool open = _kind == IconKind.Unlocked;
-            float top = (h - (open ? g + r + bh : r + bh)) / 2f; // 两种状态各自垂直居中
-            float by = top + (open ? g + r : r); // 锁体上沿
-            float ay = by - (open ? g : 0f);     // 锁梁基线（拱弧端点所在高度）
-            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, bw * 0.18f, bw * 0.18f, _stroke);
-            float scx = bx + bw / 2f;
-            canvas.DrawArc(scx - r, ay - r, scx + r, ay + r, 180f, 180f, false, _stroke);
+            float bw = side * 0.60f, bh = side * 0.44f;
+            float r = side * 0.165f;
+            float bx = (side - bw) / 2f;
+            float top = (side - (bh + r)) / 2f; // 锁体+拱高整体垂直居中
+            float by = top + r;                 // 锁体上沿
+            float scx = side / 2f;
+            float leg = side * 0.05f; // 双腿插入锁体的深度（emoji 同款：梁腿没入锁体）
+            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, side * 0.10f, side * 0.10f, _stroke);
+            void DrawShackle()
+            {
+                canvas.DrawArc(scx - r, by - r, scx + r, by + r, 180f, 180f, false, _stroke);
+                canvas.DrawLine(scx - r, by, scx - r, by + leg, _stroke);
+                canvas.DrawLine(scx + r, by, scx + r, by + leg, _stroke);
+            }
             if (open)
             {
-                canvas.DrawLine(scx - r, ay, scx - r, by, _stroke); // 左腿：落到锁体上沿
-                canvas.DrawLine(scx + r, ay, scx + r, ay + g * 0.5f, _stroke); // 右腿：半截悬空=开
+                canvas.Save();
+                canvas.Rotate(-38f, scx - r, by); // 绕左腿根外旋：右腿扬起悬空=开
+                DrawShackle();
+                canvas.Restore();
             }
-            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）——小屏改细一档描边，
-            // 0.09 side 粗线在小矩形上会糊成实心块（vc124 预览实测）
+            else
+            {
+                DrawShackle();
+            }
+            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）——细一档描边防糊成实心块
             if (_kind == IconKind.LockLandscape || _kind == IconKind.LockPortrait)
             {
-                _stroke.StrokeWidth = side * 0.055f;
+                _stroke.StrokeWidth = side * 0.05f;
                 if (_kind == IconKind.LockLandscape)
-                    canvas.DrawRoundRect(w * 0.76f, h * 0.42f, w * 0.96f, h * 0.60f, 3f, 3f, _stroke);
+                    canvas.DrawRoundRect(side * 0.78f, side * 0.48f, side * 0.96f, side * 0.62f, side * 0.03f, side * 0.03f, _stroke);
                 else
-                    canvas.DrawRoundRect(w * 0.78f, h * 0.34f, w * 0.96f, h * 0.66f, 3f, 3f, _stroke);
+                    canvas.DrawRoundRect(side * 0.80f, side * 0.42f, side * 0.95f, side * 0.68f, side * 0.03f, side * 0.03f, _stroke);
             }
         }
     }

@@ -1002,9 +1002,12 @@ public partial class MainActivity
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             head.AddView(title, new LinearLayout.LayoutParams(0, -2, 1f));
-            head.AddView(DiagHeadBtn(BarIconView.IconKind.Doc, "打开源文件", OpenDiagSourceFile));
-            head.AddView(DiagHeadBtn(BarIconView.IconKind.Folder, "打开目录", OpenDiagDirectory));
-            head.AddView(DiagHeadBtn(BarIconView.IconKind.Trash, "清空", ConfirmClearCrashLog));
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Doc, "打开源文件", OpenDiagSourceFile),
+                new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) }); // vc124：三钮间距 8dp，与列表页头同口径
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Folder, "打开目录", OpenDiagDirectory),
+                new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) });
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Trash, "清空", ConfirmClearCrashLog),
+                new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) });
             box.AddView(head, new LinearLayout.LayoutParams(-1, -2));
 
             // 页签行（运行台账/崩溃日志/自诊断，v5 老板令三标签同页）
@@ -1052,11 +1055,17 @@ public partial class MainActivity
     }
 
     /// <summary>topbar 常驻钮统一样式（vc119 老板令：emoji 字符退场改 BarIconView 几何自绘——
-    /// 单色、44dp 盒、与控制条/页头图标同一套皮，全应用按钮风格归一）。</summary>
+    /// 单色、44dp 盒、与控制条/页头图标同一套皮，全应用按钮风格归一）。
+    /// vc124 老板令：实心灰底退场，改全应用统一线框皮——中心透明+描边，与列表页头 ⟳✕ 同款
+    /// （OutlineBox 描边 + InsetDrawable 内缩对齐可见盒，BoxTextSize 跟页头标题渲染高，聚焦强描边提亮）。</summary>
     private View DiagHeadBtn(BarIconView.IconKind kind, string desc, Action onClick)
     {
-        var icon = new BarIconView(this) { Kind = kind, Clickable = true, ContentDescription = desc };
-        StyleOverlayButton(icon);
+        var icon = new BarIconView(this) { Kind = kind, Clickable = true, ContentDescription = desc, BoxTextSize = UiScale.Title };
+        var idle = InkTranslucency.OutlineBox(this, 10, InkTranslucency.FocusStrokeAlpha); // 静默：中心透明+细描边
+        var focus = InkTranslucency.OutlineBox(this, 10, 255); // 聚焦：强描边提亮（按压态同构口径）
+        icon.Background = new Android.Graphics.Drawables.InsetDrawable(idle, UiScale.Px(UiScale.BtnTouchPadDp));
+        icon.FocusChange += (_, ev) =>
+            icon.Background = new Android.Graphics.Drawables.InsetDrawable(ev.HasFocus ? focus : idle, UiScale.Px(UiScale.BtnTouchPadDp));
         icon.Click += (_, _) => onClick();
         return icon;
     }

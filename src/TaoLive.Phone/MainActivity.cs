@@ -58,7 +58,14 @@ public partial class MainActivity : Activity
     private int _cutoutHoleW;                     // 挖孔宽（px，0=无挖孔信息走兜底居中）
     private int _cutoutHoleCenterX;               // 挖孔中心 X（px）
     private int _cutoutHoleCenterY;               // 挖孔中心 Y（px）
-    private TextView _emptyState = default!;
+    // vc124 老板令（真机「胶囊从来没包住孔」实锤）：空态胶囊重构成系统胶囊同款三段式——
+    // 左状态行 + 中段孔位空档 + 右可点链接行，孔落在胶囊正中、内容分两侧（系统状态栏胶囊口径）
+    private LinearLayout _emptyPill = default!;
+    private TextView _emptyLeft = default!;       // 空态胶囊左段：状态行
+    private TextView _emptyRight = default!;      // 空态胶囊右段：可点链接行（立即重试/打开列表）
+    private View _emptyGap = default!;            // 空态胶囊中段空档（宽度=挖孔宽）
+    private View _emptyBalL = default!;           // 空态胶囊左侧平衡占位
+    private View _emptyBalR = default!;           // 空态胶囊右侧平衡占位
     private readonly TaoLive.Session.NetGuard _netGuard = new();
     private readonly Handler _main = new(Looper.MainLooper!);
     private bool _onPlayerPage;
@@ -74,7 +81,7 @@ public partial class MainActivity : Activity
     private Java.Lang.Runnable _toastHide = default!;
     // 文案矩阵单点（方案书 v2.4 §25 + vc113 原型对照令）：失败终态三件套文案——
     // 发生了什么（信号中断，正在自动重试·第 X/6 次）+ 为什么（已自动换线尝试）+ 能怎么办（等 / 立即重试 / 打开频道列表）；
-    // 禁裸错误码；长播无源退级提示按等待时长叠加（BuildEmptyStateText 单点装配，含可点链接）。
+    // 禁裸错误码；长播无源退级提示按等待时长叠加（SetEmptyPillText 单点装配，含可点链接）。
     private const string EmptyStateLead = "信号中断，正在自动重试";
     private Java.Lang.Runnable _emptyHintTick = default!; // 退级提示节拍（ShowEmptyState 起、HideEmptyState 撤）
     private long _emptyStateAtMs;               // 空态起点（单调钟，分钟级即可）
@@ -536,7 +543,9 @@ public partial class MainActivity : Activity
         SetContentView(_root);
         ApplyImmersive(); // 手机版整改令 2026-11-27：沉浸式全屏（收状态栏/导航栏）
         RegisterPredictiveBack(); // 2026-11-27 真机反馈第7条：接系统预测式返回（去「再次滑动返回」二次确认）
-        ShowList();
+        // vc124 老板令（2026-11-28「进软件第一屏要么默认不开列表页」）：首屏直接进播放画面，
+        // 开机链路照常自动进默认台；列表页只在用户主动呼出时出现
+        ShowPlayer();
         MergeSubscriptionChannels(silent: true); // 启动并入落盘档案里的订阅新收录频道（_precheck/_list 此刻均已就绪）
 
         // #15 原地换皮：会话跨壳存活（换显示尺寸 Recreate 到此）——回播放页对准当前台即可，
@@ -618,7 +627,7 @@ public partial class MainActivity : Activity
             // 键位引导按树内真实键位：OK 重试（退避账管节奏）· 菜单键选台（呼列表）。
             // 真机反馈批#11 修 2026-11-15：失败终态此前只撤遮罩露旧台冻结帧（TextureView 停帧后
             // 保留最后渲染内容），「新台没切过来一直挂着上个台画面」实锤——终态改铺全屏不透明
-            // 水墨深底盖旧画，空态文案叠其上（BuildRoot z 序：_emptyState 在 _loadingPanel 之上）。
+            // 水墨深底盖旧画，空态文案叠其上（BuildRoot z 序：_emptyPill 在 _loadingPanel 之上）。
             // _loadingSeq 作废亮牌延迟（原 HideLoading 语义保留，只不清遮罩底）。
             _loadingSeq++;
             _veilChannelName = null; // #73 修：失败终态清台名——ShowSwitchVeil 不再带「正在连接」字样，空态文案接管
@@ -737,7 +746,7 @@ public partial class MainActivity : Activity
                         await Task.WhenAny(warm, Task.Delay(15_000)); // 预热超时照常进默认台
                     }
                     catch (Exception ex) { CrashNet.Record($"[Boot] 预热未完成照常进默认台：{ex.Message}"); }
-                    if (!_onPlayerPage) PlayAt(idx); // 用户已手动进台不抢
+                    if (_manager.Current is null) PlayAt(idx); // vc124 首屏改播放页：会话仍空才进默认台（用户已手动进台不抢）
                 }
                 catch (Exception ex) { CrashNet.Record($"[Boot] 开机链路异常照常进默认台：{ex.Message}"); }
             });
@@ -745,7 +754,7 @@ public partial class MainActivity : Activity
         catch (Exception ex)
         {
             CrashNet.Record($"[Boot] 开机链路异常照常进默认台：{ex.Message}");
-            _main.Post(() => { if (!_onPlayerPage) PlayAt(DefaultChannelIndex()); });
+            _main.Post(() => { if (_manager.Current is null) PlayAt(DefaultChannelIndex()); });
         }
     }
 
@@ -889,17 +898,30 @@ public partial class MainActivity : Activity
         _root.SetBackgroundColor(Color.ParseColor("#2B333B"));
 
         _toastHide = new Java.Lang.Runnable(() =>
-            _toast.Visibility = ViewStates.Invisible);
+        {
+            _toast.Visibility = ViewStates.Invisible;
+            // vc124 老板令：提示胶囊收起后，被让位的空态胶囊原位回场（失败态仍在且无浮层在位）；
+            // 浮层在位则记账交 UpdateEmptyPillSuppression 收浮层时回场，不在此硬亮
+            if (_emptyPillDeferredByToast)
+            {
+                _emptyPillDeferredByToast = false;
+                bool windowOpen = _listOpen || _settingsPanelOpen
+                    || _diagOverlay is not null || _statsOverlay is not null
+                    || _advOverlay is not null || _advGearOverlay is not null || _licenseOverlay is not null;
+                if (windowOpen) _emptyPillSuppressed = true;
+                else if (_manager.Current?.State == PlaybackState.Failed) _emptyPill.Visibility = ViewStates.Visible;
+            }
+        });
 
         // 长播无源退级提示（老板 2026-11-17 拍板）：空态满 5 分钟起每分钟如实报已等时长并建议
         // 检查网络；自愈慢轮+重探仍在后台自动复活，提示只是让等待有交代。可见性判定兼停表：
         // 离开空态（HideEmptyState 撤回调）或空态已被复用改写即自然停摆。
         _emptyHintTick = new Java.Lang.Runnable(() =>
         {
-            if (_emptyState.Visibility != ViewStates.Visible) return;
+            if (_emptyPill.Visibility != ViewStates.Visible) return;
             var waitedMin = (int)((System.Environment.TickCount64 - _emptyStateAtMs) / 60_000);
             if (waitedMin >= 5)
-                _emptyState.TextFormatted = BuildEmptyStateText($"已 {waitedMin} 分钟未恢复，建议检查网络");
+                SetEmptyPillText($"已 {waitedMin} 分钟未恢复，建议检查网络");
             _main.PostDelayed(_emptyHintTick, 60_000);
         });
 
@@ -944,16 +966,34 @@ public partial class MainActivity : Activity
         // vc117 令4（2026-11-28 老板拍板）：改胶囊样式挂顶部挖孔区（竖屏）——文案精炼三件套
         // （信号中断 · 自动重试中 · 立即重试/打开列表），可点链接保留（azure 蓝）；
         // 横屏由 ShowEmptyState 按令5 挂左侧挖孔区（文字靠左往下换行）。
-        _emptyState = new TextView(this) { Gravity = GravityFlags.CenterVertical };
-        _emptyState.SetTextColor(InkTranslucency.TextPrimary(this));
-        _emptyState.TextSize = UiScale.Caption;
-        _emptyState.Background = InkTranslucency.PillBackground(this); // 令4：胶囊皮（与提示胶囊同款）
-        InkTranslucency.ApplyReadabilityShadow(_emptyState);
-        _emptyState.SetPadding(UiScale.Px(UiScale.EdgePadDp), UiScale.Px(10), UiScale.Px(UiScale.EdgePadDp), UiScale.Px(10));
-        _emptyState.MovementMethod = Android.Text.Method.LinkMovementMethod.Instance; // 可点链接（立即重试/打开频道列表）
-        _emptyState.SetHighlightColor(Color.Transparent); // 链接按压不糊底（绑定 HighlightColor 只读，走 Setter）
-        _emptyState.Visibility = ViewStates.Invisible;
-        _playerPage.AddView(_emptyState, new FrameLayout.LayoutParams(
+        // vc124 老板令（真机「胶囊从来没包住孔」实锤）：空态胶囊重构成系统状态栏胶囊同款——
+        // 横排三段：左状态行 + 中段孔位空档 + 右可点链接行；孔落在胶囊正中、内容分两侧。
+        // 原竖排多行 TextView 物理上无法中心包住贴屏顶的孔（钳制后整条落在孔下方），口径退场。
+        _emptyPill = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        _emptyPill.SetGravity(GravityFlags.CenterVertical);
+        _emptyPill.Background = InkTranslucency.PillBackground(this); // 胶囊皮（与提示胶囊同款）
+        _emptyPill.SetPadding(UiScale.Px(20), UiScale.Px(6), UiScale.Px(20), UiScale.Px(6));
+        _emptyLeft = new TextView(this) { TextSize = UiScale.Caption };
+        _emptyLeft.SetTextColor(InkTranslucency.TextPrimary(this));
+        InkTranslucency.ApplyReadabilityShadow(_emptyLeft);
+        _emptyLeft.SetMaxLines(2); // 退级提示附加行进左段（第二行），常态单行
+        _emptyLeft.Ellipsize = TextUtils.TruncateAt.End;
+        _emptyPill.AddView(_emptyLeft, new LinearLayout.LayoutParams(-2, -2));
+        _emptyGap = new View(this); // 中段空档=挖孔宽（孔上无字），无挖孔信息时宽 0
+        _emptyPill.AddView(_emptyGap, new LinearLayout.LayoutParams(0, 1));
+        _emptyRight = new TextView(this) { TextSize = UiScale.Caption };
+        _emptyRight.SetTextColor(Color.ParseColor(InkTranslucency.TextSecondary));
+        InkTranslucency.ApplyReadabilityShadow(_emptyRight);
+        _emptyRight.SetSingleLine(true);
+        _emptyRight.MovementMethod = Android.Text.Method.LinkMovementMethod.Instance; // 可点链接（立即重试/打开列表）
+        _emptyRight.SetHighlightColor(Color.Transparent); // 链接按压不糊底（绑定 HighlightColor 只读，走 Setter）
+        _emptyPill.AddView(_emptyRight, new LinearLayout.LayoutParams(-2, -2));
+        _emptyBalL = new View(this); // 平衡占位：孔两侧总宽相等 → 孔永远落在胶囊正中
+        _emptyPill.AddView(_emptyBalL, 0, new LinearLayout.LayoutParams(0, 1));
+        _emptyBalR = new View(this);
+        _emptyPill.AddView(_emptyBalR, new LinearLayout.LayoutParams(0, 1));
+        _emptyPill.Visibility = ViewStates.Invisible;
+        _playerPage.AddView(_emptyPill, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
         { Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal, TopMargin = UiScale.Px(48) });
 
@@ -1093,6 +1133,10 @@ public partial class MainActivity : Activity
 
         // v23 第 1 条：折叠总开关行整行退场——标签行下直接铺频道（vc53 口径）。
         _list = new ListView(this) { Divider = null };
+        // vc124 老板令（2026-11-28 真机「滚动条压住小圆点」）：列表滚动条贴右缘画，正好横穿行尾状态点列——
+        // 滚动条整体退场（拇指透明），行尾圆点不再被压；滚动位置反馈由行内容自身可见性兜底
+        if (OperatingSystem.IsAndroidVersionAtLeast(29))
+            _list.VerticalScrollbarThumbDrawable = new Android.Graphics.Drawables.ColorDrawable(Color.Transparent);
         // vc119 老板令：列表左右 16dp 内距+不裁内距——选中态描边不被屏缘裁，行内容（+行内 8dp）对齐 24dp 统一边线
         // vc121 同类排查：底部内距=圆角让位——滚到底最后一行能滚出系统圆角弧区，不贴底被削
         _list.SetPadding(UiScale.Px(16), 0, UiScale.Px(16), BottomCornerClearPx());
@@ -1113,6 +1157,11 @@ public partial class MainActivity : Activity
             }
             PlayAt(_channels.ToList().FindIndex(c => c.Id == channel.Id));
         };
+        // vc124 老板令（2026-11-28「左右滑动不能切换分类吗」）：列表横滑切页签——横向位移累计过
+        // 60dp 且横向主导即切上一/下一页签（循环）；触摸监听只旁路手势识别不拦截事件，
+        // 行点击、纵向滚动、筛选框输入一概不受影响
+        var tabSwipe = new GestureDetector(this, new TabSwipeGesture(this));
+        _list.SetOnTouchListener(new TabSwipeTouchListener(tabSwipe));
         _listPage.AddView(_list, new LinearLayout.LayoutParams(-1, 0, 1f));
 
         // 手机版触屏层（界面岗 2026-11-27）：手势+控制条+方向锁，遥控键位保留兼容
@@ -1557,6 +1606,7 @@ public partial class MainActivity : Activity
     /// <summary>空态胶囊让位（vc122 审查修）：面板/抽屉/子页是透底水墨，空态胶囊垫在下面会透出来
     /// 压住面板标题——任一浮层在位即隐形让位，全收后若仍在失败态再按原口径亮相。</summary>
     private bool _emptyPillSuppressed;
+    private bool _emptyPillDeferredByToast; // vc124：空态胶囊为提示胶囊让位中（提示胶囊收起后回场）
     private void UpdateEmptyPillSuppression()
     {
         bool windowOpen = _listOpen || _settingsPanelOpen
@@ -1564,9 +1614,9 @@ public partial class MainActivity : Activity
             || _advOverlay is not null || _advGearOverlay is not null || _licenseOverlay is not null;
         if (windowOpen)
         {
-            if (_emptyState.Visibility == ViewStates.Visible)
+            if (_emptyPill.Visibility == ViewStates.Visible)
             {
-                _emptyState.Visibility = ViewStates.Invisible;
+                _emptyPill.Visibility = ViewStates.Invisible;
                 _emptyPillSuppressed = true;
             }
         }
@@ -1610,6 +1660,7 @@ public partial class MainActivity : Activity
         ApplyVideoAspect();
         RebuildControlBar();
         ApplyListWidth(_channels); // 定宽令 2026-11-27：竖屏全屏/横屏 480dp，转屏即定（不依赖内容）
+        if (_listOpen) ApplyListTopInset(); // vc124：转屏横竖胶囊挂法不同，列表开着即按新方向重算顶距
         PositionHud(); // vc110：指示条落位随转屏重算（竖屏顶部黑区/横屏右侧黑区）
         _main.Post(ApplyVideoAspect);
     }
@@ -2186,6 +2237,45 @@ public partial class MainActivity : Activity
         }
     }
 
+    /// <summary>列表横滑切页签（vc124 老板令）：next=true 左滑到下一页签，false 右滑到上一页签，首尾循环。</summary>
+    private void SwipeSwitchTab(bool next)
+    {
+        var tabs = (ListTabs.Tab[])Enum.GetValues(typeof(ListTabs.Tab));
+        int idx = Array.IndexOf(tabs, _tab);
+        if (idx < 0 || tabs.Length == 0) return;
+        int n = tabs.Length;
+        SelectTab(tabs[((idx + (next ? 1 : n - 1)) % n + n) % n]);
+    }
+
+    /// <summary>列表横滑手势（vc124 老板令）：横向位移自按下点累计过 60dp 且横向主导即触发一次切签；
+    /// 一次手势只切一档，纵向滚动（|dx|&lt;|dy|）全程让位，不碰列表滚动与行点击。</summary>
+    private sealed class TabSwipeTouchListener : Java.Lang.Object, View.IOnTouchListener
+    {
+        private readonly GestureDetector _detector;
+        public TabSwipeTouchListener(GestureDetector detector) { _detector = detector; }
+        public bool OnTouch(View? v, MotionEvent? e) { if (e is not null) _detector.OnTouchEvent(e); return false; } // 恒 false：事件照常交给列表
+    }
+
+    private sealed class TabSwipeGesture : GestureDetector.SimpleOnGestureListener
+    {
+        private readonly MainActivity _act;
+        private bool _locked;
+        public TabSwipeGesture(MainActivity act) { _act = act; }
+        public override bool OnDown(MotionEvent e) { _locked = false; return false; }
+        public override bool OnScroll(MotionEvent? e1, MotionEvent e2, float distanceX, float distanceY)
+        {
+            if (_locked || e1 is null) return false;
+            float dx = e2.GetX() - e1.GetX(), dy = e2.GetY() - e1.GetY();
+            if (Math.Abs(dx) < Math.Abs(dy)) return false; // 纵向主导：让位列表滚动
+            if (Math.Abs(dx) >= UiScale.Px(60))
+            {
+                _locked = true;
+                _act.SwipeSwitchTab(dx < 0); // 左滑=下一页签，右滑=上一页签
+            }
+            return false;
+        }
+    }
+
     /// <summary>订阅新收录频道并入频道列表（老板 2026-11-26 令「最好还能有新收录」）：
     /// 目录外主流台（省级卫视/CCTV/CGTN，IsMainstreamNewChannel 口径，订阅库已限额）接在表尾，编号顺延不变号；
     /// 列表已建则原适配器换表重建行（ItemClick 接线不动）。返回本次并入的新频道数。</summary>
@@ -2262,20 +2352,56 @@ public partial class MainActivity : Activity
     private void ApplyListTopInset()
     {
         ReadCutoutGeometry(); // vc117 老板令：避让前先取准孔位，不拿旧几何算胶囊底缘
+        bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         int top = UiScale.Px(12);
+        bool insetsReady = false;
         if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } insets)
         {
+            insetsReady = true;
             int cutout = insets.GetInsets(WindowInsets.Type.DisplayCutout()).Top;
             int status = insets.GetInsets(WindowInsets.Type.StatusBars()).Top;
-            // 胶囊显示区底缘：孔底 + 半个胶囊高（胶囊垂直居中包孔）+ 呼吸边；无孔信息退回状态栏口径。
-            // vc117 令13（2026-11-28 老板拍板）：无孔兜底再吃胶囊自身高度（顶距 24+半高），状态胶囊
-            // 不再压进页头 ⟳/✕ 按钮——此前 status=0 时页头只让 20dp，胶囊正好叠上按钮。
-            int pillBottom = _cutoutHoleW > 0
-                ? Math.Max(cutout, _cutoutHoleCenterY + UiScale.Px(24))
-                : Math.Max(Math.Max(cutout, status), UiScale.Px(24) + UiScale.Px(28));
-            top = Math.Max(top, pillBottom + UiScale.Px(8));
+            if (landscape)
+            {
+                // vc124 老板令（2026-11-28 真机「横屏列表页跑哪儿去了」）：横屏胶囊挂左上角（令6），
+                // 不包顶孔——孔在左侧中部，孔心纵坐标≈半屏高，按竖屏包孔口径算顶距会把页头压到屏幕中间。
+                // 横屏只让安全区顶距（挖孔/状态栏上沿+8dp 呼吸边），提示胶囊短暂盖页头左上与播放页同口径
+                top = Math.Max(top, Math.Max(cutout, status) + UiScale.Px(8));
+            }
+            else
+            {
+                // 竖屏：胶囊显示区底缘=孔底 + 半个胶囊高（胶囊垂直居中包孔）+ 呼吸边；无孔信息退回状态栏口径。
+                // vc117 令13（2026-11-28 老板拍板）：无孔兜底再吃胶囊自身高度（顶距 24+半高），状态胶囊
+                // 不再压进页头 ⟳/✕ 按钮——此前 status=0 时页头只让 20dp，胶囊正好叠上按钮。
+                int pillBottom = _cutoutHoleW > 0
+                    ? Math.Max(cutout, _cutoutHoleCenterY + UiScale.Px(24))
+                    : Math.Max(Math.Max(cutout, status), UiScale.Px(24) + UiScale.Px(28));
+                top = Math.Max(top, pillBottom + UiScale.Px(8));
+            }
+        }
+        if (!insetsReady)
+        {
+            // vc124 老板令（2026-11-28 真机「首屏标题贴边被盖」）：首帧 RootWindowInsets 未就绪
+            // 不再只让 12dp 裸贴顶边——走无孔兜底口径（胶囊区 24+28dp+8dp 呼吸边），与重开位置一致；
+            // 并挂一次性附型回调：窗口附型 inset 晚到即按真值回正，首屏/重开不再两副面孔
+            top = UiScale.Px(24) + UiScale.Px(28) + UiScale.Px(8);
+            if (!_listTopInsetAttachHooked)
+            {
+                _listTopInsetAttachHooked = true;
+                _listPage.AddOnAttachStateChangeListener(new ListTopInsetReinset(this));
+            }
         }
         _listPage.SetPadding(0, top, 0, 0);
+    }
+
+    /// <summary>vc124：列表页附型后重算顶部避让（首帧 inset 未就绪的回正钩子，一次性）。</summary>
+    private bool _listTopInsetAttachHooked;
+
+    private sealed class ListTopInsetReinset : Java.Lang.Object, View.IOnAttachStateChangeListener
+    {
+        private readonly MainActivity _act;
+        public ListTopInsetReinset(MainActivity act) { _act = act; }
+        public void OnViewAttachedToWindow(View v) => _act.ApplyListTopInset();
+        public void OnViewDetachedFromWindow(View v) { }
     }
 
     /// <summary>vc116⑬ 子页面顶部安全区避让：挖孔/状态栏高度 + 8dp 呼吸边，与列表页同口径——
@@ -2314,8 +2440,11 @@ public partial class MainActivity : Activity
 
     /// <summary>vc121 同类排查收口（老板 2026-11-28 05:45 令「同类问题全部进清单」）：贴底面板底部内距的
     /// 圆角让位（px）——同控制条口径：让位=底部圆角半径−16dp，半径≤16dp 时为 0。
+    /// vc124 老板令（2026-11-28 真机「横屏关闭按钮下面留白太多」「边距都统一」）：让位封顶 24dp——
+    /// 系统圆角半径是物理值不随横屏变小，横屏面板矮、叠加后留白过大；封顶后横竖屏同口径，
+    /// 关闭行居中且两端有 24dp+ 边距，38dp 底距远在弧区之上，不会被削角。
     /// 设置/诊断/统计/关于/许可/进阶调优/列表页统一走此口径，底部关闭行不再落进系统圆角弧区被削角。</summary>
-    internal int BottomCornerClearPx() => Math.Max(0, BottomCornerRadiusPx() - UiScale.Px(16));
+    internal int BottomCornerClearPx() => Math.Max(0, Math.Min(BottomCornerRadiusPx() - UiScale.Px(16), UiScale.Px(24)));
 
     /// <summary>vc117 令19/20（2026-11-28 老板拍板）：底部圆角安全边（px）——API 31+ 实时读系统圆角几何
     /// （四角半径+圆心坐标），取底部两角半径最大值 + 8dp 间距；拿不到走 24dp 兜底。
@@ -2480,6 +2609,15 @@ public partial class MainActivity : Activity
                 _cutoutHoleCenterX = r.CenterX();
                 _cutoutHoleCenterY = r.CenterY();
             }
+            else if (cutout is { } c && c.SafeInsetTop > 0)
+            {
+                // vc124 老板令（真机「胶囊从来没包住孔」实锤）：部分机型不报孔位矩形（瀑布屏必不报，
+                // 部分挖孔机也不报，官方文档明确瀑布切口无边界矩形）——按居中挖孔推孔心：
+                // X=屏宽/2，Y=挖孔带高度一半（安全顶距≈孔带底缘）。孔宽未知记 0，
+                // 胶囊中段不留空档、整条盖住孔，孔仍在胶囊正中。
+                _cutoutHoleCenterX = Resources!.DisplayMetrics!.WidthPixels / 2;
+                _cutoutHoleCenterY = c.SafeInsetTop / 2;
+            }
         }
         catch { }
     }
@@ -2522,7 +2660,7 @@ public partial class MainActivity : Activity
             _toast.TranslationY = 0;
             onPositioned?.Invoke();
         }
-        else if (_cutoutHoleW > 0)
+        else if (_cutoutHoleCenterY > 0) // vc124：兜底几何（无孔位矩形时按安全区推孔心）同样走包孔分支
         {
             _toast.Orientation = Orientation.Horizontal; // 竖屏回横排包孔
             _toast.SetGravity(GravityFlags.CenterVertical);
@@ -2555,8 +2693,10 @@ public partial class MainActivity : Activity
                             // 孔贴顶时胶囊不出屏、文字不被裁
                             _toast.TranslationX = _cutoutHoleCenterX - pw2 / 2f;
                             float ty = _cutoutHoleCenterY - ph2 / 2f;
-                            int safeTop = SafeTopInset(0);
-                            if (ty < safeTop) ty = safeTop;
+                            // vc124 老板令（真机「胶囊从来没包住孔」实锤）：垂直钳制从 safeTop 改 0——
+                            // 孔心在状态栏带内（safeTop 之上），钳到 safeTop 等于把整条胶囊压到孔下方，
+                            // 永远包不住孔；胶囊高≤2×孔心距时本就不触发钳制，超高时贴顶已是最优
+                            if (ty < 0) ty = 0;
                             _toast.TranslationY = ty;
                         }
                         onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
@@ -2592,6 +2732,13 @@ public partial class MainActivity : Activity
     {
         _toastLeft.Text = text;
         _toast.Background = InkTranslucency.PillBackground(this); // vc116：全透明+胶囊描边（界面元素统一皮）
+        // vc124 老板令（2026-11-28 真机「两个胶囊重叠了」）：空态胶囊与提示胶囊都按包孔定位，同屏必叠——
+        // 提示胶囊亮相前空态胶囊临时让位（隐形不撤账），提示胶囊收起后失败态仍在即原位回场。
+        if (_emptyPill.Visibility == ViewStates.Visible)
+        {
+            _emptyPill.Visibility = ViewStates.Invisible;
+            _emptyPillDeferredByToast = true;
+        }
         // vc117 老板令（2026-11-28）：避让定位不许闪烁——要么不出现，出现就在终位。
         // 先隐形定位，竖屏包孔在 Post 对齐后、其余定位即终位，落定才亮相。
         _toast.Visibility = ViewStates.Invisible;
@@ -2606,7 +2753,7 @@ public partial class MainActivity : Activity
     {
         HideControlBar(); // vc115 A1：失败横幅与控制条互斥，横幅出场先收控制条
         ReadCutoutGeometry(); // vc117 老板令：亮相前先取准孔位，不拿上次亮条留的旧几何错位
-        _emptyState.TextFormatted = BuildEmptyStateText();
+        SetEmptyPillText();
         // 长播无源退级提示（老板 2026-11-17 拍板，归文案项一并落）：空态满 5 分钟起如实报已等
         // 时长并建议检查网络——自愈慢轮+重探在后台自动复活，不用用户盯屏干等；离开空态即停表撤字。
         // vc122 审查修（P2）：记账+起拍提到分支前——原竖屏包孔分支提前 return 跳过这两行，
@@ -2614,9 +2761,9 @@ public partial class MainActivity : Activity
         _emptyStateAtMs = System.Environment.TickCount64;
         _main.RemoveCallbacks(_emptyHintTick); // 重复亮相不叠拍
         _main.PostDelayed(_emptyHintTick, 30_000);
-        // vc117 令4/5：胶囊挂位——竖屏顶部挖孔区居中（孔下 8dp），横屏左侧挖孔区文字靠左往下换行
+        // vc117 令4/5：胶囊挂位——竖屏包孔居中，横屏左侧挖孔区文字靠左往下换行
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
-        var lp = _emptyState.LayoutParameters as FrameLayout.LayoutParams;
+        var lp = _emptyPill.LayoutParameters as FrameLayout.LayoutParams;
         if (lp is not null)
         {
             if (landscape)
@@ -2624,57 +2771,94 @@ public partial class MainActivity : Activity
                 lp.Gravity = GravityFlags.Top | GravityFlags.Left;
                 lp.LeftMargin = UiScale.Px(16);
                 lp.TopMargin = UiScale.Px(12);
-                _emptyState.SetMaxWidth(UiScale.Px(220)); // 横屏窄栏，逼文字往下换行
+                // vc124 老板令（真机横屏窄竖条实锤）：竖屏包孔分支 Post 里设过 TranslationX/Y，
+                // 转横屏残留旧值把胶囊拖出屏——横屏分支必须清零回原位；宽度改屏宽比例，
+                // 原 Px(220) 在低缩放档实算过窄，逼出「窄竖条」病
+                _emptyPill.TranslationX = 0;
+                _emptyPill.TranslationY = 0;
+                _emptyPill.Orientation = Orientation.Vertical; // 横屏竖排：状态行上、链接行下
+                _emptyPill.SetGravity(GravityFlags.Top | GravityFlags.Left);
+                _emptyGap.LayoutParameters = new LinearLayout.LayoutParams(0, 0); // 竖排无中段空档
+                ((LinearLayout.LayoutParams)_emptyBalL.LayoutParameters!).Width = 0;
+                ((LinearLayout.LayoutParams)_emptyBalR.LayoutParameters!).Width = 0;
+                _emptyLeft.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.45f)); // 横屏窄栏，逼文字往下换行
+                _emptyRight.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.45f));
             }
             else
             {
                 // vc120 老板令（2026-11-28「所有胶囊必须包裹住孔 并保证孔在最中间」）：空态胶囊与提示胶囊同一套
-                // 规矩——包孔居中（水平对孔心、垂直对孔心）+ 安全钳制；原「挂孔下方 24dp」口径退场
+                // 规矩——包孔居中（水平对孔心、垂直对孔心）+ 平衡占位 + 钳制；原「挂孔下方 24dp」口径退场
+                _emptyPill.Orientation = Orientation.Horizontal;
+                _emptyPill.SetGravity(GravityFlags.CenterVertical);
+                _emptyGap.LayoutParameters = new LinearLayout.LayoutParams(_cutoutHoleW, 1);
                 lp.Gravity = GravityFlags.Top | GravityFlags.Left;
                 lp.LeftMargin = 0;
                 lp.TopMargin = 0;
-                _emptyState.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.86f));
-                _emptyState.LayoutParameters = lp; // 先落参数再 Post 测量
-                _emptyState.Post(() =>
+                _emptyLeft.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.42f));
+                _emptyRight.SetMaxWidth((int)(Resources.DisplayMetrics!.WidthPixels * 0.42f));
+                _emptyPill.LayoutParameters = lp; // 先落参数再 Post 测量
+                _emptyPill.Post(() =>
                 {
-                    int w = _emptyState.Width, h = _emptyState.Height;
+                    int w = _emptyPill.Width, h = _emptyPill.Height;
                     if (w > 0)
                     {
-                        // vc122 审查修（轻微同类）：包孔居中后加左右钳制——孔偏侧时胶囊不出屏
-                        float tx = _cutoutHoleCenterX - w / 2f;
-                        int screenW = Resources.DisplayMetrics!.WidthPixels;
-                        if (tx < 0) tx = 0;
-                        if (tx + w > screenW) tx = screenW - w;
-                        _emptyState.TranslationX = tx;
-                        float ty = _cutoutHoleCenterY - h / 2f;
-                        int safeTop = SafeTopInset(0);
-                        if (ty < safeTop) ty = safeTop;
-                        _emptyState.TranslationY = ty;
+                        // vc121 包孔扶正同款：按左右两段文字宽度差补平衡占位，孔两侧总宽相等 → 孔永远居中
+                        int leftW = _emptyLeft.Visibility == ViewStates.Gone ? 0 : _emptyLeft.Width;
+                        int rightW = _emptyRight.Visibility == ViewStates.Gone ? 0 : _emptyRight.Width;
+                        int diff = leftW - rightW;
+                        ((LinearLayout.LayoutParams)_emptyBalR.LayoutParameters!).Width = diff > 0 ? diff : 0;
+                        ((LinearLayout.LayoutParams)_emptyBalL.LayoutParameters!).Width = diff < 0 ? -diff : 0;
+                        _emptyBalR.RequestLayout();
+                        _emptyPill.Post(() =>
+                        {
+                            int w2 = _emptyPill.Width, h2 = _emptyPill.Height;
+                            if (w2 > 0)
+                            {
+                                // 包孔居中 + 钳制。vc124 老板令（真机「胶囊从来没包住孔」实锤）：
+                                // 垂直钳制从 safeTop 改 0——孔心在状态栏带内（safeTop 之上），
+                                // 钳到 safeTop 等于把整条胶囊压到孔下方，永远包不住孔；
+                                // 胶囊高≤2×孔心距时本就不触发钳制，超高时贴顶已是最优
+                                float tx = _cutoutHoleCenterX - w2 / 2f;
+                                int screenW = Resources.DisplayMetrics!.WidthPixels;
+                                if (tx < 0) tx = 0;
+                                if (tx + w2 > screenW) tx = screenW - w2;
+                                _emptyPill.TranslationX = tx;
+                                float ty = _cutoutHoleCenterY - h2 / 2f;
+                                if (ty < 0) ty = 0;
+                                _emptyPill.TranslationY = ty;
+                            }
+                            _emptyPill.Visibility = ViewStates.Visible; // 终位落定再亮相
+                            UpdateEmptyPillSuppression(); // vc122 审查修：亮相后若浮层在位即让位（失败态可能在面板开着时到来）
+                        });
                     }
-                    _emptyState.Visibility = ViewStates.Visible; // 终位落定再亮相
-                    UpdateEmptyPillSuppression(); // vc122 审查修：亮相后若浮层在位即让位（失败态可能在面板开着时到来）
+                    else
+                    {
+                        _emptyPill.Visibility = ViewStates.Visible;
+                        UpdateEmptyPillSuppression();
+                    }
                 });
                 return; // 落位后由 Post 亮相
             }
-            _emptyState.LayoutParameters = lp;
+            _emptyPill.LayoutParameters = lp;
         }
-        _emptyState.Visibility = ViewStates.Visible;
+        _emptyPill.Visibility = ViewStates.Visible;
         UpdateEmptyPillSuppression(); // vc122 审查修：同上，横屏分支同口径
     }
 
-    /// <summary>失败终态文案装配单点（vc113 原型对照令 v31 retry-tag）。
-    /// vc117 令4 文案精炼（2026-11-28 老板拍板）：「信号中断 · 自动重试中（X/6）· 立即重试 · 打开列表」，
-    /// 重试次数读会话自愈账（PlaybackSession.SelfHealAttempts，封顶 6）；extra=退级提示附加行。</summary>
-    private SpannableStringBuilder BuildEmptyStateText(string? extra = null)
+    /// <summary>空态胶囊文案装配单点（vc124 三段式重构）：左段=状态行（信号中断 · 自动重试中（X/6），
+    /// extra=退级提示附加行进第二行），右段=可点链接行（立即重试 · 打开列表）。</summary>
+    private void SetEmptyPillText(string? extra = null)
     {
         var session = _manager.Current;
         int attempts = session?.SelfHealAttempts ?? 0;
-        var ssb = new SpannableStringBuilder($"信号中断 · 自动重试中（{attempts}/{PlaybackSession.SelfHealMaxAttempts}）\n");
-        AppendEmptyLink(ssb, "立即重试", RetryFromEmptyState);
-        ssb.Append(" · ");
-        AppendEmptyLink(ssb, "打开列表", () => { HideEmptyState(); ShowList(); });
-        if (!string.IsNullOrEmpty(extra)) ssb.Append($"\n{extra}");
-        return ssb;
+        _emptyLeft.Text = $"信号中断 · 自动重试中（{attempts}/{PlaybackSession.SelfHealMaxAttempts}）"
+            + (string.IsNullOrEmpty(extra) ? "" : $"\n{extra}");
+        var right = new SpannableStringBuilder();
+        AppendEmptyLink(right, "立即重试", RetryFromEmptyState);
+        right.Append(" · ");
+        AppendEmptyLink(right, "打开列表", () => { HideEmptyState(); ShowList(); });
+        _emptyRight.TextFormatted = right;
+        _emptyRight.Visibility = ViewStates.Visible;
     }
 
     /// <summary>空态链接段装配（原型 azure 蓝 #5E9EDE，无下划线；点击走既有重试/呼列表路径）。</summary>
@@ -2716,8 +2900,8 @@ public partial class MainActivity : Activity
 
     private void HideEmptyState()
     {
-        if (_emptyState.Visibility != ViewStates.Visible) { _emptyPillSuppressed = false; return; }
-        _emptyState.Visibility = ViewStates.Invisible;
+        if (_emptyPill.Visibility != ViewStates.Visible) { _emptyPillSuppressed = false; return; }
+        _emptyPill.Visibility = ViewStates.Invisible;
         _main.RemoveCallbacks(_emptyHintTick);
         _emptyPillSuppressed = false; // vc122 审查修：状态离开失败态即清让位账，防陈旧恢复
     }
@@ -3051,7 +3235,9 @@ public partial class MainActivity : Activity
             h.Name.Typeface = isCur ? Typeface.DefaultBold! : Typeface.Default!; // 复用件必须显式回置，防上一行粗体残留
             // vc115 D2：当前台改 deep #3D6E9E 描边（原型 .chan-row.current），去棕色 Accent 填充。
             // vc117 令6：描边内收与行内容同边线；vc121 老板拍板方案A（2026-11-28 真机「框线盖到台标」）：
-            // 描边盒内缩改 4dp——线画在台标（8dp 起笔）外侧留 4dp 空隙，行内容位置一概不动
+            // 描边盒内缩改 4dp——vc124 老板令（2026-11-28 真机「框线还是压台标」实锤：低缩放档 4dp≈2px，
+            // 描边与台标视觉压线）内缩 4dp 退场，改 0 内缩——描边画在列表 16dp 内距边线上，
+            // 与台标（24dp 边线起笔）拉开 8dp 实距，行内容位置一概不动
             if (isCur)
             {
                 var curBg = new Android.Graphics.Drawables.GradientDrawable();
@@ -3059,7 +3245,7 @@ public partial class MainActivity : Activity
                 curBg.SetColor(Color.Transparent);
                 curBg.SetStroke(UiScale.Px(1), Color.ParseColor("#3D6E9E"));
                 curBg.SetCornerRadius(UiScale.Px(12));
-                h.Line.Background = new Android.Graphics.Drawables.InsetDrawable(curBg, UiScale.Px(4), 0, UiScale.Px(4), 0);
+                h.Line.Background = curBg;
             }
             else
             {

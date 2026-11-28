@@ -33,6 +33,8 @@ public partial class MainActivity
     private TextView? _cbNowTime;  // 控制条行2：「· 画面时刻：HH:mm:ss」（完整不截，vc115）
     private TextView? _cbAuxWater; // 控制条行3：「实时水位：X秒」（完整不截，vc115）
     private TextView? _cbAuxNext;  // 控制条行3：「· 接下来：…」（占余宽省略，vc115）
+    private LinearLayout? _cbBtnLeft;  // vc124：按钮行左组（圆角让位亮条时重算）
+    private LinearLayout? _cbBtnRight; // vc124：按钮行右组（同上）
     private bool _controlBarShown;
     private Java.Lang.Runnable? _controlBarHide;
     private GestureDetector? _gesture;
@@ -92,7 +94,8 @@ public partial class MainActivity
     private FrameLayout BuildHudPanel(HudIconView.IconKind kind)
     {
         var panel = new FrameLayout(this);
-        panel.SetBackgroundColor(InkTranslucency.PanelColor(this)); // vc120 底色统一令：深档退场，全应用一档
+        // vc124 老板令（2026-11-28 真机「黑底还加方块底干啥」）：面板底色退场——播放页本就是黑底，
+        // 方块底是画蛇添足；只留图标+竖条悬浮，触摸消费不变
         panel.Clickable = true; // 消费触摸，不透给切台手势
 
         // 竖排：图标在上、竖条在下（普通播放器通行样式，无文字）
@@ -109,8 +112,10 @@ public partial class MainActivity
 
         var track = new FrameLayout(this);
         var trackBg = new GradientDrawable();
+        // vc124 老板令（2026-11-28 真机「亮度条在哪儿」）：轨道 70 透明度在黑底上几乎隐形——
+        // 提到 150，黑底上清晰见轨；填充仍用亮白，比例一眼可读
         int trackArgb = new Color(Color.ParseColor(InkTranslucency.TextSecondary)).ToArgb();
-        trackBg.SetColor(Color.Argb(70, (trackArgb >> 16) & 0xFF, (trackArgb >> 8) & 0xFF, trackArgb & 0xFF));
+        trackBg.SetColor(Color.Argb(150, (trackArgb >> 16) & 0xFF, (trackArgb >> 8) & 0xFF, trackArgb & 0xFF));
         trackBg.SetCornerRadius(UiScale.Px(5));
         track.Background = trackBg;
         track.ClipToOutline = true; // vc121：裁掉 fill 溢出轨道圆角弧线的 1-2px
@@ -375,7 +380,11 @@ public partial class MainActivity
         // vc110：音量按钮删除后竖屏 6 钮单行放得下，两行拆分口径退场
         // vc121 老板拍板方案A（2026-11-28 真机「按钮被圆角覆盖」）：仅按钮行两端让出圆角弧区——
         // 让位=底部圆角半径-条内距 16dp（半径≤16dp 时为 0），文字三行位置不动，弧线照旧贴屏幕角
-        int cornerClear = Math.Max(0, BottomCornerRadiusPx() - UiScale.Px(16));
+        // vc124 老板令（2026-11-28 真机「有时缩有时不缩」实锤）：开机首建时 RootWindowInsets 圆角几何
+        // 尚未就绪，读到兜底值=不缩；转屏重建才读到真值。改两端组挂字段，亮条时重算（见 ApplyControlBarCornerClear）
+        _cbBtnLeft = left;
+        _cbBtnRight = right;
+        int cornerClear = BottomCornerClearPx(); // vc124：统一走封顶口径（横屏留白收口），与设置/列表页同源
         btnRow.AddView(left, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = cornerClear });
         var space = new View(this);
         btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
@@ -403,6 +412,8 @@ public partial class MainActivity
         _cbNowTime = null;
         _cbAuxWater = null;
         _cbAuxNext = null;
+        _cbBtnLeft = null;
+        _cbBtnRight = null;
         BuildControlBar();
         if (shown) ShowControlBar();
     }
@@ -498,7 +509,7 @@ public partial class MainActivity
     private void ToggleControlBar()
     {
         if (_listOpen || (_settingsPanelOpen)) return; // 面板优先：面板开着控制条不出
-        if (_emptyState is not null && _emptyState.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
+        if (_emptyPill is not null && _emptyPill.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
         if (_controlBarShown) HideControlBar();
         else ShowControlBar();
     }
@@ -506,11 +517,32 @@ public partial class MainActivity
     private void ShowControlBar()
     {
         if (_controlBar is null) return;
-        if (_emptyState is not null && _emptyState.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
+        if (_emptyPill is not null && _emptyPill.Visibility == ViewStates.Visible) return; // vc115 A1：失败横幅优先
+        ApplyControlBarCornerClear(); // vc124 老板令：亮条即重算圆角让位（首建时 insets 未就绪的兜底根治）
         RefreshControlBarInfo();
         _controlBar.Visibility = ViewStates.Visible;
         _controlBarShown = true;
         ScheduleControlBarHide();
+    }
+
+    /// <summary>vc124 老板令（2026-11-28 真机「有时往里缩有时不缩」）：控制条按钮行两端圆角让位重算——
+    /// 首建时 RootWindowInsets 圆角几何未就绪读到兜底值，转屏重建才读真值，故「切一次横屏回来就好了」。
+    /// 亮条时即读即算 + Post 一拍补算（insets 晚到场景），两端组边距与条底圆角背景一并刷新。</summary>
+    private void ApplyControlBarCornerClear()
+    {
+        if (_controlBar is null) return;
+        int clear = BottomCornerClearPx(); // vc124：统一走封顶口径（横屏留白收口）
+        if (_cbBtnLeft is { } l && l.LayoutParameters is LinearLayout.LayoutParams ll) ll.LeftMargin = clear;
+        if (_cbBtnRight is { } r && r.LayoutParameters is LinearLayout.LayoutParams rl) rl.RightMargin = clear;
+        _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
+        _main.Post(() =>
+        {
+            if (_controlBar is null) return;
+            int clear2 = BottomCornerClearPx(); // vc124：统一走封顶口径（横屏留白收口）
+            if (_cbBtnLeft is { } l2 && l2.LayoutParameters is LinearLayout.LayoutParams ll2) ll2.LeftMargin = clear2;
+            if (_cbBtnRight is { } r2 && r2.LayoutParameters is LinearLayout.LayoutParams rl2) rl2.RightMargin = clear2;
+            _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
+        });
     }
 
     private void HideControlBar()
@@ -1040,37 +1072,39 @@ public partial class MainActivity
         private void DrawIcon(Canvas canvas, float side)
         {
             var context = Context!;
-            var color = InkTranslucency.TextPrimary(context);
-            _stroke.Color = color;
+            _stroke.Color = InkTranslucency.TextPrimary(context);
             _stroke.StrokeWidth = side * 0.09f;
             float w = side, h = side;
-            // 锁体：圆角矩形描边（vc116⑥ 放大到约 56%×42% side 治偏小；线条风不变）
-            float bw = w * 0.56f, bh = h * 0.42f;
-            float bx = w * 0.42f - bw / 2, by = h * 0.50f;
-            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, bw * 0.2f, bw * 0.2f, _stroke);
-            // 锁梁：拱形。vc116⑥ 解锁态=锁梁整体上提 lift=r*0.5——左腿长扣到锁体上沿、右腿短悬空不进体，
-            // 根治旧画法右腿上翘线与拱弧叠成「0」形散块；锁定态双腿扣到体上
-            float r = bw * 0.30f;
-            float scx = bx + bw / 2, scy = by;
-            if (_kind == IconKind.Unlocked)
+            // vc124 锁图标重绘（老板多轮「绘制有问题」收口）：标准挂锁几何——
+            // 锁梁=正圆半拱，拱弧端点精确落在锁梁基线高度，不再靠 1.7r/0.3r 拉伸椭圆凑位；
+            // 锁定态拱弧两端点直接落在锁体上沿（标准挂锁，无另画双腿）；
+            // 解锁态整梁抬升 g：左腿落到锁体上沿、右腿留半截悬空，开口一目了然，无错位短茬
+            float bw = w * 0.58f, bh = h * 0.40f;
+            float r = bw * 0.32f;
+            float bx = (w - bw) / 2f;
+            float g = h * 0.14f; // 解锁抬升量
+            bool open = _kind == IconKind.Unlocked;
+            float top = (h - (open ? g + r + bh : r + bh)) / 2f; // 两种状态各自垂直居中
+            float by = top + (open ? g + r : r); // 锁体上沿
+            float ay = by - (open ? g : 0f);     // 锁梁基线（拱弧端点所在高度）
+            canvas.DrawRoundRect(bx, by, bx + bw, by + bh, bw * 0.18f, bw * 0.18f, _stroke);
+            float scx = bx + bw / 2f;
+            canvas.DrawArc(scx - r, ay - r, scx + r, ay + r, 180f, 180f, false, _stroke);
+            if (open)
             {
-                float lift = r * 0.5f; // 锁梁整体上提
-                float ay = scy - lift; // 抬升后的梁基线（拱弧水平径所在高度）
-                canvas.DrawArc(scx - r, ay - r * 1.7f, scx + r, ay + r * 0.3f, 180f, 180f, false, _stroke);
-                canvas.DrawLine(scx - r, ay - r * 0.7f, scx - r, scy, _stroke); // 左腿长：扣到锁体上沿
-                canvas.DrawLine(scx + r, ay - r * 0.7f, scx + r, ay - r * 0.2f, _stroke); // 右腿短：悬空不进体=开
+                canvas.DrawLine(scx - r, ay, scx - r, by, _stroke); // 左腿：落到锁体上沿
+                canvas.DrawLine(scx + r, ay, scx + r, ay + g * 0.5f, _stroke); // 右腿：半截悬空=开
             }
-            else
+            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）——小屏改细一档描边，
+            // 0.09 side 粗线在小矩形上会糊成实心块（vc124 预览实测）
+            if (_kind == IconKind.LockLandscape || _kind == IconKind.LockPortrait)
             {
-                canvas.DrawArc(scx - r, scy - r * 1.7f, scx + r, scy + r * 0.3f, 180f, 180f, false, _stroke);
-                canvas.DrawLine(scx - r, scy - r * 0.7f, scx - r, scy, _stroke);
-                canvas.DrawLine(scx + r, scy - r * 0.7f, scx + r, scy, _stroke);
+                _stroke.StrokeWidth = side * 0.055f;
+                if (_kind == IconKind.LockLandscape)
+                    canvas.DrawRoundRect(w * 0.76f, h * 0.42f, w * 0.96f, h * 0.60f, 3f, 3f, _stroke);
+                else
+                    canvas.DrawRoundRect(w * 0.78f, h * 0.34f, w * 0.96f, h * 0.66f, 3f, 3f, _stroke);
             }
-            // 方向指示：锁定时锁体右侧的小屏（横=宽扁、竖=窄高）——vc112 同改描边线条风
-            if (_kind == IconKind.LockLandscape)
-                canvas.DrawRoundRect(w * 0.76f, h * 0.44f, w * 0.94f, h * 0.62f, 2f, 2f, _stroke);
-            else if (_kind == IconKind.LockPortrait)
-                canvas.DrawRoundRect(w * 0.80f, h * 0.36f, w * 0.94f, h * 0.64f, 2f, 2f, _stroke);
         }
     }
 }

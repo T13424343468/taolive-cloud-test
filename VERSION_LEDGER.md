@@ -243,3 +243,12 @@
 - 刀④贴边自滚失效（MainActivity.cs L2540 PumpEdgeScroll：SmoothScrollBy(_dragScrollDx, 0) → SmoothScrollBy(0, _dragScrollDx)）：ListView 纵向滚动只认 dy，原 dx 恒 0 无效
 - 统一验证（刀⑧落码后按改动自查令重跑）：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（0 失败）；badging 亲验 147/1.0.37；apksigner verify 过
 - 交付包：dist-phone/TaoLive-1.0.37-vc147/（apk sha256 25aec036…53cdb）+ 同名 zip，文件卡片已发
+
+## vc149 / 1.0（2026-11-28 深夜 老板令「赶紧出包 直接出定版 外部从1.0开始重新算」——回前台重接+稳闸重判+埋点补齐，定版口径）
+- 版本锚：csproj 149/1.0 = manifest 149/1.0 = badging 149/1.0（三处对账一致，亲验）；外部版本名自本轮起重置为 1.0 重新计
+- 回前台重接（真机实锤「切后台 30 秒回前台出画卡住、水位 0 不回爬」，老板拍板修法）：暂停 ≤10 秒原地续播（原口径）；超 10 秒直播窗口已滚走，走既有重接路径重放当前线路回直播边缘——PlaybackSession.ResumeAfterBackground + 壳层 OnPause 记暂停时刻/OnResume 判定
+- 关联影响自查修正（老板令「把每种机制交叉的关联影响全部盘清楚」）：①状态机 Playing→Buffering 非法会抛异常，改走合法的 Playing→Reconnecting+重连计时账兜底 ②六本账按新一轮起播口径清零重记（轻错误/限速/预防预算/微卡防振铃/补库存名额/卡流慢帧停滞）③纠正误判：秒泵后台照跑，稳闸账非冻结——暂停期内核读数是存量高位不代表供流活着
+- 回前台稳闸重判（老板拍板「后台可以放行，切回播放立马更新数据按真实情况判断」）：OnResume 撤后台闸后立即 UpdateWaterStable 一拍，真实读数定闸断或放行，不吃旧账
+- 重接埋点补齐（老板拍板「补」）：重接记起播耗时账+开始时刻随重接刷新，起播账记账条件放宽含重连态——回前台重接出画耗时诊断页可查
+- 统一验证：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（0 失败 0 跳过）；badging 亲验 149/1.0；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0-vc149/（apk sha256 5c15460b…227a）+ 同名 zip，文件卡片已发

@@ -809,12 +809,20 @@ public partial class MainActivity : Activity
         CrashNet.Record($"[生命周期] OnResume 回前台（{_manager?.Current?.CurrentChannel?.Name ?? "无会话"}）");
         PlaybackSession.BackgroundHold = false; // vc117 后台出声根治：回前台先撤冻结旗，自愈/换源恢复
         _isBackgrounded = false; // vc117：泵与静默重连同闸回前台撤
+        UpdateWaterStable(); // vc148（老板拍板 2026-11-28）：后台稳闸账冻结在切后台那拍，回前台立即用真实读数重判——该闸断闸断、该放行放行，不吃旧账
         StartKeepAlive(); // 老板令 #20：会话期长驻（起停相撞会触发系统违规闪退，v7 走查实锤），只在退出时撤
         // 切后台音画即停（2026-11-27 真机反馈第8条）：只恢复自己暂停的会话——用户手动暂停的不抢
         if (_pausedForBackground)
         {
             _pausedForBackground = false;
-            try { _manager?.Current?.ResumePlayback(); CrashNet.Record("[生命周期] 回前台恢复播放（切后台曾暂停）"); }
+            long pausedMs = _pausedAtMs is { } t0 ? System.Environment.TickCount64 - t0 : 0;
+            try
+            {
+                // vc148 回前台重接（2026-11-28 真机实锤）：暂停超 10 秒直播窗口已滚走，原地续播会卡死
+                // （水位 0 不回爬），改走既有重接路径回直播边缘；短暂停仍原地续播（原口径）。
+                _manager?.Current?.ResumeAfterBackground(pausedMs);
+                CrashNet.Record($"[生命周期] 回前台续播（后台暂停 {pausedMs / 1000}s，{(pausedMs > PlaybackSession.BackgroundResyncThresholdMs ? "重接直播边缘" : "原地续播")}）");
+            }
             catch (Exception ex) { CrashNet.Record($"[生命周期] 回前台恢复失败：{ex.Message}"); }
         }
     }
@@ -830,13 +838,14 @@ public partial class MainActivity : Activity
         var cur = _manager?.Current;
         if (cur is not null && (cur.State == PlaybackState.Playing || cur.State == PlaybackState.Buffering))
         {
-            try { cur.PausePlayback(); _pausedForBackground = true; CrashNet.Record("[生命周期] 切后台暂停音画（内核照常缓冲，vc112 含攒流期）"); }
+            try { cur.PausePlayback(); _pausedForBackground = true; _pausedAtMs = System.Environment.TickCount64; CrashNet.Record("[生命周期] 切后台暂停音画（内核照常缓冲，vc112 含攒流期）"); }
             catch (Exception ex) { CrashNet.Record($"[生命周期] 切后台暂停失败：{ex.Message}"); }
         }
         StartKeepAlive(); // 老板令 #20：切后台保活（已在跑则幂等跳过）
     }
 
     private bool _pausedForBackground; // 切后台由本类暂停（区别于用户手动暂停），回前台只恢复这种
+    private long? _pausedAtMs; // vc148：切后台暂停时刻（单调钟），回前台判暂停时长决定原地续播或重接
     private bool _isBackgrounded; // vc117 后台出声根治：后台冻结旗（OnPause 置/OnResume 撤），泵与静默重连同闸
 
     // —— 后台保活（老板令 2026-11-27 #20「切后台要保活+满水位+切回续播」）——————

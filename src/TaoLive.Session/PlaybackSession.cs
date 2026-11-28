@@ -321,7 +321,7 @@ public sealed class PlaybackSession
         // 起播打点（真机反馈批·埋点补充 2026-11-15）：起播/换台/换源指令到首帧的耗时账——
         // 覆盖正常换台与备源自救两条路径（换源后路径带换源次数），是白屏/换台慢排查的第一账；
         // 热备攒流会话同样落账（攒流到门槛线的真实时长可查）。
-        if (next == PlaybackState.Playing && fromState == PlaybackState.Buffering
+        if (next == PlaybackState.Playing && (fromState == PlaybackState.Buffering || fromState == PlaybackState.Reconnecting)
             && _bufferingSinceMs is { } startedMs)
         {
             var elapsedMs = _clock.NowMs - startedMs;
@@ -558,6 +558,41 @@ public sealed class PlaybackSession
     public void PausePlayback() => _player.Pause();
     /// <summary>恢复出声出画（vc68）：热备热切接管时调用，缓冲攒流不中断。</summary>
     public void ResumePlayback() => _player.Resume();
+
+    /// <summary>回前台续播阈值（vc148，2026-11-28 真机实锤「切后台 30 秒回前台出画卡住、水位 0 不回爬」）：
+    /// 后台暂停 ≤ 此阈值原地续播（原口径，存量够用）；超过则直播窗口已滚走，原地续播播放头落在
+    /// 滚出的位置——存量播完下一段已不存在，卡在缓冲且清单不再刷新，灌水器无账可灌（水位 0 根因）。</summary>
+    public const int BackgroundResyncThresholdMs = 10_000;
+
+    /// <summary>回前台续播（vc148）：暂停超阈值不原地续播，走既有重接路径重放当前线路——
+    /// 重接必然从直播边缘起播，灌水器随清单换代重灌，水位回爬。后台暂停非线路坏账，
+    /// 卡流/慢帧/停滞/防振铃账照起播口径清零重记，不污染质量账。</summary>
+    public void ResumeAfterBackground(long pausedMs)
+    {
+        if (pausedMs <= BackgroundResyncThresholdMs || _channel is null || _queue.Count == 0)
+        {
+            _player.Resume(); // 短暂停或无线路可重接：原地续播（原口径）
+            return;
+        }
+        SessionTrace.Emit($"[回前台] {DescribeChannel()} 后台暂停 {pausedMs / 1000}s>10s，直播窗口已滚走，重接回直播边缘（原地续播会卡死）");
+        _stallTimes.Clear();
+        _smoothnessTimes.Clear();
+        _videoStallTimes.Clear();
+        _lightErrorTimes.Clear(); // 自愈慢轮同口径：轻错误账重开，后台期旧错不拖累重接判死
+        _autoFailoverTimes.Clear(); // 自愈慢轮同口径：限速账重开，慢试不受旧窗拖累
+        _proactiveCount = 0; // vc67 口径：重接=新一轮起播，重给预防介入预算
+        _microlagSeekAtMs = null;
+        _silentRefetchDone = false;
+        // 状态机矩阵：Playing→Buffering 非法（会抛异常吃掉恢复），Playing→Reconnecting 合法——
+        // 重接期挂 Reconnecting 看门狗窗兜底，内核 Play 重放后按既有回调推进状态
+        Transition(PlaybackState.Reconnecting, "background resync");
+        _reconnectingSinceMs = _clock.NowMs;
+        _bufferingSinceMs = _clock.NowMs; // vc149：重接也记起播耗时账（老板拍板「补」），首帧出画见 [起播] 数
+        StartedAtUtc = _clock.UtcNow; // 重接=新一轮，开始时刻随重接刷新（墙钟仅展示）
+        MarkEndpointStarted();
+        _player.Play(new PlaybackParams(_channel, _queue[_endpointIndex], _preferLowLatency));
+        ReattachSurface();
+    }
 
     /// <summary>起播库存档透传（vc94 深水档，老板 2026-11-26 拍板）：热备攒流切 StartFull（接管即深水），
     /// 冷切回默认档。须在 ChangeChannel（→Play）之前调，内核起播装配按档生效。</summary>

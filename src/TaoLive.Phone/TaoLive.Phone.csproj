@@ -7,8 +7,8 @@
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ApplicationId>com.taolive.phone</ApplicationId>
-    <ApplicationVersion>147</ApplicationVersion>
-    <ApplicationDisplayVersion>1.0.37</ApplicationDisplayVersion>
+    <ApplicationVersion>149</ApplicationVersion>
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
     <AndroidApplication>true</AndroidApplication>
     <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
     <_ExtraTrimmerArgs Condition="'$(Configuration)' == 'Release'">--action copy System.Collections --action copy System.Collections.Concurrent --action copy System.Collections.NonGeneric --action copy System.Collections.Specialized --action copy System.ComponentModel.TypeConverter --action copy System.Diagnostics.DiagnosticSource --action copy System.Diagnostics.Process --action copy System.IO.FileSystem.DriveInfo --action copy System.Linq --action copy System.Net.Http --action copy System.Net.HttpListener --action copy System.Net.NameResolution --action copy System.Net.Primitives --action copy System.Net.Requests --action copy System.Net.Security --action copy System.Net.WebProxy --action copy System.Private.Uri --action copy System.Private.Xml.Linq --action copy System.Security.Claims --action copy System.Security.Cryptography --action copy System.Text.Encodings.Web --action copy System.Text.Json --action copy System.Text.RegularExpressions --action copy System.Threading.Channels --action copy System.Runtime.Numerics</_ExtraTrimmerArgs>

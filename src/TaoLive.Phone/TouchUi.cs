@@ -28,10 +28,9 @@ public partial class MainActivity
     private LinearLayout? _controlBar;
     private LockIconView? _lockBtn;
     private TextView? _cbTitle;    // 控制条行1：台名
-    private TextView? _cbNowName;  // 控制条行2：节目名（占余宽省略，vc115 拆段保读数）
+    private TextView? _cbNowName;  // 控制条行2：节目单整块（当前+接下来合并，vc131 老板令）
     private TextView? _cbNowTime;  // 控制条行2：「· 画面时刻：HH:mm:ss」（完整不截，vc115）
     private TextView? _cbAuxWater; // 控制条行3：「实时水位：X秒」（完整不截，vc115）
-    private TextView? _cbAuxNext;  // 控制条行3：「· 接下来：…」（占余宽，vc127 起最多两行：真机实锤单行截断「孔子上···」而上行大片空白，老板令内容要显完整）
     private LinearLayout? _cbBtnLeft;  // vc124：按钮行左组（圆角让位亮条时重算）
     private LinearLayout? _cbBtnRight; // vc124：按钮行右组（同上）
     private bool _controlBarShown;
@@ -326,31 +325,28 @@ public partial class MainActivity
 
         // 行1：频道名（占余宽、超长省略）+ 右侧读数区——vc128 老板令（2026-11-28 真机截图定稿）：
         // 「第一行左侧放频道名 右侧画面时刻 实时水位 显示完整」——读数段全部挂行1右侧，完整不截断
+        // vc131 老板令（「操作栏文字统一小字号」）：行1 全部回 Caption 小字号，Item 大字混用退场
         var infoRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         infoRow.SetGravity(GravityFlags.CenterVertical);
-        _cbTitle = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        _cbTitle = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
         infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
-        _cbNowTime = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
+        _cbNowTime = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
         _cbNowTime.SetPadding(UiScale.Dp(8), 0, 0, 0);
         infoRow.AddView(_cbNowTime);
-        // vc129 老板令（真机「节目单信息字号用原来的小字号」）：水位回 vc127 说明字号口径
         _cbAuxWater = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
         _cbAuxWater.SetPadding(UiScale.Dp(8), 0, 0, 0);
         infoRow.AddView(_cbAuxWater);
         _controlBar.AddView(infoRow);
 
-        // 行2（vc128 老板令）：节目单整行——当前播放 +「· 接下来：…」完整显示，允许自然换行不设上限
-        // （老板拍板「节目单显示完整」，多少行都显示；原行2 节目名省略截断口径退场）
-        // vc129 老板令：接下来回 vc127 说明字号口径（真机「节目单信息字号用原来的小字号」）
-        var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
-        _cbNowName = NewBarText(UiScale.Item, InkTranslucency.TextPrimary(this), bold: true);
-        _cbNowName.SetSingleLine(false); // 覆盖 NewBarText 单行口径：当前节目完整可换行
+        // 行2（vc131 老板令）：第二行起的中间整块区域都放节目单信息——当前+接下来合并为单块整行，
+        // 统一小字号（Caption）、左对齐自然换行不设上限；原「节目名 Item 大字 + 接下来 Caption 小字」
+        // 两段混排、视觉居中吊挂的口径退场（真机「第8集」「14:57 生命树第9集」居中吊着实锤）。
+        var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
+        _cbNowName = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this));
+        _cbNowName.SetSingleLine(false); // 覆盖 NewBarText 单行口径：节目单整块完整可换行
         _cbNowName.Ellipsize = null!;
-        nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
-        _cbAuxNext = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
-        _cbAuxNext.SetSingleLine(false); // 覆盖 NewBarText 单行口径：接下来完整可换行
-        _cbAuxNext.Ellipsize = null!;
-        nowRow.AddView(_cbAuxNext, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
+        _cbNowName.Gravity = GravityFlags.Top | GravityFlags.Left; // 左对齐换行
+        nowRow.AddView(_cbNowName, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
         _controlBar.AddView(nowRow);
 
         // 按钮行：两端分组（v21）——左组切台、右组功能；中间留白撑开
@@ -439,7 +435,6 @@ public partial class MainActivity
         _cbNowName = null;
         _cbNowTime = null;
         _cbAuxWater = null;
-        _cbAuxNext = null;
         _cbBtnLeft = null;
         _cbBtnRight = null;
         BuildControlBar();
@@ -450,22 +445,23 @@ public partial class MainActivity
     /// （换台与显条时同步；mini 无读数降级隐藏）。</summary>
     private void RefreshControlBarInfo()
     {
-        if (_cbTitle is null || _cbNowName is null || _cbNowTime is null || _cbAuxWater is null || _cbAuxNext is null) return;
+        if (_cbTitle is null || _cbNowName is null || _cbNowTime is null || _cbAuxWater is null) return;
         var ch = _channels.Count > 0 && _currentIndex >= 0 && _currentIndex < _channels.Count
             ? _channels[_currentIndex] : null;
         long buffered = BufferedMsNow() ?? 0;
         // v31 原型口径（vc115 拆段保读数）：节目名与「画面时刻」分段——节目名超长省略，读数段完整；
-        // 「实时水位：X秒」完整，「接下来」段超长省略；缺表降级只显画面时刻（v13 老板令）
+        // 「实时水位：X秒」完整；缺表降级只显画面时刻（v13 老板令）
         string clock = PictureClock(buffered);
         bool hasNow = _epgNowTitle is { } t && t.Length > 0;
         bool hasNext = _epgNextText is { } n && n.Length > 0;
         _cbTitle.Text = ch is null ? "TaoLive" : ch.Name;
-        _cbNowName.Text = hasNow ? _epgNowTitle! : "";
-        _cbNowName.Visibility = hasNow ? ViewStates.Visible : ViewStates.Gone;
+        // vc131 老板令：节目单整块——当前+接下来合并单块文本，左对齐换行（原两段分挂退场）
+        string epg = hasNow ? _epgNowTitle! : "";
+        if (hasNext) epg = (epg.Length > 0 ? epg + " " : "") + $"· 接下来：{_epgNextText}";
+        _cbNowName.Text = epg;
+        _cbNowName.Visibility = hasNow || hasNext ? ViewStates.Visible : ViewStates.Gone;
         _cbNowTime.Text = hasNow ? $"· 画面时刻：{clock}" : $"画面时刻：{clock}";
         _cbAuxWater.Text = $"实时水位：{buffered / 1000}秒";
-        _cbAuxNext.Text = hasNext ? $"· 接下来：{_epgNextText}" : "";
-        _cbAuxNext.Visibility = hasNext ? ViewStates.Visible : ViewStates.Gone;
     }
 
     /// <summary>换台（触屏滑动手势口径）：±1 环绕，走既有 PlayAt 链路（预检死台拦截、防抖全继承）。</summary>

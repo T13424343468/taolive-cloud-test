@@ -2671,28 +2671,58 @@ public partial class MainActivity : Activity
         if (lp is null) { onPositioned?.Invoke(); return; }
         if (landscape)
         {
-            // 令6 横屏：左侧挖孔区竖排——主文案在上、副文案在下，靠左对齐往下换行
+            // vc131 老板令（14:06/14:07）：横屏=竖放胶囊（竖长条）包孔——孔在左缘垂直居中，胶囊竖排：
+            // 上段文字→孔位空档→下段文字，文字从上往下换行，孔永远在胶囊竖向正中；原左上角挂放（未包孔）退场。
             _toast.Orientation = Orientation.Vertical;
             _toast.SetGravity(GravityFlags.Top | GravityFlags.Left);
-            _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 0); // 竖排无中段空档
-            ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = 0; // 横屏竖排占位归零
+            _toastGap.LayoutParameters = new LinearLayout.LayoutParams(1, Math.Max(1, _cutoutHoleW)); // 竖排中段空档高=孔径（孔上无字）
+            ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = 0; // 竖排占位走高度，宽度归零
             ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = 0;
-            int leftSafe = UiScale.Px(16), topSafe = UiScale.Px(12);
-            if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window!.DecorView!.RootWindowInsets is { } ins)
-            {
-                var cut = ins.GetInsets(WindowInsets.Type.DisplayCutout());
-                leftSafe = Math.Max(leftSafe, cut.Left + UiScale.Px(8));
-                topSafe = Math.Max(topSafe, cut.Top + UiScale.Px(8));
-            }
-            _toastLeft.SetMaxLines(3); // 横屏竖排给三行余量，靠左往下换行
-            // vc122 审查修（轻微）：横屏左挂加宽度钳制——长文案不出右屏沿（钳在文字上，胶囊随之收窄）
-            _toastLeft.SetMaxWidth(Resources.DisplayMetrics!.WidthPixels - leftSafe - UiScale.Px(16));
+            _toast.SetMinimumHeight(Math.Max(UiScale.Dp(44), _cutoutHoleW + UiScale.Dp(8))); // 包孔高度容差（vc126 同源口径转 90°）
+            _toast.SetMinimumWidth(Math.Max(UiScale.Dp(24), _cutoutHoleW)); // 孔带全宽兜底，孔必被完整包住
+            _toastLeft.SetMaxLines(6); // 松上限：真实容量由 LayoutToastTextAroundHole 按几何分行钳制
+            _toastRight.SetMaxLines(6);
+            // 文字限宽：竖长条口径——不出半屏、不超 100dp
+            int segW = Math.Max(UiScale.Px(60), Math.Min((int)(Resources.DisplayMetrics!.WidthPixels / 2f - UiScale.Dp(24)), UiScale.Dp(100)));
+            _toastLeft.SetMaxWidth(segW);
+            _toastRight.SetMaxWidth(segW);
             lp.Gravity = GravityFlags.Top | GravityFlags.Left;
-            lp.LeftMargin = leftSafe;
-            lp.TopMargin = topSafe;
-            _toast.TranslationX = 0;
-            _toast.TranslationY = 0;
-            onPositioned?.Invoke();
+            lp.LeftMargin = 0;
+            lp.TopMargin = 0;
+            _toast.Post(() =>
+            {
+                _toast.Measure(
+                    Android.Views.View.MeasureSpec.MakeMeasureSpec(Resources.DisplayMetrics!.WidthPixels, Android.Views.MeasureSpecMode.AtMost),
+                    Android.Views.View.MeasureSpec.MakeMeasureSpec(0, Android.Views.MeasureSpecMode.Unspecified));
+                int topW = _toastLeft.Visibility == ViewStates.Gone ? 0 : _toastLeft.Width;
+                int botW = _toastRight.Visibility == ViewStates.Gone ? 0 : _toastRight.Width;
+                int topH = _toastLeft.Visibility == ViewStates.Gone ? 0 : _toastLeft.Height;
+                int botH = _toastRight.Visibility == ViewStates.Gone ? 0 : _toastRight.Height;
+                if (topH <= 0 && botH <= 0) { onPositioned?.Invoke(); return; }
+                // 竖向平衡占位（vc121 同源口径转 90°）：上下两段文字高度差补占位——孔两侧总高相等，
+                // 孔永远落在胶囊竖向正中、孔上无字；占位改动后不赌布局帧，按已知量解析算终尺寸。
+                int diff = topH - botH;
+                ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Height = diff > 0 ? diff : 0;
+                ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Height = diff < 0 ? -diff : 0;
+                _toastBalL.RequestLayout();
+                _toastBalR.RequestLayout();
+                int pw = _toast.PaddingLeft + _toast.PaddingRight + Math.Max(topW, botW);
+                int ph = _toast.PaddingTop + _toast.PaddingBottom + Math.Max(topH, botH) * 2 + Math.Max(1, _cutoutHoleW);
+                ph = Math.Max(ph, _toast.MinimumHeight);
+                // 高度钳制（vc126 同源口径转 90°）：宁裁字不偏心——孔仍居竖向正中；
+                // vc131 真机实锤（竖屏同款顶弧被裁）：钳制后 ty≥8dp 恒成立
+                int maxPh = Math.Max(1, (_cutoutHoleCenterY - UiScale.Dp(8)) * 2);
+                if (ph > maxPh) { lp.Height = maxPh; ph = maxPh; }
+                else lp.Height = ViewGroup.LayoutParams.WrapContent; // 解除上一帧钳制，防陈旧高度裁字
+                _toast.LayoutParameters = lp;
+                float tx = _cutoutHoleCenterX - pw / 2f; // 孔横向尽量居中；孔贴左缘时钳 0，孔仍完整包住
+                if (tx < 0) tx = 0;
+                _toast.TranslationX = tx;
+                float ty = _cutoutHoleCenterY - ph / 2f;
+                if (ty < UiScale.Dp(8)) ty = UiScale.Dp(8); // 顶弧不贴屏上沿（vc131 真机实锤）
+                _toast.TranslationY = ty;
+                onPositioned?.Invoke(); // 终位落定再亮相，杜绝先现身后跳位
+            });
         }
         else if (_cutoutHoleCenterY > 0) // vc124：兜底几何（无孔位矩形时按安全区推孔心）同样走包孔分支
         {
@@ -2704,13 +2734,16 @@ public partial class MainActivity : Activity
             // （≥44dp，或孔宽+8dp），孔心即使偏几个 dp 孔仍被完整包住；文字限宽不出孔位。
             // vc127：容差改物理 dp 直读（Px 口径出裸像素，44 实为≈16dp，包不住高孔带）。
             _toast.SetMinimumHeight(Math.Max(UiScale.Dp(44), _cutoutHoleW + UiScale.Dp(8)));
+            _toast.SetMinimumWidth(0); // vc131：解除横屏竖排的最小宽钳制，防互切残留
             // vc126：竖屏长文案钳宽（横屏同款），文案再长也不顶出屏沿
             // vc128 老板令（「避开右侧状态栏」）：胶囊右边界=孔心+半宽，钳在右上角状态图标区之外——
             // 左段限宽收口（右边界≤屏宽−90dp），平衡占位保孔仍居中；容量不足由两行+缩字号兜底。
+            // vc131 真机实锤仍压状态栏：右段容量未扣胶囊内距与孔半径（见 LayoutToastTextAroundHole），
+            // 右段满容时胶囊右缘冲出屏沿；此处限宽同步收紧（下限降 24dp，不再顶掉状态让位钳制）。
             int statusSafeW = (int)(Resources.DisplayMetrics!.WidthPixels - UiScale.Dp(90)
                 - _cutoutHoleCenterX - UiScale.Dp(16) - _cutoutHoleW / 2f);
-            _toastLeft.SetMaxWidth(Math.Max(UiScale.Px(60),
-                Math.Min((int)(_cutoutHoleCenterX - UiScale.Px(36)), statusSafeW)));
+            _toastLeft.SetMaxWidth(Math.Max(UiScale.Px(24),
+                Math.Min((int)(_cutoutHoleCenterX - UiScale.Dp(24) - _cutoutHoleW / 2f), statusSafeW)));
             lp.Gravity = GravityFlags.Top; // 左上起摆，TranslationX 精确对孔心
             lp.LeftMargin = 0;
             lp.TopMargin = 0;
@@ -2733,6 +2766,8 @@ public partial class MainActivity : Activity
                 int diff = leftW - rightW;
                 ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = diff > 0 ? diff : 0;
                 ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = diff < 0 ? -diff : 0;
+                ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Height = 0; // vc131：竖排占位残留清零（横竖互切）
+                ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Height = 0;
                 _toastBalL.RequestLayout();
                 _toastBalR.RequestLayout();
                 // vc127 老板令（「孔还是不在胶囊正中间」+真机截图实锤）：平衡占位改动后 _toast.Width
@@ -2743,16 +2778,20 @@ public partial class MainActivity : Activity
                 // vc126 老板令（「如果是两行的 孔也需要在胶囊的正中间 孔在正中间是必须的」）：
                 // 两行加高后若超过 2×孔心距，把胶囊压回孔带高度（内容垂直居中、超出裁剪），
                 // 孔仍居正中——宁裁字不偏心；胶囊高≤2×孔心距时本分支不触发，孔心永远对齐胶囊中心
-                if (ph > _cutoutHoleCenterY * 2)
+                // vc131 真机实锤（框顶 y=0 贴屏上沿顶部弧线被裁）：钳制口径收 8dp 顶边距——
+                // 胶囊高≤2×(孔心距−8dp)，压回后 ty≥8dp 恒成立；宁裁字不偏心，孔仍居正中
+                int maxPh = Math.Max(1, (_cutoutHoleCenterY - UiScale.Dp(8)) * 2);
+                if (ph > maxPh)
                 {
-                    lp.Height = _cutoutHoleCenterY * 2;
+                    lp.Height = maxPh;
                     _toast.LayoutParameters = lp;
-                    ph = _cutoutHoleCenterY * 2;
+                    ph = maxPh;
                 }
+                else lp.Height = ViewGroup.LayoutParams.WrapContent; // vc131：解除上一帧钳制，防陈旧高度裁字
                 int pw = _toast.PaddingLeft + _toast.PaddingRight + Math.Max(leftW, rightW) * 2 + _cutoutHoleW;
                 _toast.TranslationX = _cutoutHoleCenterX - pw / 2f;
                 float ty = _cutoutHoleCenterY - ph / 2f;
-                if (ty < 0) ty = 0; // 兜底钳制（压回孔带后不再触发）
+                if (ty < UiScale.Dp(8)) ty = UiScale.Dp(8); // vc131：顶弧不贴屏上沿
                 _toast.TranslationY = ty;
                 onPositioned?.Invoke(); // 终位落定（含兜底原位）再亮相，杜绝先现身后跳位
             });
@@ -2765,6 +2804,10 @@ public partial class MainActivity : Activity
             _toastGap.LayoutParameters = new LinearLayout.LayoutParams(0, 1);
             ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Width = 0; // 非包孔分支占位归零
             ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Width = 0;
+            ((LinearLayout.LayoutParams)_toastBalL.LayoutParameters!).Height = 0; // vc131：竖排占位残留清零（横竖互切）
+            ((LinearLayout.LayoutParams)_toastBalR.LayoutParameters!).Height = 0;
+            _toast.SetMinimumWidth(0); // vc131：解除包孔分支最小尺寸残留
+            _toast.SetMinimumHeight(0);
             lp.Gravity = GravityFlags.Top | GravityFlags.CenterHorizontal;
             lp.LeftMargin = 0;
             lp.TopMargin = SafeTopInset(0); // vc120 老板令：兜底分支不再贴死顶边，给安全区顶距
@@ -2783,7 +2826,55 @@ public partial class MainActivity : Activity
     {
         ReadCutoutGeometry();
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
-        if (landscape || _cutoutHoleCenterY <= 0)
+        if (landscape)
+        {
+            // vc131 老板令（14:06/14:07）：横屏竖排绕孔——文字从上往下流：上段放满再进下段（孔占中间一位）；
+            // 未满一段容量时按「行数差最小、再按宽度差最小」（vc130 同源）找断点，上下贴孔、孔上无字。
+            _toastLeft.TextSize = UiScale.Item;
+            if (_cutoutHoleCenterY <= 0)
+            {
+                _toastLeft.Text = text; // 无孔兜底：整段进上段
+                _toastRight.Visibility = ViewStates.Gone;
+                return;
+            }
+            float cwLand = Math.Max(1f, _toastLeft.Paint!.MeasureText("字"));
+            int segW = Math.Max(UiScale.Px(60), Math.Min((int)(Resources.DisplayMetrics!.WidthPixels / 2f - UiScale.Dp(24)), UiScale.Dp(100)));
+            float lineH = _toastLeft.Paint!.TextSize * 1.4f; // 行高（含行距保守估计）
+            int screenH = Resources.DisplayMetrics!.HeightPixels;
+            int capTopLines = Math.Max(1, (int)((_cutoutHoleCenterY - UiScale.Dp(16)) / lineH));
+            int capBotLines = Math.Max(0, (int)((screenH - _cutoutHoleCenterY - UiScale.Dp(16)) / lineH));
+            int cpl = Math.Max(1, (int)(segW / cwLand));
+            int capTop = cpl * capTopLines;
+            int capBot = cpl * Math.Max(1, capBotLines);
+            string topText, botText;
+            if (text.Length <= capTop + capBot)
+            {
+                int lo = Math.Max(0, text.Length - capBot), hi = Math.Min(capTop, text.Length);
+                int nTop = lo, bestLines = int.MaxValue;
+                long bestDiff = long.MaxValue;
+                for (int n = lo; n <= hi; n++)
+                {
+                    int lt = (n + cpl - 1) / cpl, lb = (text.Length - n + cpl - 1) / cpl;
+                    int ld = Math.Abs(lt - lb);
+                    long wd = Math.Abs((long)_toastLeft.Paint!.MeasureText(text[..n]) - (long)_toastLeft.Paint!.MeasureText(text[n..]));
+                    if (ld < bestLines || (ld == bestLines && wd < bestDiff)) { bestLines = ld; bestDiff = wd; nTop = n; }
+                }
+                topText = text[..nTop];
+                botText = text[nTop..];
+            }
+            else
+            {
+                topText = text[..capTop]; // 超长：上段放满，余量进下段（MaxLines+省略兜底）
+                botText = text[capTop..];
+            }
+            _toastLeft.SetMaxLines(capTopLines);
+            _toastRight.SetMaxLines(Math.Max(1, capBotLines));
+            _toastLeft.Text = topText;
+            if (string.IsNullOrEmpty(botText)) { _toastRight.Visibility = ViewStates.Gone; _toastRight.Text = ""; }
+            else { _toastRight.Text = botText; _toastRight.Visibility = ViewStates.Visible; }
+            return;
+        }
+        if (_cutoutHoleCenterY <= 0)
         {
             _toastLeft.TextSize = UiScale.Item; // vc128：缩字号只作用于竖屏包孔长文案分支，他分支恢复标准档
             _toastLeft.Text = text;
@@ -2791,10 +2882,11 @@ public partial class MainActivity : Activity
             return;
         }
         float cw = Math.Max(1f, _toastLeft.Paint!.MeasureText("字")); // 单字宽（文案以中文为主，ASCII 偏窄只算保守）
-        int padSide = UiScale.Px(20), margin = UiScale.Px(8);
         int screenW = Resources.DisplayMetrics!.WidthPixels;
-        int availL = Math.Max(UiScale.Px(12), (int)(_cutoutHoleCenterX - padSide - margin));
-        int availR = Math.Max(0, (int)(screenW - _cutoutHoleCenterX - padSide - margin));
+        // vc131 真机实锤（右侧压状态栏/左缘出屏根因）：左右容量未扣胶囊自身内距与孔半径——
+        // 右段满容时胶囊右缘冲出屏沿压状态图标，左段满容时左缘出屏。按「孔居中+缘内 8dp」反推容量。
+        int availL = Math.Max(UiScale.Px(12), (int)(_cutoutHoleCenterX - UiScale.Dp(24) - _cutoutHoleW / 2f));
+        int availR = Math.Max(0, (int)(screenW - UiScale.Dp(90) - _cutoutHoleCenterX - UiScale.Dp(16) - _cutoutHoleW / 2f));
         int capL = Math.Max(1, (int)(availL / cw));
         int capR = Math.Max(0, (int)(availR / cw));
         string leftText, rightText;

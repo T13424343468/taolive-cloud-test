@@ -320,7 +320,12 @@ public partial class MainActivity
         // vc135 老板令（15:20 拍板「内距收到5」）：左右内距 9→5dp，按钮继续靠边；上下不动。
         // vc136 老板令（15:44「内距 3」）：左右内距 5→3dp，上下（10/6）不动。
         // vc138 老板令（2026-11-28「所有页面统一 左右一律20」）：左右内距 3→20dp 全页统一；按钮圆角让位与文字对齐各自保留。
-        _controlBar.SetPadding(UiScale.Dp(3), UiScale.Dp(10), UiScale.Dp(3), UiScale.Dp(6)); // vc139 老板令（2026-11-28 16:44「操作栏开例外：退回 3dp」）：左右 20→3dp 收边，其他页面维持 20dp 统一
+        // vc139 老板令（2026-11-28 16:44「操作栏开例外：退回 3dp」）曾收边 3dp；
+        // vc141 老板令（17:50 拍板「去掉 然后再改到 剩下约 20dp」）：条级左右内距撤除归零；
+        // 按钮可视盒 10dp 触控内缩同步撤除（可视盒=视图全域，触控区不变）；圆角让位封顶 20dp——
+        // 图标可视盒落屏边约 20dp（小圆角机型仍按「半径+8px」动态让位，不被弧线削角）。
+        // 文字两行直接扛 20dp 边线，与图标同线。
+        _controlBar.SetPadding(0, UiScale.Dp(10), 0, UiScale.Dp(6));
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
 
         // vc116③ 统一信息分块令：横竖屏统一三行结构（行1 台名+清晰度 mini / 行2 节目名+画面时刻 /
@@ -340,6 +345,7 @@ public partial class MainActivity
         // vc131 老板令（「操作栏文字统一小字号」）：行1 全部回 Caption 小字号，Item 大字混用退场
         var infoRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Horizontal };
         infoRow.SetGravity(GravityFlags.CenterVertical);
+        infoRow.SetPadding(UiScale.Dp(20), 0, UiScale.Dp(20), 0); // vc141 文字令：条内距归零后行1 直接扛 20dp 边线
         _cbTitle = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
         infoRow.AddView(_cbTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f));
         _cbNowTime = NewBarText(UiScale.Caption, InkTranslucency.TextPrimary(this), bold: true);
@@ -355,6 +361,7 @@ public partial class MainActivity
         // 统一小字号（Caption）、左对齐自然换行不设上限；原「节目名 Item 大字 + 接下来 Caption 小字」
         // 两段混排、视觉居中吊挂的口径退场（真机「第8集」「14:57 生命树第9集」居中吊着实锤）。
         var nowRow = new LinearLayout(this) { Orientation = Android.Widget.Orientation.Vertical };
+        nowRow.SetPadding(UiScale.Dp(20), 0, UiScale.Dp(20), 0); // vc141 文字令：行2 节目单同落 20dp 边线
         // vc132 老板令（14:39 样式对调）：节目单改次要色不加粗（=水位旧样式）
         _cbNowName = NewBarText(UiScale.Caption, Color.ParseColor(InkTranslucency.TextSecondary));
         _cbNowName.SetSingleLine(false); // 覆盖 NewBarText 单行口径：节目单整块完整可换行
@@ -376,8 +383,9 @@ public partial class MainActivity
         View AddIcon(LinearLayout into, BarIconView.IconKind kind, EventHandler click)
         {
             var b = new BarIconView(this) { Kind = kind, Clickable = true };
-            // vc120 肉眼对齐令：可见盒=文字渲染高，视图含透明外扩热区——背景 InsetDrawable 内缩同口径，线框画在可见盒上
-            b.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp));
+            // vc120 肉眼对齐令：可见盒=文字渲染高——vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，
+            // 可视盒=视图全域（触控区不变），图标可视盒落圆角让位线（封顶 20dp）
+            b.Background = BarButtonBackground();
             b.Click += click;
             // vc116④：相邻按钮统一 8dp 间距（首钮贴组首不留头距）
             into.AddView(b, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = into.ChildCount > 0 ? UiScale.Px(8) : 0 });
@@ -398,7 +406,7 @@ public partial class MainActivity
         };
         flipBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
         { LeftMargin = UiScale.Px(8) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场
-        flipBtn.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp)); // vc120：背景内缩对齐可见盒
+        flipBtn.Background = BarButtonBackground(); // vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，可视盒=视图全域
         flipBtn.Click += (_, _) =>
         {
             if (_orientationLocked) return; // vc136 修（老板 15:46 令「锁定解锁生效性全场景检查」）：锁定时翻转按钮不翻向——锁=钉死，只有解锁才能变
@@ -412,7 +420,7 @@ public partial class MainActivity
         var lockBtn = new LockIconView(this) { Clickable = true };
         lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
         { LeftMargin = UiScale.Px(8) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场
-        lockBtn.Background = new Android.Graphics.Drawables.InsetDrawable(BarButtonBackground(), UiScale.Px(UiScale.BtnTouchPadDp)); // vc120：背景内缩对齐可见盒
+        lockBtn.Background = BarButtonBackground(); // vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，可视盒=视图全域
         lockBtn.Click += (_, _) => ToggleOrientationLock();
         _lockBtn = lockBtn;
         right.AddView(lockBtn);
@@ -425,7 +433,9 @@ public partial class MainActivity
         _cbBtnLeft = left;
         _cbBtnRight = right;
         // vc132 老板令（14:25「按钮整体再往左右各靠一点」）：圆角让位收窄 8dp（钳 0），按钮更贴两缘
-        int cornerClear = Math.Max(0, BottomCornerClearPx() - UiScale.Px(8)); // vc124：统一走封顶口径（横屏留白收口），与设置/列表页同源
+        // vc141 老板令（17:50「去掉 然后再改到 剩下约 20dp」）：让位封顶 20dp——图标可视盒落屏边约 20dp，
+        // 小圆角机型仍按「半径+8px」动态让位不被弧线削角（条内距与触控内缩已撤，可视盒=让位线）
+        int cornerClear = Math.Min(BottomCornerClearPx(), UiScale.Dp(20));
         btnRow.AddView(left, new LinearLayout.LayoutParams(-2, -2) { LeftMargin = cornerClear });
         var space = new View(this);
         btnRow.AddView(space, new LinearLayout.LayoutParams(0, 1, 1f)); // 中间留白
@@ -563,14 +573,14 @@ public partial class MainActivity
     private void ApplyControlBarCornerClear()
     {
         if (_controlBar is null) return;
-        int clear = Math.Max(0, BottomCornerClearPx() - UiScale.Px(8)); // vc124：统一走封顶口径（横屏留白收口）；vc132：收窄 8dp 靠拢两缘
+        int clear = Math.Min(BottomCornerClearPx(), UiScale.Dp(20)); // vc141 老板令（17:50「剩下约 20dp」）：让位封顶 20dp，可视盒=让位线
         if (_cbBtnLeft is { } l && l.LayoutParameters is LinearLayout.LayoutParams ll) ll.LeftMargin = clear;
         if (_cbBtnRight is { } r && r.LayoutParameters is LinearLayout.LayoutParams rl) rl.RightMargin = clear;
         _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());
         _main.Post(() =>
         {
             if (_controlBar is null) return;
-            int clear2 = Math.Max(0, BottomCornerClearPx() - UiScale.Px(8)); // vc124：统一走封顶口径；vc132：收窄 8dp 靠拢两缘
+            int clear2 = Math.Min(BottomCornerClearPx(), UiScale.Dp(20)); // vc141 老板令：让位封顶 20dp，与首建同口径
             if (_cbBtnLeft is { } l2 && l2.LayoutParameters is LinearLayout.LayoutParams ll2) ll2.LeftMargin = clear2;
             if (_cbBtnRight is { } r2 && r2.LayoutParameters is LinearLayout.LayoutParams rl2) rl2.RightMargin = clear2;
             _controlBar.Background = InkTranslucency.PanelBgWithBottomCorner(this, BottomCornerRadiusPx());

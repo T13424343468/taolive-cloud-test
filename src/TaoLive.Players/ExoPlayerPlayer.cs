@@ -84,8 +84,11 @@ public sealed class ExoPlayerPlayer : IPlayer
         // 即对同源发第二请求赛跑先到先用；清单/快链路不赛。HTTP 头纪律与默认工厂原样不动。
         // vc139 老板令（「攒水本来就要留」）：竞速壳外再包进程级落盘缓存——同线重连/宽限重试
         // 滑动窗口内分片命中续播不重攒；清单永不缓存（每次拉最新），网络错误回源。
+        // vc141 根因修③（filler 泄漏）：缓存工厂随内核实例装配——每 ExoPlayerPlayer 实例只 Wrap 一次，
+        // 盲区档/深水档重建复用同一工厂（同一灌水器），不再每次重建新建 filler 泄漏孤儿循环
+        _cacheWrappedFactory ??= MediaCache.Wrap(new RacingDataSourceFactory(OnMinVariantObserved), context, temper);
         playerBuilder.SetMediaSourceFactory(new AndroidX.Media3.ExoPlayer.Source.DefaultMediaSourceFactory(
-            MediaCache.Wrap(new RacingDataSourceFactory(OnMinVariantObserved), context, temper)));
+            _cacheWrappedFactory));
         // #76 锁画质防抖（2026-11-15 老板令，治「放 1 秒卡半秒」循环）：默认 ABR 在估速贴档位线抖动时
         // 逐秒重选流——每次切换渲染器拆建一遍（真机「视频渲染器停用」实锤），画面停半秒再续。
         // 改黏性自适应：升档要缓冲满 30 秒、降档判据放宽到 60 秒、估速按折扣取档——宁稳勿抖，
@@ -151,6 +154,7 @@ public sealed class ExoPlayerPlayer : IPlayer
     private BufferInventory.Mode _gateMode = BufferInventory.Default; // vc94 深水档：当前起播库存档（热备=StartFull，冷切=默认）
     private BufferInventory.Mode _builtGate = BufferInventory.Default; // vc94 深水档：已建内核的库存档（不一致即重建）
     private SourceTemperStore? _temperStore; // vc96 试探版：持久化源脾气账（随内核装配一次，跨重建复用；vc140 起灌水器试探并发沿用）
+    private AndroidX.Media3.DataSource.IDataSourceFactory? _cacheWrappedFactory; // vc141：实例级缓存工厂（每内核实例只装配一次，重建复用；Dispose 停灌水器）
 
     // —— vc94 低档起播账（老板 2026-11-26 拍板第 1 刀）——
     private const int LowGearPollMs = 500; // 升档轮询节拍
@@ -713,6 +717,12 @@ public sealed class ExoPlayerPlayer : IPlayer
         _player.ClearVideoFrameMetadataListener(null);
         _frameForwarder.Dispose();
         _player.Release();
+        // vc141 根因修③：内核退场即停车灌水器——FillLoop 退出，不再孤儿空转
+        if (_cacheWrappedFactory is MediaCache.ObservingFactory observing)
+        {
+            observing.Filler.Stop();
+            _cacheWrappedFactory = null;
+        }
         // vc96 P2：清静态接线——静态属性若仍指向本实例的观察，置空防悬空引用
         // （vc140 水位大脑合并：预取器退役，仅剩低档观察一项）
         if (RacingDataSourceFactory.MinVariantBitrateObserver is { } obs

@@ -43,7 +43,6 @@ public static class MediaCache
     internal const long WaterAheadMs = 60_000;
 
     private static SimpleCache? _cache;
-    private static CacheFiller? _filler;
     private static BackupFiller? _backupFiller;
     // vc139 统一出口（老板 2026-11-28 拍板「预取器收编进统一数据面」）：灌水器/备源攒水/预取器后台
     // 拉片共用本工厂——缓存命中零网络，未命中走竞速+换票壳（无预取层，不递归不互扰）边拉边写穿。
@@ -119,24 +118,40 @@ public static class MediaCache
     /// 外层再包观测壳：清单全文喂灌水器换代、分片开流喂灌水器记账（消费位置推进）。</summary>
     public static IDataSourceFactory Wrap(IDataSourceFactory upstream, Context ctx, SourceTemperStore? temper = null)
     {
+        lock (_lock)
+        {
+            // vc141 复查修：统一拉片出口进程级只建一次——工厂无实例状态（上游 RacingDataSourceFactory(null)
+            // 无会话上下文），重复装配纯浪费；_fetchFactory 单例后 FillBackup/CreateFetchSource 不再随内核
+            // 重建被换缝，热备双内核并发装配也不互踩。
+            if (_fetchFactory is null)
+            {
+                var fetch = new CacheDataSource.Factory();
+                fetch.SetCache(Get(ctx));
+                fetch.SetUpstreamDataSourceFactory(new RacingDataSourceFactory(null));
+                fetch.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
+                fetch.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
+                fetch.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
+                _fetchFactory = fetch;
+            }
+            // vc141 根因修③（filler 泄漏）：灌水器随内核实例走——Wrap 每调一次新建 filler（分片账/消费位
+            // 是实例账本），调用方（ExoPlayerPlayer）持有观测工厂复用，内核盲区档重建不再新建 filler，
+            // 旧 filler 的 FillLoop(while true) 不再逐个泄漏；Dispose 时经 Filler.Stop 停车。
+            var filler = new CacheFiller(_fetchFactory, new FillThrottle(WaterAheadMs, temper));
+            return new ObservingFactory(BuildPlayerCacheFactory(upstream, ctx), filler);
+        }
+    }
+
+    /// <summary>播放器侧缓存工厂（vc141 拆出）：缓存命中零网络，未命中走 upstream（竞速+换票壳）边拉边写。
+    /// 清单永不缓存（每次必拉最新，防过期窗口），网络错误回源。</summary>
+    private static IDataSourceFactory BuildPlayerCacheFactory(IDataSourceFactory upstream, Context ctx)
+    {
         var factory = new CacheDataSource.Factory();
         factory.SetCache(Get(ctx));
         factory.SetUpstreamDataSourceFactory(upstream);
         factory.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
         factory.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
         factory.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
-        // 统一拉片出口：上游换无预取层的裸竞速+换票壳（vc94 并发预取只服务播放器读路径，
-        // 后台拉片不再自携预取壳——防递归、防灌水器开流污染预取器消费账）
-        var fetch = new CacheDataSource.Factory();
-        fetch.SetCache(Get(ctx));
-        fetch.SetUpstreamDataSourceFactory(new RacingDataSourceFactory(null));
-        fetch.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
-        fetch.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
-        fetch.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
-        _fetchFactory = fetch;
-        // vc140 水位大脑：试探引擎（档位/退避/源脾气）并进灌水器，一份账本管水位
-        _filler = new CacheFiller(fetch, new FillThrottle(WaterAheadMs, temper));
-        return new ObservingFactory(factory, _filler);
+        return factory;
     }
 
     /// <summary>统一拉片出口（vc139 老板拍板）：缓存命中零网络直读，未命中走竞速+换票壳
@@ -176,7 +191,10 @@ public static class MediaCache
     }
 
     /// <summary>清单请求不缓存：缓存 key 加代次后缀，key 每次不同=永不命中=每次走网络拉最新。
-    /// 分片 URL 稳定，原 URL 作 key，重连命中续播。</summary>
+    /// 分片 URL 稳定，原 URL 作 key，重连命中续播。
+    /// vc141 复查留账：判定用全串 contains（比观测壳 IsPlaylist 的路径端后缀更保守）——分片查询串
+    /// 带 .m3u8 字样时被误判清单=永不命中，只损失缓存不致命；反向漏判（清单 URL 全程无 .m3u8/.mpd
+    /// 字样）无法从 URL 防守，症状=过期清单 404，交既有换票/自救兜底（现实源概率极低）。</summary>
     private sealed class PlaylistBypassKeyFactory : Java.Lang.Object, ICacheKeyFactory
     {
         private long _gen;
@@ -192,8 +210,9 @@ public static class MediaCache
         }
     }
 
-    /// <summary>观测工厂：包住缓存工厂，创建观测数据源——清单全文与分片开流喂灌水器。</summary>
-    private sealed class ObservingFactory : Java.Lang.Object, IDataSourceFactory
+    /// <summary>观测工厂：包住缓存工厂，创建观测数据源——清单全文与分片开流喂灌水器。
+    /// vc141：改 internal 并暴露 Filler——内核实例持有观测工厂，Dispose 时停车灌水器（防孤儿循环）。</summary>
+    internal sealed class ObservingFactory : Java.Lang.Object, IDataSourceFactory
     {
         private readonly IDataSourceFactory _inner;
         private readonly CacheFiller _filler;
@@ -202,6 +221,8 @@ public static class MediaCache
             _inner = inner;
             _filler = filler;
         }
+        /// <summary>本工厂绑定的灌水器（内核 Dispose 时停车用）。</summary>
+        internal CacheFiller Filler => _filler;
         public IDataSource CreateDataSource() => new ObservingDataSource(_inner.CreateDataSource()!, _filler);
     }
 
@@ -292,12 +313,26 @@ public static class MediaCache
         private string? _playlistUrl;
         private readonly SemaphoreSlim _signal = new(0, 1);
         private Task? _loop;
+        private volatile bool _stopped; // vc141：停车旗（内核 Dispose 时置位，FillLoop 退出不再空转）
+        private long _cooldownUntilMs = long.MinValue; // vc141 根因修②：换台冷却——换代后歇 2 秒再开灌
+
+        /// <summary>换台冷却（毫秒）：换代后灌水器歇 2 秒，头段让播放器先吃——防同段写锁竞争雪上加霜；
+        /// 同台滚动不冷却（滚动是常态节奏，冷却只给换台）。</summary>
+        internal const long ChannelSwitchCooldownMs = 2_000;
+
+        /// <summary>让位段数（vc141 根因修①）：灌水器从消费位+2 段起灌——播放器正要吃/正在吃的段
+        /// （消费位+1）留给播放器自己拉（写穿落盘），同段写锁竞争根除（播放线程在
+        /// SimpleCache.startReadWrite 上被灌水器阻塞是 vc140 切台信号中断的根因）。</summary>
+        internal const int YieldAheadSegments = 2;
 
         public CacheFiller(IDataSourceFactory fetchFactory, FillThrottle throttle)
         {
             _fetchFactory = fetchFactory;
             _throttle = throttle;
         }
+
+        /// <summary>停车（vc141）：内核 Dispose 时调，FillLoop 退出、后续 Kick 静默——防孤儿循环泄漏。</summary>
+        public void Stop() => _stopped = true;
 
         /// <summary>清单换代：解析成功即换代；换台（清单地址变）旧账全清（分片表/已灌/在途/消费位）
         /// +试探档位退避整账清零（源脾气为持久化账不清）；同台滚动只重整账（滚出清单的条目作废）。</summary>
@@ -326,6 +361,8 @@ public static class MediaCache
             if (channelChanged)
             {
                 _throttle.Reset(); // 换台：档位/采样/退避整账清零（源脾气持久化账不清）
+                // vc141 根因修②：换台冷却 2 秒——头段让播放器先吃，灌水器不抢跑
+                _cooldownUntilMs = System.Environment.TickCount64 + ChannelSwitchCooldownMs;
             }
             else
             {
@@ -347,16 +384,18 @@ public static class MediaCache
 
         private void Kick()
         {
+            if (_stopped) return; // vc141：已停车静默
             if (_loop is null) _loop = Task.Run(FillLoop);
             try { _signal.Release(); } catch { /* 信号满位无害 */ }
         }
 
         private async Task FillLoop()
         {
-            while (true)
+            while (!_stopped) // vc141：停车即退场，不再 while(true) 空转泄漏
             {
                 try { await _signal.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
                 catch { /* 等待异常无害，下轮再灌 */ }
+                if (_stopped) return;
                 try { PumpTick(); }
                 catch { /* 灌水失败不外抛，退避账兜底 */ }
             }
@@ -367,6 +406,8 @@ public static class MediaCache
         /// （第 0 路基本盘不做 host 保守检查，第 1 路起避开保守 host）；锁外逐路异步拉满落盘。</summary>
         private void PumpTick()
         {
+            if (_stopped) return;
+            if (System.Environment.TickCount64 < _cooldownUntilMs) return; // vc141 根因修②：换台冷却期不开灌
             List<string> picks;
             lock (_gate)
             {
@@ -383,7 +424,9 @@ public static class MediaCache
 
                 int budget = 1 + _throttle.ProbeLevel;
                 picks = new List<string>(budget);
-                for (int i = consumed + 1; i < segs.Count && picks.Count < budget; i++)
+                // vc141 根因修①：从消费位+2 段起灌（让位播放头）——播放器正要吃的段（消费位+1）留给
+                // 播放器自己拉，同段写锁竞争（播放线程被 SimpleCache.startReadWrite 无限期阻塞）根除
+                for (int i = consumed + YieldAheadSegments; i < segs.Count && picks.Count < budget; i++)
                 {
                     var url = segs[i].Url;
                     if (_filled.Contains(url) || _inFlight.Contains(url) || _throttle.IsBackedOff(url)) continue;
@@ -412,6 +455,10 @@ public static class MediaCache
             }
         }
 
+        /// <summary>单段拉取时长预算（vc141 复查修）：灌水器原无超时——无限流分片（源把整场直播当
+        /// 一片返回）会永久占住在途账与带宽；单次 Read 有内核 15 秒读超时管着，逐块检查总预算即截断。</summary>
+        internal const long SegmentFetchBudgetMs = 60_000;
+
         /// <summary>经统一出口拉满一片（缓存命中零网络，未命中写穿落盘）；成功/429·403 被拒/
         /// 其他失败各回报试探引擎（档位、退避、源脾气各按账走）。</summary>
         private async Task FetchSegmentAsync(string url)
@@ -423,8 +470,14 @@ public static class MediaCache
                 var builder = new DataSpec.Builder();
                 builder.SetUri(Android.Net.Uri.Parse(url));
                 ds.Open(builder.Build());
+                var budget = System.Diagnostics.Stopwatch.StartNew();
                 var buf = new byte[64 * 1024];
-                while (await Task.Run(() => ds.Read(buf, 0, buf.Length)).ConfigureAwait(false) > 0) { } // 读满即落盘
+                while (await Task.Run(() => ds.Read(buf, 0, buf.Length)).ConfigureAwait(false) > 0) // 读满即落盘
+                {
+                    // vc141 复查修：超预算即弃（走退避账），防无限流分片永久占住在途账与带宽
+                    if (budget.ElapsedMilliseconds > SegmentFetchBudgetMs)
+                        throw new TimeoutException($"segment fetch budget {SegmentFetchBudgetMs}ms exceeded");
+                }
                 lock (_gate) _filled.Add(url);
                 _throttle.OnGood(url);
             }
@@ -524,7 +577,8 @@ public static class MediaCache
             }
         }
 
-        /// <summary>拉备源清单全文（裸内层 HTTP，UA 对齐口径原样）。</summary>
+        /// <summary>拉备源清单全文（裸内层 HTTP，UA 对齐口径原样）。vc141 复查修：加 30 秒总预算，
+        /// 防无限流响应永久占住攒水任务。</summary>
         private async Task<string?> FetchTextAsync(CancellationToken ct)
         {
             AndroidX.Media3.DataSource.IDataSource? ds = null;
@@ -536,9 +590,11 @@ public static class MediaCache
                 ds.Open(builder.Build());
                 using var ms = new MemoryStream();
                 var buf = new byte[64 * 1024];
+                var budget = System.Diagnostics.Stopwatch.StartNew();
                 int read;
                 while ((read = await Task.Run(() => ds.Read(buf, 0, buf.Length), ct).ConfigureAwait(false)) > 0)
                 {
+                    if (budget.ElapsedMilliseconds > 30_000) return null; // 超预算：按拉不到处理
                     ms.Write(buf, 0, read);
                 }
                 return System.Text.Encoding.UTF8.GetString(ms.ToArray());
@@ -550,7 +606,8 @@ public static class MediaCache
             }
         }
 
-        /// <summary>经统一出口拉满一片（缓存命中零网络，未命中写穿落盘），成功 true。</summary>
+        /// <summary>经统一出口拉满一片（缓存命中零网络，未命中写穿落盘），成功 true。
+        /// vc141 复查修：加 60 秒总预算（同灌水器口径），防无限流分片永久占住攒水任务。</summary>
         private async Task<bool> FillSegmentAsync(string url, CancellationToken ct)
         {
             AndroidX.Media3.DataSource.IDataSource? ds = null;
@@ -561,8 +618,12 @@ public static class MediaCache
                 builder.SetUri(Android.Net.Uri.Parse(url));
                 ds.Open(builder.Build());
                 var buf = new byte[64 * 1024];
+                var budget = System.Diagnostics.Stopwatch.StartNew();
                 int read;
-                while ((read = await Task.Run(() => ds.Read(buf, 0, buf.Length), ct).ConfigureAwait(false)) > 0) { }
+                while ((read = await Task.Run(() => ds.Read(buf, 0, buf.Length), ct).ConfigureAwait(false)) > 0)
+                {
+                    if (budget.ElapsedMilliseconds > 60_000) return false; // 超预算：按失败处理
+                }
                 return true;
             }
             catch { return false; }

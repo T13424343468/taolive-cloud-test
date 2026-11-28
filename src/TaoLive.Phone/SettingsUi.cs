@@ -293,28 +293,40 @@ public partial class MainActivity
     }
 
     /// <summary>
-    /// vc111 诊断出口①「打开源文件」：日志文件经只读 ContentProvider（LogProvider，白名单两文件）
-    /// 交系统查看器打开。查 FilesDir/taolive_crash.log 优先，无则查外部应用目录 taolive_diag.txt，
-    /// 都没有 toast 提示；打不开（无查看器）按文案提示，不裸奔异常。
+    /// vc141 老板令（2026-11-28「打开文件改一键复制」）：📄 钮改复制当前日志——后台读日志尾扫（64KB 截尾，
+    /// 与崩溃页签同口径），主线程写系统剪贴板 + Toast「已复制」；无日志文件给「暂无日志文件」不裸崩。
+    /// 原「打开源文件」出口（LogProvider 系统查看器）随令退役。
     /// </summary>
-    private void OpenDiagSourceFile()
+    private void CopyDiagLog()
     {
         try
         {
-            string? name = null;
-            if (new Java.IO.File(FilesDir!, "taolive_crash.log").Exists()) name = "taolive_crash.log";
-            else if (new Java.IO.File(GetExternalFilesDir(null)!, "taolive_diag.txt").Exists()) name = "taolive_diag.txt";
-            if (name is null) { ShowToast("暂无日志文件"); return; }
-            var intent = new Intent(Intent.ActionView);
-            intent.SetDataAndType(Android.Net.Uri.Parse($"content://com.taolive.phone.logs/{name}"), "text/plain");
-            intent.AddFlags(ActivityFlags.GrantReadUriPermission | ActivityFlags.NewTask);
-            try { StartActivity(intent); }
-            catch (ActivityNotFoundException) { ShowToast("没有能打开日志的应用"); }
+            var path = new Java.IO.File(FilesDir!, "taolive_crash.log");
+            if (!path.Exists()) { ShowToast("暂无日志文件"); return; }
+            _ = Task.Run(() =>
+            {
+                var text = ReadLogTail(path.AbsolutePath!, 64 * 1024);
+                if (text.Length > 16000) text = "…\n" + text[^16000..]; // 与 ReadCrashTail 同口径截尾
+                _main.Post(() =>
+                {
+                    try
+                    {
+                        var cm = GetSystemService(ClipboardService) as Android.Content.ClipboardManager;
+                        cm!.PrimaryClip = Android.Content.ClipData.NewPlainText("TaoLive 日志", text); // Xamarin 绑定：PrimaryClip 属性 setter
+                        ShowToast("已复制");
+                    }
+                    catch (Exception ex)
+                    {
+                        CrashNet.Record($"[诊断] 复制日志失败：{ex.Message}");
+                        ShowToast("复制失败，请重试");
+                    }
+                });
+            });
         }
         catch (Exception ex)
         {
-            CrashNet.Record($"[诊断] 打开源文件失败：{ex.Message}");
-            ShowToast("打开失败，请重试");
+            CrashNet.Record($"[诊断] 复制日志失败：{ex.Message}");
+            ShowToast("复制失败，请重试");
         }
     }
 
@@ -373,7 +385,7 @@ public partial class MainActivity
                 // vc119 修（真机「统计中…」卡死根因）：诊断页打开时设置面板已关（ShowDiagPanel→CloseSettingsPanel），
                 // 旧条件 _settingsPanelOpen 恒 false，后台读数回贴被永久丢弃。改判诊断覆盖层在位即回贴。
                 if (seq == _diagLoadSeq && _diagOverlay is not null && _diagBody != null)
-                    _diagBody.Text = text;
+                    _diagBody.TextFormatted = BuildLeveledSpannable(text); // vc141 老板令：按 v26 原型分级别样式渲染（TextFormatted 保住 span，Text 会 ToString 丢着色）
             });
         });
     }
@@ -392,6 +404,94 @@ public partial class MainActivity
         if (!path.Exists()) return "（暂无崩溃日志）";
         var text = ReadLogTail(path.AbsolutePath!, 64 * 1024);
         return text.Length > 16000 ? "…\n" + text[^16000..] : text;
+    }
+
+    // ---- vc141 老板令「日志按 v26 原型分级别样式」（2026-11-28）：只加类型与颜色字母缩写，其它保持现状 ----
+    // 原型 04 节规格：时间戳灰 + 级别字母粗体着色（I=azure #5E9EDE / W=gold #C9A86A / E=cin #E07856）+ 正文；
+    // 台账行本身无级别字段，按内容关键词判级（启发式，判级偏保守只影响颜色不影响内容）。
+
+    /// <summary>v26 原型级别色：I 信息=原型 azure、W 警告=原型 gold、E 错误=原型 cin。</summary>
+    private const string LevelColorInfo = "#5E9EDE";
+    private const string LevelColorWarn = "#C9A86A";
+    private const string LevelColorError = "#E07856";
+    /// <summary>时间戳灰（比正文 TextSecondary 淡一档，原型 ink3 口径）。</summary>
+    private const string TimestampColor = "#8A97A5";
+
+    private static readonly string[] LevelErrorKeywords =
+    {
+        "失败", "错误", "异常", "未捕获", "全断", "不可达", "耗尽", "crash", "sigsegv", "sigabrt"
+    };
+    private static readonly string[] LevelWarnKeywords =
+    {
+        "429", "403", "冷却", "降级", "超时", "未成", "重试", "退避", "限速", "停滞", "卡顿", "拒绝", "挂起", "让位", "作废"
+    };
+
+    /// <summary>单行判级（vc141）：✓=I、!=W、–=无级别（自诊断口径）；台账/崩溃行按关键词启发式，
+    /// 错误词优先于警告词（「重试失败」记 E 不记 W）。大小写不敏感（crash/SIGSEGV）。</summary>
+    private static char ClassifyLogLevel(string line)
+    {
+        if (line.Length == 0) return '\0';
+        if (line[0] == '✓') return 'I';
+        if (line[0] == '!') return 'W';
+        if (line[0] == '–') return '\0';
+        foreach (var k in LevelErrorKeywords)
+        {
+            if (line.Contains(k, StringComparison.OrdinalIgnoreCase)) return 'E';
+        }
+        foreach (var k in LevelWarnKeywords)
+        {
+            if (line.Contains(k, StringComparison.OrdinalIgnoreCase)) return 'W';
+        }
+        return 'I';
+    }
+
+    /// <summary>按 v26 原型逐行着色：台账/崩溃行=时间戳灰+级别字母粗体着色+正文；自诊断行=✓/! 标记
+    /// 着色粗体；非标准行（空行/统计行）原样正文色。日志内容一字不改（老板令「其它保持现状」）。</summary>
+    private Android.Text.ISpannable BuildLeveledSpannable(string text)
+    {
+        var sb = new Android.Text.SpannableStringBuilder();
+        var tsColor = Color.ParseColor(TimestampColor);
+        var iColor = Color.ParseColor(LevelColorInfo);
+        var wColor = Color.ParseColor(LevelColorWarn);
+        var eColor = Color.ParseColor(LevelColorError);
+        foreach (var raw in text.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            int start = sb.Length();
+            if (line.Length >= 21 && char.IsDigit(line[0]) && line[4] == '-' && line[10] == ' ')
+            {
+                // 台账/崩溃行：yyyy-MM-dd HH:mm:ss  [标签] 消息 → 时间戳灰 + 级别字母粗体着色 + 正文
+                sb.Append(line[..19]);
+                sb.Append("  ");
+                var lv = ClassifyLogLevel(line);
+                var lvColor = lv switch { 'E' => eColor, 'W' => wColor, _ => iColor };
+                sb.Append(lv);
+                sb.Append(' ');
+                sb.Append(line[21..]);
+                sb.SetSpan(new Android.Text.Style.ForegroundColorSpan(tsColor), start, start + 19,
+                    Android.Text.SpanTypes.ExclusiveExclusive);
+                sb.SetSpan(new Android.Text.Style.ForegroundColorSpan(lvColor), start + 21, start + 22,
+                    Android.Text.SpanTypes.ExclusiveExclusive);
+                sb.SetSpan(new Android.Text.Style.StyleSpan(Android.Graphics.TypefaceStyle.Bold), start + 21, start + 22,
+                    Android.Text.SpanTypes.ExclusiveExclusive);
+            }
+            else if (line.Length > 0 && (line[0] == '✓' || line[0] == '!'))
+            {
+                // 自诊断行：✓/! 标记着色粗体，正文原样
+                sb.Append(line);
+                var lvColor = line[0] == '!' ? wColor : iColor;
+                sb.SetSpan(new Android.Text.Style.ForegroundColorSpan(lvColor), start, start + 1,
+                    Android.Text.SpanTypes.ExclusiveExclusive);
+                sb.SetSpan(new Android.Text.Style.StyleSpan(Android.Graphics.TypefaceStyle.Bold), start, start + 1,
+                    Android.Text.SpanTypes.ExclusiveExclusive);
+            }
+            else
+            {
+                sb.Append(line); // 空行/统计行/非标准行：原样正文色
+            }
+            sb.Append('\n');
+        }
+        return sb;
     }
 
     /// <summary>自诊断逐项检查行（v26 原型：✓/! 前缀一行一项），数据全部来自现成公开接口。</summary>
@@ -612,7 +712,10 @@ public partial class MainActivity
             var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             row.SetGravity(GravityFlags.CenterVertical);
             // vc117 令15：行间 20dp（行上下留白撑开行距）+ 卡片留白加大（左右 12→20，内容离描边更远）
-            row.SetPadding(Dp(20), Dp(20), Dp(20), Dp(20));
+            // vc141 老板令（2026-11-28 17:41 真机截图「设置页的内容边距又多了 都没有跟标题对齐」）：
+            // vc119 撤描边框后行内左右 20dp 成了叠边距（面板 20+行内 20=40dp，标题才 20dp）——
+            // 行内左右清 0，行内容落面板 20dp 边线与标题/分隔线对齐；上下 20dp 行距不动。
+            row.SetPadding(0, Dp(20), 0, Dp(20));
             var txt = new LinearLayout(this) { Orientation = Orientation.Vertical };
             var n = new TextView(this) { Text = title, TextSize = UiScale.Item };
             n.SetTextColor(InkTranslucency.TextPrimary(this));
@@ -1036,8 +1139,8 @@ public partial class MainActivity
             title.SetTextColor(InkTranslucency.TextPrimary(this));
             InkTranslucency.ApplyReadabilityShadow(title);
             head.AddView(title, new LinearLayout.LayoutParams(0, -2, 1f));
-            head.AddView(DiagHeadBtn(BarIconView.IconKind.Doc, "打开源文件", OpenDiagSourceFile),
-                new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) }); // vc124：三钮间距 8dp，与列表页头同口径
+            head.AddView(DiagHeadBtn(BarIconView.IconKind.Doc, "复制日志", CopyDiagLog),
+                new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) }); // vc124：三钮间距 8dp，与列表页头同口径；vc141 老板令（「打开文件改一键复制」）：📄 钮改复制当前日志，📁🗑 原样保留
             head.AddView(DiagHeadBtn(BarIconView.IconKind.Folder, "打开目录", OpenDiagDirectory),
                 new LinearLayout.LayoutParams(-2, -2) { LeftMargin = Dp(UiScale.BtnGapDp) });
             head.AddView(DiagHeadBtn(BarIconView.IconKind.Trash, "清空", ConfirmClearCrashLog),
@@ -1050,7 +1153,9 @@ public partial class MainActivity
             for (int i = 0; i < tabNames.Length; i++)
             {
                 var tab = new TextView(this) { Text = tabNames[i], TextSize = UiScale.Item };
-                tab.SetPadding(Dp(16), Dp(8), Dp(16), Dp(8));
+                // vc141 老板令（2026-11-28「设置页的内容边距又多了 都没有跟标题对齐」同批）：
+                // 首个页签左内距清 0 落面板 20dp 边线与标题对齐，页签之间仍留 16dp 间距
+                tab.SetPadding(i == 0 ? 0 : Dp(16), Dp(8), Dp(16), Dp(8));
                 tab.Focusable = true;
                 tab.FocusChange += (_, e) => // vc137 老板令（「改成Tab那种样式 不要用按钮」）：焦点高亮沿用全局 FocusDrawable，原胶囊描边退场
                     tab.Background = e.HasFocus ? InkTranslucency.FocusDrawable() : null;

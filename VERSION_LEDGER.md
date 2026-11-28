@@ -183,6 +183,18 @@
 - 交付包：dist-phone/TaoLive-1.0.32-vc142/（apk sha256 0956c311…ac3d1）+ 同名 zip，文件卡片已发
 - git：commit 0825bcf 已推 phone-src（触发云测）
 
+## vc144 / 1.0.34（2026-11-28 晚 老板令「快出 一次性改到位」——vc143 全断根因四刀根治：频控共享闸+缓存自愈重建+堆栈诊断+UI 三条）
+- 版本锚：csproj 144/1.0.34 = manifest 144/1.0.34 = badging 144/1.0.34（三处对账一致，亲验）
+- 定因（老板已认可口径）：vc140 缓存层手术埋雷——SimpleCache 索引坏账永久记 initializationException 每次取片秒抛 → 内核秒败触发换票重开/换源/看门狗全速空转（重试风暴）→ 源端被激出 403 频控 → 探活/取票/内核三路互不通信持续添请求频控窗一直被续 → 持续全断
+- 第一刀 频控共享闸（403 收敛）：新增 Foundation/SourceRateGate.cs——静态按主机记账，首拒冷却 60s ×2 步进封顶 10 分钟，IsCooling/OnRejected/OnOk/Reset，Now 可注入测试；接线五处：StreamProbe.FetchHeadAsync（入口快速失败，仅 403/429 记账，成功 OnOk）、RacingHttpDataSource.TicketSwapDataSource.Open（同口径）、MediaCache.CacheFiller.FetchSegmentAsync（同口径）、TicketResolver.ResolveAsync/ReissueAsync（未命中冷却快速失败）、PlaybackSession.OnPlayerError 坏票重试条件加 !IsCooling；记账口径收紧：只认 403/429（404 等坏地址不进账，老板令）
+- 第二刀 缓存自愈重建（老板令「修法以根治缓存层为主」——不许「缓存坏了永久禁用」，好机制全保留）：MediaCache.Get 初始化失败不再永久禁用——连根拔病索引目录+_retryNotBeforeMs 重试闸（窗 5 分钟）后全新重建；新增 MediaCache.Heal(reason)——运行期缓存层抛病时释放旧实例+拔病索引+清统一出口 _fetchFactory（下个装配周期全新缓存+全新工厂上岗），限频 5 分钟防反复擦建；CacheBypassDataSource.Open 抓缓存层病（CacheCacheException/NullPointerException）切直连重开的同时触发 Heal——直连只是自愈窗内临时便道，缓存机制始终活着；旁路判据类型名坐实=绑定摊平 CacheCacheException（DLL 字节扫描核验）
+- 第三刀 堆栈诊断：PlaybackSession.GuardKernel ex.Message→ex.ToString()（托管堆栈落账）；ExoPlayerPlayer.OnPlayerError 沿 cause 链走到最深因 Android.Util.Log.GetStackTraceString(d) 整栈拼进 message（| deep-stack=...）——NPE（对 null 调 getClass()，排除 media3 Java 侧指向 C# 数据源链/绑定层）待真机读堆栈钉到行
+- 第四刀 UI 三条（老板 19:0x 指令）：TouchUi 操作栏右组顺序改「列表、锁定/解锁、全屏/返回、设置」（lock 块上移 Gear 移末位）；RefreshControlBarInfo 分隔点从「· 画面时刻」头前挪到「· 实时水位」头前；MainActivity 抽 HandleBackLayered()（浮层栈逐层收口）OnBackPressed 与 HandleSystemBack 共用——手势返回补落子页回上一级（API 33+ 原来只管横竖屏坐实没落已补）
+- 测试：新增 SourceRateGateTests 6 用例（新鲜不冷却/冷却进出/步进封顶/OnOk 清账/同主机共账跨主机隔离/非法 URL 不抛；xUnit 口径）
+- 统一验证：Release -m:1 编译 0 错 0 警；dotnet test 全测 423/423 全绿（vc143 基线 417+新增 6）；badging 亲验 144/1.0.34；apksigner verify 过
+- 交付包：dist-phone/TaoLive-1.0.34-vc144/（apk sha256 7728542b…2f93f8）+ 同名 zip，文件卡片已发
+- git：commit 待补（本段提交后回填）
+
 ## vc143 / 1.0.33（2026-11-28 19:14 老板令「快出」——vc142 真机全频道断流根因追查诊断盲区修 + 控制条按钮间距补10）
 - 版本锚：csproj 143/1.0.33 = manifest 143/1.0.33 = badging 143/1.0.33（三处对账一致，亲验）
 - 诊断盲区修（老板令「马上全速去查 必须查到根因」追查产物）：PlaybackSession L103 错误订阅只取 e.Code，内核已拼好的 cause 链（ExoPlayerPlayer L930-933 error.Message+Cause）在会话层被丢弃——诊断页只见裸「player error ERROR_CODE_IO_UNSPECIFIED」查不到因。改为透传 e.Message：OnPlayerError(code, message) 拼 detail 落宽限/Failed/换源三行，诊断页直接见真因

@@ -9,4 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="../TaoLive.Model/TaoLive.Model.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="TaoLive.Tests" />
+  </ItemGroup>
 </Project>

@@ -1866,25 +1866,36 @@ public partial class MainActivity : Activity
 
     // —— 系统返回手势兜底（vc142 老板令「任何页面 系统的返回手势都应该可以回到上一级或者关闭」：
     //    子级回上一级、顶级关闭。按浮层栈从上到下逐级收口，与 OnKeyDown 遥控器口径同构） ——
+    // vc144 老板令（2026-11-28「页面内手势返回不会关闭，子页面返回上一级」实锤补落）：
+    // API 33+ 手势返回走 HandleSystemBack，原实现只管横竖屏收口、漏了子页浮层栈——
+    // 逐层收口抽成 HandleBackLayered 供返回键与手势返回共用，子级回上一级、顶级再按横竖屏收口。
+
+    /// <summary>返回逐层收口（浮层栈从上到下）：有子级接住返回并回上一级=true；顶级=false 落横竖屏口径。</summary>
+    private bool HandleBackLayered()
+    {
+        // ① 自绘确认框（最上层小浮层）：返回=取消收框
+        if (_confirmOverlay is not null) { CloseConfirmOverlay(); return true; }
+        // ② 进阶调优档位弹层：子级回上一级（收弹层回进阶调优页）
+        if (_advGearOverlay is not null) { CloseAdvGearSheetOnly(); ShowAdvancedTuningPanel(); return true; }
+        // ③~⑥ 各全屏子页：回设置页（关闭即上一级）
+        if (_advOverlay is not null) { CloseAdvancedPanel(); return true; }
+        if (_diagOverlay is not null) { CloseDiagPanel(); return true; }
+        if (_statsOverlay is not null) { CloseStatsPanel(); return true; }
+        if (_licenseOverlay is not null) { CloseLicensePanel(); return true; }
+        // ⑦ 设置面板：收面板回播放页
+        if (_settingsPanelOpen) { CloseSettingsPanel(); return true; }
+        // ⑧ 频道抽屉：排序中=取消复原；普通=收抽屉
+        if (_sortMode) { HandleSortKey(Keycode.Back); return true; }
+        if (_listOpen) { ExitOrCollapseList(); return true; }
+        return false;
+    }
+
     // CA1422：OnBackPressed 在 API 33+ 标记过时（预测性返回手势），本项目 minSdk<33 且未接
     // OnBackPressedDispatcher，override 仍是全机型统一兜底口径——显式压警（零警告出包硬门禁）。
 #pragma warning disable CA1422
     public override void OnBackPressed()
     {
-        // ① 自绘确认框（最上层小浮层）：返回=取消收框
-        if (_confirmOverlay is not null) { CloseConfirmOverlay(); return; }
-        // ② 进阶调优档位弹层：子级回上一级（收弹层回进阶调优页）
-        if (_advGearOverlay is not null) { CloseAdvGearSheetOnly(); ShowAdvancedTuningPanel(); return; }
-        // ③~⑥ 各全屏子页：回设置页（关闭即上一级）
-        if (_advOverlay is not null) { CloseAdvancedPanel(); return; }
-        if (_diagOverlay is not null) { CloseDiagPanel(); return; }
-        if (_statsOverlay is not null) { CloseStatsPanel(); return; }
-        if (_licenseOverlay is not null) { CloseLicensePanel(); return; }
-        // ⑦ 设置面板：收面板回播放页
-        if (_settingsPanelOpen) { CloseSettingsPanel(); return; }
-        // ⑧ 频道抽屉：排序中=取消复原；普通=收抽屉（顶级=默认退后台）
-        if (_sortMode) { HandleSortKey(Keycode.Back); return; }
-        if (_listOpen) { ExitOrCollapseList(); return; }
+        if (HandleBackLayered()) return;
         base.OnBackPressed(); // 顶级：默认退后台
     }
 #pragma warning restore CA1422
@@ -2544,8 +2555,8 @@ public partial class MainActivity : Activity
 
     private Java.Lang.Object? _backCallback; // 持引用防 GC 回收（Java 侧注册的是代理对象）
 
-    /// <summary>API 33+ 注册系统返回回调：横屏=退全屏回竖屏，竖屏=退出确认（与返回键同路）；
-    /// 旧系统走 OnKeyDown 原路，行为一致。</summary>
+    /// <summary>API 33+ 注册系统返回回调：子级回上一级（浮层栈逐层收口），顶级横屏=退全屏回竖屏、
+    /// 竖屏=退后台（与返回键同路，vc144 补子页手势返回）；旧系统走 OnKeyDown 原路，行为一致。</summary>
     private void RegisterPredictiveBack()
     {
         if (!OperatingSystem.IsAndroidVersionAtLeast(33)) return;
@@ -2557,6 +2568,8 @@ public partial class MainActivity : Activity
 
     private void HandleSystemBack()
     {
+        // vc144 老板令：手势返回与返回键同口径——子级（确认框/档位弹层/子页/设置面板/抽屉）先逐层收口回上一级
+        if (HandleBackLayered()) return;
         bool landscape = Resources!.Configuration!.Orientation == Android.Content.Res.Orientation.Landscape;
         if (landscape)
         {
@@ -2565,7 +2578,7 @@ public partial class MainActivity : Activity
         }
         else
         {
-            ExitOrCollapseList(); // 竖屏：列表开着先收，播放页弹退出确认
+            ExitOrCollapseList(); // 竖屏顶级：停播攒流退后台
         }
     }
 

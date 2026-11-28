@@ -399,7 +399,16 @@ public partial class MainActivity
         AddIcon(left, BarIconView.IconKind.Next, (_, _) => SwitchChannel(1));
 
         AddIcon(right, BarIconView.IconKind.List, (_, _) => { HideControlBar(); ShowList(); });
-        AddIcon(right, BarIconView.IconKind.Gear, (_, _) => { HideControlBar(); OpenSettingsPanel(); });
+
+        // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
+        // vc144 老板令（2026-11-28「操作栏顺序：列表、锁定/解锁、全屏/返回、设置」）：锁定提到全屏前
+        var lockBtn = new LockIconView(this) { Clickable = true };
+        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
+        { LeftMargin = UiScale.Dp(10) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场；vc143 老板令「补10」Px(8)→Dp(10)
+        lockBtn.Background = BarButtonBackground(); // vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，可视盒=视图全域
+        lockBtn.Click += (_, _) => ToggleOrientationLock();
+        _lockBtn = lockBtn;
+        right.AddView(lockBtn);
 
         // 翻转按钮（vc110 老板令：⟳ 换两枚图标——竖屏显「进全屏」、横屏显「返回竖屏」，自绘单色同风格）
         var flipBtn = new FullscreenIconView(this)
@@ -419,14 +428,8 @@ public partial class MainActivity
         };
         right.AddView(flipBtn);
 
-        // 锁定按钮（vc110 老板令：文字「锁/已锁」换图标——解锁=开锁、锁定横屏=横屏锁、锁定竖屏=竖屏锁，自绘单色同风格）
-        var lockBtn = new LockIconView(this) { Clickable = true };
-        lockBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent)
-        { LeftMargin = UiScale.Dp(10) }; // vc120 肉眼对齐令：盒径自量（跟台名渲染高），定尺寸盒退场；vc143 老板令「补10」Px(8)→Dp(10)
-        lockBtn.Background = BarButtonBackground(); // vc141 老板令（17:50「内距去掉」）：10dp 触控内缩撤除，可视盒=视图全域
-        lockBtn.Click += (_, _) => ToggleOrientationLock();
-        _lockBtn = lockBtn;
-        right.AddView(lockBtn);
+        // 设置按钮（vc144 老板令「操作栏顺序：列表、锁定/解锁、全屏/返回、设置」）：设置挪到右组末位
+        AddIcon(right, BarIconView.IconKind.Gear, (_, _) => { HideControlBar(); OpenSettingsPanel(); });
 
         // vc110：音量按钮删除后竖屏 6 钮单行放得下，两行拆分口径退场
         // vc121 老板拍板方案A（2026-11-28 真机「按钮被圆角覆盖」）：仅按钮行两端让出圆角弧区——
@@ -482,6 +485,8 @@ public partial class MainActivity
         long buffered = BufferedMsNow() ?? 0;
         // v31 原型口径（vc115 拆段保读数）：节目名与「画面时刻」分段——节目名超长省略，读数段完整；
         // 「实时水位：X秒」完整；缺表降级只显画面时刻（v13 老板令）
+        // vc144 老板令（2026-11-28「画面时刻左边的点放后面，在它和实时水位中间」）：
+        // 分隔点从画面时刻头前挪到实时水位头前——台名与画面时刻之间靠 8dp 间距分段，点归读数段之间
         string clock = PictureClock(buffered);
         bool hasNow = _epgNowTitle is { } t && t.Length > 0;
         bool hasNext = _epgNextText is { } n && n.Length > 0;
@@ -491,8 +496,8 @@ public partial class MainActivity
         if (hasNext) epg = (epg.Length > 0 ? epg + " " : "") + $"· 接下来：{_epgNextText}";
         _cbNowName.Text = epg;
         _cbNowName.Visibility = hasNow || hasNext ? ViewStates.Visible : ViewStates.Gone;
-        _cbNowTime.Text = hasNow ? $"· 画面时刻：{clock}" : $"画面时刻：{clock}";
-        _cbAuxWater.Text = $"实时水位：{buffered / 1000}秒";
+        _cbNowTime.Text = $"画面时刻：{clock}";
+        _cbAuxWater.Text = $"· 实时水位：{buffered / 1000}秒";
     }
 
     /// <summary>换台（触屏滑动手势口径）：±1 环绕，走既有 PlayAt 链路（预检死台拦截、防抖全继承）。</summary>

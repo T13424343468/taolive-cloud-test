@@ -86,9 +86,11 @@ public static class StreamProbe
         return await FetchHeadAsync(seg, userAgent, ct).ConfigureAwait(false) is not null;
     }
 
-    /// <summary>拉头部字节（读满 HeadBytes 或流结束即停）；任何失败返回 null（判死）。</summary>
+    /// <summary>拉头部字节（读满 HeadBytes 或流结束即停）；任何失败返回 null（判死）。
+    /// vc144 频控共享闸：冷却窗内零网络快速失败；4xx/429 记共享账，成功清账（三路共账口径）。</summary>
     private static async Task<byte[]?> FetchHeadAsync(string url, string userAgent, CancellationToken ct)
     {
+        if (SourceRateGate.IsCooling(url)) return null; // vc144：主机冷却中，探活本地快速失败不添请求
         try
         {
             using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true })
@@ -98,7 +100,13 @@ public static class StreamProbe
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.TryAddWithoutValidation("User-Agent", userAgent);
             using var res = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            if ((int)res.StatusCode >= 400) return null;
+            var status = (int)res.StatusCode;
+            if (status >= 400)
+            {
+                // vc144 共享闸只认频控信号（403/429）：404 等坏地址不进账，不误冷却整主机
+                if (status == 403 || status == 429) SourceRateGate.OnRejected(url);
+                return null;
+            }
             var buf = new byte[HeadBytes];
             var stream = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
             var total = 0;
@@ -108,7 +116,9 @@ public static class StreamProbe
                 if (read <= 0) break;
                 total += read;
             }
-            return total > 0 ? buf[..total] : null;
+            if (total <= 0) return null;
+            SourceRateGate.OnOk(url); // vc144：探活成功即清账，频控解除三路恢复
+            return buf[..total];
         }
         catch
         {

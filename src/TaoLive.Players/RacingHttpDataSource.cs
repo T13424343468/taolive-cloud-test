@@ -201,17 +201,27 @@ public sealed class TicketSwapDataSource : Java.Lang.Object, AndroidX.Media3.Dat
 
     public long Open(AndroidX.Media3.DataSource.DataSpec? dataSpec)
     {
+        // vc144 频控共享闸：主机冷却中零网络快速失败（探活/取票/内核三路共账，谁被拒大家歇）
+        if (dataSpec?.Uri?.ToString() is { } entryUrl && TaoLive.Foundation.SourceRateGate.IsCooling(entryUrl))
+        {
+            throw new Java.IO.IOException("source rate-gate cooling: " + entryUrl);
+        }
         var inner = _innerFactory();
         _inner = inner;
         foreach (var l in _listeners) inner.AddTransferListener(l);
         try
         {
-            return inner.Open(dataSpec);
+            var opened = inner.Open(dataSpec);
+            if (dataSpec?.Uri?.ToString() is { } okUrl) TaoLive.Foundation.SourceRateGate.OnOk(okUrl); // vc144：打开成功清账
+            return opened;
         }
         catch (AndroidX.Media3.DataSource.HttpDataSourceInvalidResponseCodeException ex)
             when (ex.ResponseCode is >= 400 and < 500)
         {
             var failingUrl = dataSpec?.Uri?.ToString() ?? inner.Uri?.ToString();
+            // vc144 共享闸只认频控信号（403/429）：404 等坏地址不进账，不误冷却整主机
+            if (!string.IsNullOrEmpty(failingUrl) && (ex.ResponseCode == 403 || ex.ResponseCode == 429))
+                TaoLive.Foundation.SourceRateGate.OnRejected(failingUrl);
             if (string.IsNullOrEmpty(failingUrl))
             {
                 throw; // 无失败 URL 可查：无从换票，原样上抛

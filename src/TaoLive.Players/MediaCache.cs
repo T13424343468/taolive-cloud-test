@@ -45,6 +45,10 @@ public static class MediaCache
     private const long SweepPeriodMs = 10_000;
 
     private static SimpleCache? _cache;
+    private static long _retryNotBeforeMs;  // vc144 自愈限频：初始化失败后的重试闸（窗内直连旁路，窗后重建）
+    private static long _lastHealAtMs;      // vc144 自愈限频：运行期重建最近一次时刻
+    private static string? _dirPath;        // vc144 自愈：缓存目录（连根拔病索引用）
+    internal const long HealMinIntervalMs = 5 * 60_000; // 自愈限频窗：5 分钟最多重建一次，防反复擦建
     private static BackupFiller? _backupFiller;
     // vc139 统一出口（老板 2026-11-28 拍板「预取器收编进统一数据面」）：灌水器/备源攒水/预取器后台
     // 拉片共用本工厂——缓存命中零网络，未命中走竞速+换票壳（无预取层，不递归不互扰）边拉边写穿。
@@ -52,18 +56,60 @@ public static class MediaCache
     private static IDataSourceFactory? _fetchFactory;
     private static readonly object _lock = new();
 
-    /// <summary>进程级缓存实例（单例复用）：目录 cacheDir/mediacache，LRU 淘汰 + 定期清扫。</summary>
-    public static SimpleCache Get(Context ctx)
+    /// <summary>进程级缓存实例（单例复用）：目录 cacheDir/mediacache，LRU 淘汰 + 定期清扫。
+    /// vc144 自愈重建（老板令「修法以根治缓存层为主」）：初始化失败（坏索引/磁盘满/IO 异常）
+    /// 不再永久禁用——连根拔掉缓存目录（病索引随目录一起清）后返回 null 交调用方降级直连
+    /// （Wrap/BuildPlayerCacheFactory 按 null 走旁路），直连只是自愈窗内的临时便道；
+    /// 窗后（<see cref="HealMinIntervalMs"/>）下次装配全新缓存上岗，缓存机制始终活着。</summary>
+    public static SimpleCache? Get(Context ctx)
     {
         lock (_lock)
         {
             if (_cache is { } c) return c;
-            var dir = new Java.IO.File(ctx.CacheDir!.AbsolutePath, "mediacache");
-            // 三参构造（非弃用重载）：databaseProvider=null 走文件索引，缓存只在本应用沙箱目录
-            _cache = new SimpleCache(dir, new LeastRecentlyUsedCacheEvictor(MaxBytes),
-                (AndroidX.Media3.Database.IDatabaseProvider?)null);
-            StartSweeper();
-            return _cache;
+            long now = System.Environment.TickCount64;
+            if (now < _retryNotBeforeMs) return null; // 自愈窗内：直连便道，窗后重建
+            try
+            {
+                var dir = new Java.IO.File(ctx.CacheDir!.AbsolutePath, "mediacache");
+                _dirPath = dir.AbsolutePath;
+                // 三参构造（非弃用重载）：databaseProvider=null 走文件索引，缓存只在本应用沙箱目录
+                _cache = new SimpleCache(dir, new LeastRecentlyUsedCacheEvictor(MaxBytes),
+                    (AndroidX.Media3.Database.IDatabaseProvider?)null);
+                StartSweeper();
+                return _cache;
+            }
+            catch (Exception ex)
+            {
+                // vc144 自愈：初始化失败=病索引/坏账在目录里——连根拔目录（SimpleCache 索引坏账
+                // 不会自愈，留着只会反复抛），设重试闸窗后全新重建，不永久禁用
+                _cache = null;
+                try { if (_dirPath is not null && Directory.Exists(_dirPath)) Directory.Delete(_dirPath, true); }
+                catch { /* 目录拔不掉无害：窗后重建再试 */ }
+                _retryNotBeforeMs = now + HealMinIntervalMs;
+                Android.Util.Log.Warn("TaoLive", $"[缓存] 初始化失败，拔病索引目录，{HealMinIntervalMs / 60000} 分钟后自愈重建：{ex.Message}");
+                return null;
+            }
+        }
+    }
+
+    /// <summary>vc144 自愈重建（老板令「根治缓存层」）：运行期缓存层抛病（索引坏账/写路径空指针）
+    /// 时由旁路壳调用——释放旧缓存实例、连根拔病索引目录、清统一出口（<see cref="_fetchFactory"/>
+    /// 一并作废，下个装配周期全新缓存+全新工厂上岗），缓存机制始终活着，直连只是自愈窗内便道。
+    /// 限频 <see cref="HealMinIntervalMs"/>：5 分钟最多重建一次，防反复擦建。</summary>
+    internal static void Heal(string reason)
+    {
+        lock (_lock)
+        {
+            long now = System.Environment.TickCount64;
+            if (now - _lastHealAtMs < HealMinIntervalMs) return; // 限频：窗内不反复擦建
+            _lastHealAtMs = now;
+            try { _cache?.Release(); } catch { /* 释放失败无害：目录连根拔兜底 */ }
+            _cache = null;
+            _fetchFactory = null; // 统一出口作废：下个装配周期按新缓存重建（Wrap 单例键解除）
+            try { if (_dirPath is not null && Directory.Exists(_dirPath)) Directory.Delete(_dirPath, true); }
+            catch { /* 目录拔不掉无害：Get 初始化失败路径再拔 */ }
+            _retryNotBeforeMs = now + HealMinIntervalMs; // 重建闸：窗内直连便道
+            Android.Util.Log.Warn("TaoLive", $"[缓存] 缓存层病，自愈重建（{reason}）：旧实例已释放、病索引已拔，窗后全新上岗");
         }
     }
 
@@ -127,18 +173,28 @@ public static class MediaCache
             // 重建被换缝，热备双内核并发装配也不互踩。
             if (_fetchFactory is null)
             {
-                var fetch = new CacheDataSource.Factory();
-                fetch.SetCache(Get(ctx));
-                // vc142 老板令（「同源后台只许 1 条、不碰换票链」）：灌水器统一出口 upstream 改裸 HTTP 工厂——
-                // 原 RacingDataSourceFactory(null) 带 TicketSwap 换票壳，灌水器 4xx 即触发坏票轮换
-                // （作废票据缓存+烧频控账），播放内核换不到新票→全线路不可达（CCTV 全断根因②）。
-                // 裸内层 4xx 只走灌水器自己的退避账（OnRejected/OnFailed），票据缓存分毫不动；
-                // 缓存键=URL 与播放器缓存互通，写穿落盘口径不变。
-                fetch.SetUpstreamDataSourceFactory(RacingDataSourceFactory.CreateRawHttpFactory());
-                fetch.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
-                fetch.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
-                fetch.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
-                _fetchFactory = fetch;
+                var cache = Get(ctx);
+                if (cache is null)
+                {
+                    // vc144 自愈窗：缓存不可用→统一出口退化为裸 HTTP（灌水器照常拉片，只是不落盘）；
+                    // 窗后 Get 重建成功，本单例键随 Heal 作废，下个装配周期回到缓存写穿
+                    _fetchFactory = RacingDataSourceFactory.CreateRawHttpFactory();
+                }
+                else
+                {
+                    // vc142 老板令（「同源后台只许 1 条、不碰换票链」）：灌水器统一出口 upstream 改裸 HTTP 工厂——
+                    // 原 RacingDataSourceFactory(null) 带 TicketSwap 换票壳，灌水器 4xx 即触发坏票轮换
+                    // （作废票据缓存+烧频控账），播放内核换不到新票→全线路不可达（CCTV 全断根因②）。
+                    // 裸内层 4xx 只走灌水器自己的退避账（OnRejected/OnFailed），票据缓存分毫不动；
+                    // 缓存键=URL 与播放器缓存互通，写穿落盘口径不变。
+                    var fetch = new CacheDataSource.Factory();
+                    fetch.SetCache(cache);
+                    fetch.SetUpstreamDataSourceFactory(RacingDataSourceFactory.CreateRawHttpFactory());
+                    fetch.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
+                    fetch.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
+                    fetch.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
+                    _fetchFactory = fetch;
+                }
             }
             // vc141 根因修③（filler 泄漏）：灌水器随内核实例走——Wrap 每调一次新建 filler（分片账/消费位
             // 是实例账本），调用方（ExoPlayerPlayer）持有观测工厂复用，内核盲区档重建不再新建 filler，
@@ -149,16 +205,21 @@ public static class MediaCache
     }
 
     /// <summary>播放器侧缓存工厂（vc141 拆出）：缓存命中零网络，未命中走 upstream（竞速+换票壳）边拉边写。
-    /// 清单永不缓存（每次必拉最新，防过期窗口），网络错误回源。</summary>
+    /// 清单永不缓存（每次必拉最新，防过期窗口），网络错误回源。
+    /// vc144 自愈口径：缓存不可用=直连 upstream（自愈窗内临时便道）；缓存可用再包运行期旁路壳——
+    /// 缓存层读写抛 CacheCacheException/空指针（vc140 真机病灶）时本实例降级直连并触发
+    /// <see cref="MediaCache.Heal"/> 自愈重建，缓存病了不堵播放路，窗后全新缓存上岗。</summary>
     private static IDataSourceFactory BuildPlayerCacheFactory(IDataSourceFactory upstream, Context ctx)
     {
+        var cache = Get(ctx);
+        if (cache is null) return upstream; // vc144：无缓存直连旁路
         var factory = new CacheDataSource.Factory();
-        factory.SetCache(Get(ctx));
+        factory.SetCache(cache);
         factory.SetUpstreamDataSourceFactory(upstream);
         factory.SetCacheReadDataSourceFactory(new FileDataSource.Factory());
         factory.SetCacheKeyFactory(new PlaylistBypassKeyFactory());
         factory.SetFlags(CacheDataSource.FlagIgnoreCacheOnError);
-        return factory;
+        return new CacheBypassFactory(factory, upstream);
     }
 
     /// <summary>统一拉片出口（vc139 老板拍板）：缓存命中零网络直读，未命中走竞速+换票壳
@@ -469,6 +530,13 @@ public static class MediaCache
         /// 其他失败各回报纪律账（vc142 起档位引擎闲置，退避与源脾气账照走）。</summary>
         private async Task FetchSegmentAsync(string url)
         {
+            // vc144 频控共享闸：主机冷却中零网络快速失败（探活/取票/内核三路共账），
+            // 记灌水器自己账 OnRejected（档位归零+源脾气入账，既有退避口径不变）
+            if (TaoLive.Foundation.SourceRateGate.IsCooling(url))
+            {
+                _throttle.OnRejected(url);
+                return;
+            }
             AndroidX.Media3.DataSource.IDataSource? ds = null;
             try
             {
@@ -486,6 +554,7 @@ public static class MediaCache
                 }
                 lock (_gate) _filled.Add(url);
                 _throttle.OnGood(url);
+                TaoLive.Foundation.SourceRateGate.OnOk(url); // vc144：拉片成功清共享账
             }
             catch (Exception ex)
             {
@@ -494,6 +563,7 @@ public static class MediaCache
                     && (http.ResponseCode == 429 || http.ResponseCode == 403))
                 {
                     _throttle.OnRejected(url);
+                    TaoLive.Foundation.SourceRateGate.OnRejected(url); // vc144：被拒记共享账，整主机进冷却窗
                 }
                 else
                 {
@@ -637,6 +707,90 @@ public static class MediaCache
             {
                 try { ds?.Close(); } catch { /* 回收失败无害 */ }
             }
+        }
+    }
+
+    /// <summary>
+    /// 缓存旁路工厂（vc144 老板令「一次性改到位」）：包播放器侧缓存工厂，产出旁路数据源——
+    /// 缓存层读写抛 CacheCacheException/空指针（vc140 真机病灶：SimpleCache 索引坏账永久记异常、
+    /// 每次取片秒抛）时，本实例降级直连 upstream 并触发 <see cref="MediaCache.Heal"/> 自愈重建，
+    /// 缓存病了不堵播放路，直连只是自愈窗内临时便道。缓存健康时零开销直通。
+    /// upstream 的 HTTP 4xx 原样上抛（会话层换票/换源既有口径不变），旁路只接缓存层自身的病。
+    /// </summary>
+    internal sealed class CacheBypassFactory : Java.Lang.Object, IDataSourceFactory
+    {
+        private readonly IDataSourceFactory _cacheFactory;
+        private readonly IDataSourceFactory _upstream;
+
+        public CacheBypassFactory(IDataSourceFactory cacheFactory, IDataSourceFactory upstream)
+        {
+            _cacheFactory = cacheFactory ?? throw new ArgumentNullException(nameof(cacheFactory));
+            _upstream = upstream ?? throw new ArgumentNullException(nameof(upstream));
+        }
+
+        public IDataSource CreateDataSource()
+            => new CacheBypassDataSource(_cacheFactory.CreateDataSource()!, _upstream);
+    }
+
+    /// <summary>旁路数据源（vc144）：Open 阶段缓存层抛 CacheException/空指针即切直连重开；
+    /// 已切直连后 Read/Close 全走直连实例（本实例生命周期内不回头，防反复在病缓存上撞）。</summary>
+    internal sealed class CacheBypassDataSource : Java.Lang.Object, IDataSource
+    {
+        private readonly IDataSource _cacheInner;
+        private readonly IDataSourceFactory _upstreamFactory;
+        private readonly List<ITransferListener> _listeners = new();
+        private IDataSource? _fallback;
+        private IDataSource _active;
+
+        public CacheBypassDataSource(IDataSource cacheInner, IDataSourceFactory upstreamFactory)
+        {
+            _cacheInner = cacheInner ?? throw new ArgumentNullException(nameof(cacheInner));
+            _upstreamFactory = upstreamFactory ?? throw new ArgumentNullException(nameof(upstreamFactory));
+            _active = _cacheInner;
+        }
+
+        public long Open(DataSpec? dataSpec)
+        {
+            try
+            {
+                return _active.Open(dataSpec);
+            }
+            catch (Exception ex) when (IsCacheSickness(ex))
+            {
+                // vc144：缓存层自身的病（索引坏账/写路径空指针）→ 降级直连重开，同时触发自愈重建
+                // （释放旧实例+拔病索引+清统一出口，窗后全新缓存上岗——直连只是自愈窗内临时便道）；
+                // upstream 的 HTTP 错误（换票壳要接的 4xx）不在旁路范围，原样上抛
+                MediaCache.Heal(ex.GetType().Name);
+                try { _cacheInner.Close(); } catch { /* 关闭失败无害 */ }
+                var fallback = _upstreamFactory.CreateDataSource()!;
+                foreach (var l in _listeners) fallback.AddTransferListener(l);
+                _fallback = fallback;
+                _active = fallback;
+                Android.Util.Log.Warn("TaoLive", $"[缓存] 缓存层病降级直连：{ex.GetType().Name}: {ex.Message}");
+                return fallback.Open(dataSpec);
+            }
+        }
+
+        /// <summary>旁路判据：只接缓存层自身的病（CacheCacheException=索引/写账坏账，media3 绑定摊平名；
+        /// NullPointer=写路径空指针 vc140 真机病灶）。HTTP 状态错/网络错是 upstream 的账，交换票壳与会话层，不旁路。</summary>
+        private static bool IsCacheSickness(Exception ex)
+            => ex is CacheCacheException || ex is Java.Lang.NullPointerException;
+
+        public int Read(byte[]? buffer, int offset, int length) => _active.Read(buffer, offset, length);
+
+        public void Close()
+        {
+            try { _active.Close(); } catch { /* 关闭失败无害 */ }
+        }
+
+        public Android.Net.Uri? Uri => _active.Uri;
+
+        public IDictionary<string, IList<string>>? ResponseHeaders => _active.ResponseHeaders;
+
+        public void AddTransferListener(ITransferListener? transferListener)
+        {
+            _listeners.Add(transferListener!);
+            _active.AddTransferListener(transferListener);
         }
     }
 }

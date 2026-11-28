@@ -931,6 +931,16 @@ public sealed class ExoPlayerPlayer : IPlayer
             var message = error?.Message is { } m
                 ? (cause is { } c && c != m ? $"{m} | cause={c}" : m)
                 : "unknown playback error";
+            // vc144 堆栈补丁（老板令「诊断进了没有」）：NPE 排除 media3 Java 侧后指向 C# 数据源链/绑定层——
+            // cause 链只留 Message 查不到抛点，沿链走到最深因落整栈（GetStackTraceString 含 Java 帧），
+            // C# 跨界异常的托管栈也在其中，诊断页直接见发源帧
+            var deep = error?.Cause;
+            while (deep?.Cause is { } next && !ReferenceEquals(next, deep)) deep = next;
+            if (deep is { } d)
+            {
+                var stack = Android.Util.Log.GetStackTraceString(d);
+                if (!string.IsNullOrWhiteSpace(stack)) message = $"{message} | deep-stack={stack}";
+            }
             _owner.HandleError(code, message);
         }
 

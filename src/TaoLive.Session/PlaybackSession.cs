@@ -119,7 +119,9 @@ public sealed class PlaybackSession
         try { action(); }
         catch (Exception ex)
         {
-            KernelCallbackFailed?.Invoke(this, $"{CurrentChannel?.Name ?? CurrentChannel?.Id ?? "未知频道"}: {ex.Message}");
+            // vc144 堆栈补丁（老板令「诊断进了没有」）：NPE 排除 media3 Java 侧后指向 C# 数据源链/绑定层——
+            // 只落 ex.Message 查不到抛点，改落 ex.ToString()（含托管堆栈），诊断页直接见发源帧
+            KernelCallbackFailed?.Invoke(this, $"{CurrentChannel?.Name ?? CurrentChannel?.Id ?? "未知频道"}: {ex}");
         }
     }
 
@@ -1113,6 +1115,7 @@ public sealed class PlaybackSession
         // 每线路一次（TryFailover 切线时重记），防坏票死循环；未接作废器（测试/壳层未接）不启用重试。
         if (code.Contains("HTTP", StringComparison.OrdinalIgnoreCase)
             && !_freshTicketRetried
+            && !TaoLive.Foundation.SourceRateGate.IsCooling(CurrentEndpoint?.Url ?? "") // vc144 共享闸：冷却中不换票白打取票口
             && TicketCacheInvalidator is { } invalidate
             && _channel is { } retryChannel
             && CurrentEndpoint is { } badEndpoint)

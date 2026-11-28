@@ -51,6 +51,13 @@ public sealed class TicketResolver
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (TryGetCache(key, now, out var cached)) return cached;
 
+        // vc144 频控共享闸：主机冷却中不打取票口（缓存命中已放行，未命中快速失败零网络）
+        if (TaoLive.Foundation.SourceRateGate.IsCooling(endpoint.Url))
+        {
+            Reporter?.Invoke($"[取票] {uri.Host} 频控冷却中，快速失败交退避（vc144 共享闸）");
+            return null;
+        }
+
         var sw = System.Diagnostics.Stopwatch.StartNew(); // 取票耗时账（墙钟，仅诊断展示）
         var gate = _hostGates.GetOrAdd(uri.Host, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync().ConfigureAwait(false);
@@ -161,6 +168,12 @@ public sealed class TicketResolver
         if (channelKey is null || endpointUrl is null)
         {
             Reporter?.Invoke("[坏票轮换] 播放内核 4xx，票据缓存反查未命中，交会话层自救");
+            return null;
+        }
+        // vc144 频控共享闸：主机冷却中不换票（内核侧已记账，换票也是白打取票口）
+        if (TaoLive.Foundation.SourceRateGate.IsCooling(failingUrl))
+        {
+            Reporter?.Invoke("[坏票轮换] 频控冷却中，换票快速失败交会话退避（vc144 共享闸）");
             return null;
         }
         // vc93 频控（真机 2026-11-26 崩溃日志页实锤：新票秒被 4xx，内核逐分片重开→每秒 1-2 次取票风暴，
